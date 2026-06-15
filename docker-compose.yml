@@ -1,0 +1,29 @@
+services:
+  drift-import:
+    # Pull the image you pushed to Harbor, or build locally with: docker compose build
+    image: 192.168.10.155/drift-import/drift-import:latest
+    build: .
+    container_name: drift-import
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      DRIFT_AUTH_USERNAME: admin
+      DRIFT_AUTH_PASSWORD: ""        # set a password to enable login
+      DRIFT_MAX_CONCURRENT_UPLOADS: "1"
+      DRIFT_MAX_CONCURRENT_FFMPEG: "1"
+      # Inside the container we scan these mounted paths for the camera.
+      DRIFT_MOUNT_PATHS: "/media,/mnt"
+    volumes:
+      - drift-data:/data
+      - drift-working:/working
+      # Camera + NAS access. The container needs the host's mount points.
+      # The camera (DCIM) is usually auto-mounted under /media on the host.
+      - /media:/media
+      - /mnt:/mnt
+      # mem_limit mirrors the Pi Zero 2 W budget; raise on bigger hardware.
+    mem_limit: 400m
+
+volumes:
+  drift-data:
+  drift-working:

@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %} · Library{% endblock %}
+{% block content %}
+<section class="panel" id="devicePanel">
+  <h2>Camera</h2>
+  <div id="devices" class="devices">Scanning…</div>
+  <button onclick="refreshDevices()">Rescan</button>
+</section>
+
+<section class="toolbar">
+  <div class="filters">
+    <select id="monthFilter" onchange="loadMedia()"><option value="">All dates</option></select>
+    <select id="tagFilter" onchange="loadMedia()"><option value="">All tags</option></select>
+    <select id="statusFilter" onchange="loadMedia()">
+      <option value="">Any status</option>
+      <option value="done">Uploaded</option>
+      <option value="error">Upload error</option>
+      <option value="uploading">Uploading</option>
+    </select>
+  </div>
+  <div class="actions">
+    <span id="selCount">0 selected</span>
+    <button onclick="uploadSelected()">Upload…</button>
+    <button onclick="openTimestamp()">Fix time…</button>
+    <button onclick="mergeSelected()">Merge</button>
+    <button onclick="tagSelected()">Tag…</button>
+    <button onclick="addToAlbum()">Add to album…</button>
+    <button class="danger" onclick="deleteSelected()">Delete</button>
+  </div>
+</section>
+
+<section id="grid" class="grid">Loading…</section>
+
+<dialog id="playerDlg">
+  <video id="player" controls preload="metadata" style="max-width:80vw;max-height:70vh"></video>
+  <div><button onclick="document.getElementById('playerDlg').close()">Close</button></div>
+</dialog>
+
+<dialog id="tsDlg">
+  <h3>Adjust timestamps</h3>
+  <label><input type="radio" name="tsmode" value="shift" checked> Shift by</label>
+  <div class="row">
+    <input type="number" id="tsDays" value="0" style="width:4em"> d
+    <input type="number" id="tsHours" value="0" style="width:4em"> h
+    <input type="number" id="tsMins" value="0" style="width:4em"> m
+    <input type="number" id="tsSecs" value="0" style="width:4em"> s
+  </div>
+  <label><input type="radio" name="tsmode" value="set"> Set all to</label>
+  <input type="datetime-local" id="tsAbsolute">
+  <label><input type="checkbox" id="tsMeta" checked> Rewrite embedded metadata (slow on Pi)</label>
+  <div class="row"><button onclick="submitTimestamp()">Apply</button>
+    <button onclick="document.getElementById('tsDlg').close()">Cancel</button></div>
+</dialog>
+{% endblock %}
+{% block scripts %}<script>initGallery();</script>{% endblock %}

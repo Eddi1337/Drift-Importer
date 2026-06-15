@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %} · Jobs{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Background jobs</h2>
+  <p class="hint">Imports, thumbnails, timestamp edits, merges and uploads run here.</p>
+  <div id="jobsTable">Loading…</div>
+</section>
+{% endblock %}
+{% block scripts %}<script>initJobs();</script>{% endblock %}

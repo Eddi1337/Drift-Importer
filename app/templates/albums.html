@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %} · Albums{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Albums</h2>
+  <div class="row">
+    <input id="albumName" placeholder="New album name">
+    <button onclick="createAlbum()">Create</button>
+  </div>
+  <div id="albumList">Loading…</div>
+</section>
+<p class="hint">Open an album from the list to reorder clips (order is used when merging)
+and to merge or upload the whole album. Add clips to albums from the Library page.</p>
+{% endblock %}
+{% block scripts %}<script>initAlbums();</script>{% endblock %}

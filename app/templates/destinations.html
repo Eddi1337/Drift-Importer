@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %} · Destinations{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Upload destinations</h2>
+  <p class="hint">Configure where clips are uploaded. A local/NAS destination is simplest
+  if your NAS is mounted on the Pi (e.g. <code>/mnt/nas/camera</code>).</p>
+  <div id="destList">Loading…</div>
+</section>
+
+<section class="panel">
+  <h2 id="formTitle">Add destination</h2>
+  <input type="hidden" id="dId">
+  <div class="form-grid">
+    <label>Name <input id="dName"></label>
+    <label>Type
+      <select id="dType" onchange="onTypeChange()">
+        <option value="local">Local / NAS (mounted path)</option>
+        <option value="nextcloud">Nextcloud (WebDAV)</option>
+        <option value="sftp">SFTP</option>
+      </select>
+    </label>
+    <label class="net">Host <input id="dHost" placeholder="sftp host or leave blank"></label>
+    <label class="net">Port <input id="dPort" type="number"></label>
+    <label class="net">Username <input id="dUser"></label>
+    <label class="net">Secret / password <input id="dSecret" type="password" placeholder="leave blank to keep existing"></label>
+    <label>Base path
+      <input id="dBase" placeholder="/mnt/nas/camera  or  https://cloud/remote.php/dav/files/USER">
+    </label>
+    <label>Path template <input id="dTemplate" value="{year}/{month:02d}"></label>
+    <label class="inline"><input type="checkbox" id="dDefault"> Default (used by Upload Everything)</label>
+    <label class="inline"><input type="checkbox" id="dEnabled" checked> Enabled</label>
+  </div>
+  <div class="row">
+    <button onclick="saveDestination()">Save</button>
+    <button onclick="resetDestForm()">Clear</button>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}<script>initDestinations();</script>{% endblock %}
