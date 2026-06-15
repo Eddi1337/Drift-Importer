@@ -1,0 +1,66 @@
+name: Build and Deploy
+
+# Runs on the self-hosted runner (label "drift") on 192.168.10.180.
+# Credentials and deploy target come from the runner's .env file (not GitHub
+# secrets), so they are available to run steps as plain environment variables:
+#   HARBOR_REGISTRY, HARBOR_ROBOT_USER, HARBOR_ROBOT_TOKEN, DEPLOY_HOST,
+#   DEPLOY_SSH_KEY
+# See README "CI/CD" for how those are provisioned.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy to the Pi after building"
+        type: boolean
+        default: true
+
+env:
+  # Image coordinates. The registry host itself comes from the runner .env.
+  IMAGE_PATH: drift-import/drift-import
+  # Architectures to build. The Pi Zero 2 W is 32-bit (arm/v7); arm64 covers
+  # 64-bit Pi OS too.
+  PLATFORMS: linux/arm64,linux/arm/v7
+
+jobs:
+  build-deploy:
+    runs-on: [self-hosted, drift]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Register QEMU for cross-arch (arm/arm64) builds
+        run: docker run --privileged --rm tonistiigi/binfmt --install arm64,arm
+
+      - name: Create buildx builder (allows pushing to the HTTP Harbor registry)
+        run: |
+          cat > /tmp/buildkitd-drift.toml <<EOF
+          [registry."${HARBOR_REGISTRY}"]
+            http = true
+            insecure = true
+          EOF
+          docker buildx rm driftci >/dev/null 2>&1 || true
+          docker buildx create --name driftci --driver docker-container \
+            --driver-opt network=host \
+            --config /tmp/buildkitd-drift.toml --use
+          docker buildx inspect --bootstrap
+
+      - name: Log in to Harbor
+        run: echo "$HARBOR_ROBOT_TOKEN" | docker login "$HARBOR_REGISTRY" -u "$HARBOR_ROBOT_USER" --password-stdin
+
+      - name: Build and push multi-arch image
+        run: |
+          IMAGE="${HARBOR_REGISTRY}/${IMAGE_PATH}"
+          docker buildx build --builder driftci \
+            --platform "${PLATFORMS}" \
+            -t "${IMAGE}:latest" \
+            -t "${IMAGE}:${GITHUB_SHA::12}" \
+            --push .
+
+      - name: Deploy to Pi
+        if: ${{ github.event_name == 'push' || inputs.deploy }}
+        run: ./deploy/deploy-to-pi.sh
+        env:
+          IMAGE_TAG: latest

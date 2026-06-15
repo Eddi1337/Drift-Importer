@@ -99,16 +99,61 @@ The compose file mounts `/media` and `/mnt` from the host so the container can
 see the camera and any mounted NAS. State is kept in named volumes `drift-data`
 and `drift-working`.
 
-### Build & push to Harbor
+### Build & push to Harbor (manual)
 
 ```bash
-# Build for the Pi (arm64) and push to your Harbor registry.
+# Build for the Pi (32-bit arm/v7 + 64-bit arm64) and push to Harbor.
+# Harbor here is HTTP-only, so the builder needs an insecure-registry config.
 docker login 192.168.10.155
-docker buildx build --platform linux/arm64,linux/amd64 \
+docker buildx build --platform linux/arm64,linux/arm/v7 \
   -t 192.168.10.155/drift-import/drift-import:latest --push .
 ```
 
 Then on the Pi: `docker compose pull && docker compose up -d`.
+
+> **32-bit note:** the Pi Zero 2 W runs 32-bit Raspberry Pi OS (`armv7l`).
+> `cryptography`, `pydantic-core` etc. have no 32-bit ARM wheels on PyPI, so the
+> Dockerfile uses **piwheels** for those, and `uvicorn` (not `uvicorn[standard]`)
+> to avoid the compiled `uvloop`/`httptools`. The image then builds with no
+> compiler toolchain.
+
+## CI/CD (GitHub Actions → Harbor → Pi)
+
+`.github/workflows/build-deploy.yml` runs on a **self-hosted runner** and, on
+every push to `main`:
+
+1. registers QEMU and a `buildx` builder (configured for the HTTP Harbor
+   registry),
+2. logs in to Harbor and builds + pushes the multi-arch image
+   (`linux/arm64,linux/arm/v7`),
+3. deploys to the Pi over SSH (`deploy/deploy-to-pi.sh`): ships
+   `deploy/docker-compose.pi.yml`, logs the Pi into Harbor, `docker compose pull`
+   + `up -d`.
+
+### Configurable deploy target
+
+The deploy host is the **`DEPLOY_HOST`** variable (default `ed@192.168.3.188`),
+read by `deploy/deploy-to-pi.sh` and overridable from the runner `.env`. Point
+it at any Docker host with the deploy SSH key authorised to deploy elsewhere.
+
+### Runner / credentials provisioning
+
+Because this pushes to a private Harbor over a deploy key (no GitHub PAT for
+repo secrets), credentials live in the **runner's `.env`** (loaded into every
+job's environment), not in GitHub Secrets:
+
+```
+# /home/github/actions-runner-drift/.env   (chmod 600, owned by the runner user)
+HARBOR_REGISTRY=192.168.10.155
+HARBOR_ROBOT_USER=robot$drift-import+drift-pusher
+HARBOR_ROBOT_TOKEN=********
+DEPLOY_HOST=ed@192.168.3.188
+DEPLOY_SSH_KEY=/home/github/.ssh/drift_deploy
+```
+
+The runner is registered to the repo with labels `self-hosted,drift,docker`
+and installed as a systemd service like the host's other runners. The Pi
+authorises `DEPLOY_SSH_KEY`'s public key for the deploy user.
 
 ## Tests
 

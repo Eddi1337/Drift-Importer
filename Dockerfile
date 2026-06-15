@@ -17,7 +17,13 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# piwheels serves prebuilt ARM (armv6l/armv7l) wheels for the Rust/C packages
+# here — cryptography, pydantic-core, uvloop, httptools, watchfiles — so the
+# 32-bit Raspberry Pi build needs no compiler toolchain. It is harmless on other
+# architectures: pip finds no matching wheels there and falls back to PyPI.
+RUN pip install --no-cache-dir \
+      --extra-index-url https://www.piwheels.org/simple \
+      -r requirements.txt
 
 COPY app ./app
 COPY run.py .

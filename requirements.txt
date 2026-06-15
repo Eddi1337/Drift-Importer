@@ -1,6 +1,10 @@
-# Drift-Import dependencies (pinned for reproducibility on Raspberry Pi OS)
+# Drift-Import dependencies (pinned for reproducibility on Raspberry Pi OS).
+# Plain `uvicorn` (not uvicorn[standard]): the [standard] extra pulls uvloop,
+# httptools and watchfiles, which are C/Rust and have no 32-bit ARM wheels, so
+# they'd need a compiler in the image. The asyncio loop + h11 is pure-Python and
+# plenty for a single Pi; uvloop's speedup is irrelevant on this hardware.
 fastapi==0.110.0
-uvicorn[standard]==0.27.1
+uvicorn==0.27.1
 jinja2==3.1.3
 python-multipart==0.0.9
 sqlalchemy==2.0.27

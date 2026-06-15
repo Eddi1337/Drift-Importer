@@ -1,0 +1,28 @@
+# Compose file deployed to the Raspberry Pi. Pulls the prebuilt image from
+# Harbor (no build on the Pi). Values come from the .env written next to it by
+# deploy/deploy-to-pi.sh: HARBOR_REGISTRY and IMAGE_TAG.
+services:
+  drift-import:
+    image: ${HARBOR_REGISTRY}/drift-import/drift-import:${IMAGE_TAG:-latest}
+    container_name: drift-import
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      DRIFT_AUTH_USERNAME: admin
+      DRIFT_AUTH_PASSWORD: ""          # set to enable login
+      DRIFT_MAX_CONCURRENT_UPLOADS: "1"
+      DRIFT_MAX_CONCURRENT_FFMPEG: "1"
+      DRIFT_MOUNT_PATHS: "/media,/mnt"
+    volumes:
+      - drift-data:/data
+      - drift-working:/working
+      # Camera (auto-mounted under /media) and any mounted NAS.
+      - /media:/media
+      - /mnt:/mnt
+    # Pi Zero 2 W has ~425 MB RAM total; keep the container well under that.
+    mem_limit: 256m
+
+volumes:
+  drift-data:
+  drift-working:
