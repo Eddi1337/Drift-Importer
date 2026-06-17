@@ -545,7 +545,7 @@ const destinationTypeMap = {
     hint: "Use a directory already mounted on the Pi or Docker host.",
   },
   nfs: {
-    port: "",
+    port: "2049",
     host: true,
     user: false,
     secret: false,
@@ -553,7 +553,7 @@ const destinationTypeMap = {
     hint: "NFS uses server/export settings and does not need a password. The share must be mounted on the Pi/container host for uploads.",
   },
   smb: {
-    port: "",
+    port: "445",
     host: true,
     user: true,
     secret: true,
@@ -593,11 +593,12 @@ function initDestinations() {
   clearFolderBrowser("folderBrowser");
 }
 
-function onTypeChange() {
+function onTypeChange(applyDefaultPort = false) {
   const t = document.getElementById("dType").value;
   const cfg = destinationTypeMap[t];
   if (!cfg) return;
-  if (cfg.port) document.getElementById("dPort").value = document.getElementById("dPort").value || cfg.port;
+  if (applyDefaultPort) document.getElementById("dPort").value = cfg.port;
+  else if (cfg.port) document.getElementById("dPort").value = document.getElementById("dPort").value || cfg.port;
   document.getElementById("dMethodHint").textContent = cfg.hint;
   document.getElementById("dBase").placeholder = cfg.basePlaceholder;
   document.querySelector(".field-host").classList.toggle("show", cfg.host);
