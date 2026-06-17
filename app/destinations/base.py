@@ -43,6 +43,10 @@ class UploadBackend:
         """Raise an exception if the destination is unreachable/misconfigured."""
         raise NotImplementedError
 
+    def list_directories(self, path: str = "") -> list[str]:
+        """Return child directories for the destination path or a subpath."""
+        raise NotImplementedError
+
     def get_resume_offset(self, remote_dir: str, filename: str, size_bytes: int) -> int:
         """Return existing uploaded bytes for a temporary remote file."""
         return 0

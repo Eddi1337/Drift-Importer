@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterator
+from urllib.parse import unquote
+import xml.etree.ElementTree as ET
 
 import httpx
 
@@ -32,6 +34,31 @@ class NextcloudBackend(UploadBackend):
             resp = client.request("PROPFIND", self._base_url(), headers={"Depth": "0"})
             if resp.status_code >= 400:
                 raise RuntimeError(f"WebDAV PROPFIND failed: HTTP {resp.status_code}")
+
+    def list_directories(self, path: str = "") -> list[str]:
+        target = self._base_url() + join_remote("/", path)
+        with httpx.Client(timeout=30, auth=self._auth()) as client:
+            resp = client.request("PROPFIND", target, headers={"Depth": "1"})
+            if resp.status_code >= 400:
+                raise RuntimeError(f"WebDAV PROPFIND failed: HTTP {resp.status_code}")
+        ns = {
+            "d": "DAV:",
+        }
+        root = ET.fromstring(resp.text)
+        names = []
+        base_href = None
+        for response in root.findall("d:response", ns):
+            href = response.findtext("d:href", default="", namespaces=ns)
+            if base_href is None:
+                base_href = href.rstrip("/")
+                continue
+            kind = response.find("d:propstat/d:prop/d:resourcetype/d:collection", ns)
+            if kind is None:
+                continue
+            child = unquote(href.rstrip("/").split("/")[-1])
+            if child:
+                names.append(child)
+        return sorted(set(names))
 
     def _ensure_collections(self, client: httpx.Client, remote_dir: str) -> None:
         parts = [p for p in remote_dir.strip("/").split("/") if p]

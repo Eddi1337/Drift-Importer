@@ -17,6 +17,16 @@ class LocalBackend(UploadBackend):
     def _root(self) -> Path:
         return Path(self.destination.base_path or "/")
 
+    def list_directories(self, path: str = "") -> list[str]:
+        root = self._root() / path.strip("/")
+        if not root.exists():
+            raise FileNotFoundError(f"Path does not exist: {root}")
+        if not root.is_dir():
+            raise NotADirectoryError(f"Path is not a directory: {root}")
+        return sorted(
+            entry.name for entry in root.iterdir() if entry.is_dir()
+        )
+
     def test_connection(self) -> None:
         root = self._root()
         if not root.exists():

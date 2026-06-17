@@ -439,6 +439,18 @@ def test_destination(dest_id: int, session: Session = Depends(get_session)):
         return {"ok": False, "error": str(exc)}
 
 
+@router.get("/destinations/{dest_id}/folders")
+def browse_destination(dest_id: int, path: str = "", session: Session = Depends(get_session)):
+    d = session.get(Destination, dest_id)
+    if not d:
+        raise HTTPException(404, "Not found")
+    try:
+        folders = get_backend(d).list_directories(path)
+        return {"destination_id": dest_id, "path": path, "folders": folders}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, str(exc)) from exc
+
+
 # --- settings ---------------------------------------------------------------
 
 class AppSettingsReq(BaseModel):

@@ -1,6 +1,7 @@
 """SFTP destination via paramiko. Streams from disk in chunks."""
 from __future__ import annotations
 
+import stat
 from pathlib import Path, PurePosixPath
 
 import paramiko
@@ -31,6 +32,20 @@ class SFTPBackend(UploadBackend):
             sftp = client.open_sftp()
             sftp.listdir(self.destination.base_path or ".")
             sftp.close()
+        finally:
+            client.close()
+
+    def list_directories(self, path: str = "") -> list[str]:
+        client = self._connect()
+        try:
+            sftp = client.open_sftp()
+            root = join_remote(self.destination.base_path or "/", path)
+            names = []
+            for entry in sftp.listdir_attr(root):
+                if stat.S_ISDIR(entry.st_mode):
+                    names.append(entry.filename)
+            sftp.close()
+            return sorted(names)
         finally:
             client.close()
 
