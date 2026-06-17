@@ -19,12 +19,15 @@ from ..jobs import get_manager
 from ..models import (
     Album,
     AlbumItem,
+    AppSettings,
     Destination,
     Job,
     MediaItem,
     Tag,
+    UploadedClip,
     UploadState,
 )
+from ..settings_store import app_settings_dict, encode_destination_ids, get_app_settings, touch_settings
 from ..streaming import stream_file
 
 router = APIRouter()
@@ -47,10 +50,18 @@ def media_dict(m: MediaItem) -> dict:
         "month": m.month,
         "source": m.source,
         "derived": m.derived,
+        "checksum": m.checksum,
         "has_thumb": bool(m.thumbnail),
         "tags": [t.name for t in m.tags],
         "uploads": [
-            {"destination_id": u.destination_id, "status": u.status, "error": u.error}
+            {
+                "destination_id": u.destination_id,
+                "status": u.status,
+                "error": u.error,
+                "bytes_uploaded": u.bytes_uploaded,
+                "total_bytes": u.total_bytes,
+                "progress": round((u.bytes_uploaded / u.total_bytes), 4) if u.total_bytes else 0,
+            }
             for u in m.upload_states
         ],
     }
@@ -76,33 +87,43 @@ def list_devices():
 
 class ImportDeviceReq(BaseModel):
     dcim_path: str
-    auto_upload: bool = False
+    auto_upload: Optional[bool] = None
     destination_ids: Optional[List[int]] = None
 
 
 @router.post("/import-device")
-def import_device(req: ImportDeviceReq):
+def import_device(req: ImportDeviceReq, session: Session = Depends(get_session)):
     """Import every clip from a connected DCIM device.
 
     With auto_upload this is the 'Upload Everything' flow.
     """
+    prefs = get_app_settings(session)
     root = Path(req.dcim_path)
     if not root.exists():
         raise HTTPException(400, "DCIM path does not exist")
     paths = [str(p) for p in scan_media_files(root)]
     if not paths:
         raise HTTPException(400, "No media files found on device")
+    auto_upload = prefs.auto_upload_on_import if req.auto_upload is None else req.auto_upload
+    destination_ids = req.destination_ids
+    if auto_upload and destination_ids is None:
+        destination_ids = app_settings_dict(prefs)["default_destination_ids"]
     job_id = get_manager().enqueue(
         "import",
         description=f"Import {len(paths)} files from {root.name}",
         payload={
             "paths": paths,
             "source": "device",
-            "auto_upload": req.auto_upload,
-            "destination_ids": req.destination_ids,
+            "auto_upload": auto_upload,
+            "destination_ids": destination_ids,
         },
     )
-    return {"job_id": job_id, "file_count": len(paths)}
+    return {
+        "job_id": job_id,
+        "file_count": len(paths),
+        "auto_upload": auto_upload,
+        "destination_ids": destination_ids,
+    }
 
 
 # --- media listing & filtering ---------------------------------------------
@@ -333,6 +354,23 @@ def dest_dict(d: Destination) -> dict:
     }
 
 
+def uploaded_clip_dict(r: UploadedClip) -> dict:
+    return {
+        "id": r.id,
+        "destination_id": r.destination_id,
+        "source_media_id": r.source_media_id,
+        "checksum": r.checksum,
+        "filename": r.filename,
+        "size_bytes": r.size_bytes,
+        "remote_path": r.remote_path,
+        "temp_remote_path": r.temp_remote_path,
+        "status": r.status,
+        "bytes_uploaded": r.bytes_uploaded,
+        "last_error": r.last_error,
+        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+    }
+
+
 @router.get("/destinations")
 def list_destinations(session: Session = Depends(get_session)):
     return [dest_dict(d) for d in session.query(Destination).order_by(Destination.name).all()]
@@ -399,6 +437,43 @@ def test_destination(dest_id: int, session: Session = Depends(get_session)):
         return {"ok": True}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
+
+
+# --- settings ---------------------------------------------------------------
+
+class AppSettingsReq(BaseModel):
+    auto_import_on_connect: bool = False
+    auto_upload_on_import: bool = False
+    default_destination_ids: List[int] = []
+    ha_base_url: str = ""
+    ha_token: str = ""
+    ha_entity_prefix: str = "drift_import"
+
+
+@router.get("/settings")
+def read_settings(session: Session = Depends(get_session)):
+    settings = get_app_settings(session)
+    return app_settings_dict(settings)
+
+
+@router.put("/settings")
+def update_settings(req: AppSettingsReq, session: Session = Depends(get_session)):
+    settings = get_app_settings(session)
+    settings.auto_import_on_connect = req.auto_import_on_connect
+    settings.auto_upload_on_import = req.auto_upload_on_import
+    settings.default_destination_ids = encode_destination_ids(req.default_destination_ids)
+    settings.ha_base_url = req.ha_base_url.strip() or None
+    settings.ha_token = req.ha_token.strip() or None
+    settings.ha_entity_prefix = req.ha_entity_prefix.strip() or "drift_import"
+    touch_settings(settings)
+    session.commit()
+    return app_settings_dict(settings)
+
+
+@router.get("/uploaded-clips")
+def list_uploaded_clips(limit: int = 200, session: Session = Depends(get_session)):
+    rows = session.query(UploadedClip).order_by(UploadedClip.updated_at.desc()).limit(limit).all()
+    return [uploaded_clip_dict(r) for r in rows]
 
 
 # --- actions: upload / timestamp / merge ------------------------------------

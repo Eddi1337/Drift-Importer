@@ -135,6 +135,19 @@ class Destination(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class AppSettings(Base):
+    __tablename__ = "app_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    auto_import_on_connect: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_upload_on_import: Mapped[bool] = mapped_column(Boolean, default=False)
+    default_destination_ids: Mapped[str] = mapped_column(Text, default="")
+    ha_base_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    ha_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ha_entity_prefix: Mapped[str] = mapped_column(String(128), default="drift_import")
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class UploadState(Base):
     """Per-(media, destination) upload status, so a clip can go to many targets."""
 
@@ -149,10 +162,41 @@ class UploadState(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|uploading|done|error
     remote_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    bytes_uploaded: Mapped[int] = mapped_column(Integer, default=0)
+    total_bytes: Mapped[int] = mapped_column(Integer, default=0)
     uploaded_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
 
     media: Mapped[MediaItem] = relationship(back_populates="upload_states")
     destination: Mapped[Destination] = relationship(lazy="selectin")
+
+
+class UploadedClip(Base):
+    """Deduplicated upload ledger keyed by destination + media checksum."""
+
+    __tablename__ = "uploaded_clips"
+    __table_args__ = (UniqueConstraint("destination_id", "checksum"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    destination_id: Mapped[int] = mapped_column(
+        ForeignKey("destinations.id", ondelete="CASCADE"), index=True
+    )
+    source_media_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("media_items.id", ondelete="SET NULL"), nullable=True
+    )
+    checksum: Mapped[str] = mapped_column(String(64), index=True)
+    filename: Mapped[str] = mapped_column(String(512))
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    remote_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    temp_remote_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    bytes_uploaded: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+
+    destination: Mapped[Destination] = relationship(lazy="selectin")
+    media: Mapped[Optional[MediaItem]] = relationship(lazy="selectin")
 
 
 class Job(Base):

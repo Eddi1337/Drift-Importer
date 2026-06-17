@@ -1,6 +1,7 @@
 """SQLite database setup using SQLAlchemy 2.0."""
 from __future__ import annotations
 
+import sqlite3
 from contextlib import contextmanager
 from typing import Iterator
 
@@ -40,6 +41,83 @@ def init_db() -> None:
     from . import models  # noqa: F401  (register mappers)
 
     Base.metadata.create_all(_engine)
+    _run_migrations()
+
+
+def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {row[1] for row in rows}
+
+
+def _table_names(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+def _run_migrations() -> None:
+    db_path = _settings.db_path
+    conn = sqlite3.connect(db_path)
+    try:
+        tables = _table_names(conn)
+        if "upload_states" in tables:
+            cols = _column_names(conn, "upload_states")
+            if "bytes_uploaded" not in cols:
+                conn.execute(
+                    "ALTER TABLE upload_states ADD COLUMN bytes_uploaded INTEGER DEFAULT 0"
+                )
+            if "total_bytes" not in cols:
+                conn.execute(
+                    "ALTER TABLE upload_states ADD COLUMN total_bytes INTEGER DEFAULT 0"
+                )
+            if "updated_at" not in cols:
+                conn.execute(
+                    "ALTER TABLE upload_states ADD COLUMN updated_at DATETIME"
+                )
+                conn.execute(
+                    "UPDATE upload_states SET updated_at = COALESCE(uploaded_at, CURRENT_TIMESTAMP)"
+                )
+
+        if "app_settings" in tables:
+            cols = _column_names(conn, "app_settings")
+            if "auto_import_on_connect" not in cols:
+                conn.execute(
+                    "ALTER TABLE app_settings ADD COLUMN auto_import_on_connect BOOLEAN DEFAULT 0"
+                )
+            if "auto_upload_on_import" not in cols:
+                conn.execute(
+                    "ALTER TABLE app_settings ADD COLUMN auto_upload_on_import BOOLEAN DEFAULT 0"
+                )
+            if "default_destination_ids" not in cols:
+                conn.execute(
+                    "ALTER TABLE app_settings ADD COLUMN default_destination_ids TEXT DEFAULT ''"
+                )
+            if "ha_base_url" not in cols:
+                conn.execute(
+                    "ALTER TABLE app_settings ADD COLUMN ha_base_url VARCHAR(1024)"
+                )
+            if "ha_token" not in cols:
+                conn.execute("ALTER TABLE app_settings ADD COLUMN ha_token TEXT")
+            if "ha_entity_prefix" not in cols:
+                conn.execute(
+                    "ALTER TABLE app_settings ADD COLUMN ha_entity_prefix VARCHAR(128) DEFAULT 'drift_import'"
+                )
+            if "updated_at" not in cols:
+                conn.execute("ALTER TABLE app_settings ADD COLUMN updated_at DATETIME")
+                conn.execute("UPDATE app_settings SET updated_at = CURRENT_TIMESTAMP")
+
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO app_settings
+                (id, auto_import_on_connect, auto_upload_on_import, default_destination_ids, ha_entity_prefix, updated_at)
+            VALUES
+                (1, 0, 0, '', 'drift_import', CURRENT_TIMESTAMP)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_engine():

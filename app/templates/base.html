@@ -4,16 +4,21 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Drift-Import{% block title %}{% endblock %}</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header class="topbar">
-    <span class="brand">📷 Drift-Import</span>
+    <a class="brand" href="/">
+      <img src="/static/logo.svg" alt="" class="brand-mark">
+      <span>Drift-Import</span>
+    </a>
     <nav>
       <a href="/" class="{{ 'on' if active=='gallery.html' else '' }}">Library</a>
       <a href="/albums" class="{{ 'on' if active=='albums.html' else '' }}">Albums</a>
       <a href="/destinations" class="{{ 'on' if active=='destinations.html' else '' }}">Destinations</a>
       <a href="/jobs" class="{{ 'on' if active=='jobs.html' else '' }}">Jobs</a>
+      <a href="/settings" class="{{ 'on' if active=='settings.html' else '' }}">Settings</a>
     </nav>
     <span id="jobBadge" class="badge" title="active jobs"></span>
   </header>

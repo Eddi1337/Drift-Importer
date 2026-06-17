@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 120" role="img" aria-labelledby="title">
+  <title>Drift-Import motorcycle logo</title>
+  <defs>
+    <linearGradient id="tank" x1="0" x2="1">
+      <stop offset="0" stop-color="#6b4226"/>
+      <stop offset="1" stop-color="#b98553"/>
+    </linearGradient>
+  </defs>
+  <rect width="320" height="120" rx="24" fill="#1a110d"/>
+  <g fill="none" stroke="#f1ddc6" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="84" cy="84" r="22" stroke-width="10"/>
+    <circle cx="236" cy="84" r="22" stroke-width="10"/>
+    <path d="M106 82h36l22-30h30l18 30h-30l-16-18-16 18h-25l-10-18z" stroke-width="10"/>
+    <path d="M184 52l14-16h32" stroke-width="8"/>
+    <path d="M130 64l26-18" stroke-width="8"/>
+  </g>
+  <path d="M151 41c8-10 22-15 39-15 15 0 25 6 30 15-15 3-28 5-39 5-11 0-21-2-30-5z" fill="url(#tank)"/>
+  <path d="M266 28l22-10" stroke="#b98553" stroke-width="8" stroke-linecap="round"/>
+</svg>

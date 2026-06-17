@@ -23,6 +23,10 @@ class NextcloudBackend(UploadBackend):
     def _base_url(self) -> str:
         return (self.destination.base_path or "").rstrip("/")
 
+    def _build_url(self, remote_dir: str, filename: str, part: bool = False) -> str:
+        suffix = join_remote("/", remote_dir, filename + (".part" if part else ""))
+        return self._base_url() + suffix
+
     def test_connection(self) -> None:
         with httpx.Client(timeout=30, auth=self._auth()) as client:
             resp = client.request("PROPFIND", self._base_url(), headers={"Depth": "0"})
@@ -39,34 +43,67 @@ class NextcloudBackend(UploadBackend):
             if resp.status_code not in (201, 405, 301):
                 raise RuntimeError(f"MKCOL {accum} failed: HTTP {resp.status_code}")
 
-    def upload(self, local_path, remote_dir, filename, progress: ProgressCb = None) -> str:
+    def get_resume_offset(self, remote_dir: str, filename: str, size_bytes: int) -> int:
+        tmp_url = self._build_url(remote_dir, filename, part=True)
+        final_url = self._build_url(remote_dir, filename, part=False)
+        with httpx.Client(timeout=30, auth=self._auth()) as client:
+            final_resp = client.head(final_url)
+            final_size = int(final_resp.headers.get("Content-Length", "0") or 0)
+            if final_resp.status_code < 400 and final_size == size_bytes:
+                return size_bytes
+            resp = client.head(tmp_url)
+            if resp.status_code >= 400:
+                return 0
+            return min(int(resp.headers.get("Content-Length", "0") or 0), size_bytes)
+
+    def upload(
+        self,
+        local_path,
+        remote_dir,
+        filename,
+        progress: ProgressCb = None,
+        start_offset: int = 0,
+    ) -> str:
         settings = get_settings()
         local_path = Path(local_path)
         total = local_path.stat().st_size
-        url = join_remote(self._base_url(), remote_dir, filename)
-        # join_remote collapses the scheme's // — rebuild from base + suffix.
-        suffix = join_remote("/", remote_dir, filename)
-        url = self._base_url() + suffix
+        tmp_url = self._build_url(remote_dir, filename, part=True)
+        final_url = self._build_url(remote_dir, filename, part=False)
 
         def stream() -> Iterator[bytes]:
-            sent = 0
+            sent = start_offset
             with local_path.open("rb") as f:
+                if start_offset:
+                    f.seek(start_offset)
                 while True:
                     buf = f.read(settings.upload_chunk_bytes)
                     if not buf:
                         break
                     sent += len(buf)
                     if progress and total:
-                        progress(sent / total)
+                        progress(sent, total)
                     yield buf
 
         with httpx.Client(timeout=None, auth=self._auth()) as client:
             self._ensure_collections(client, remote_dir)
+            headers = {"Content-Length": str(max(0, total - start_offset))}
+            if start_offset:
+                headers["Content-Range"] = f"bytes {start_offset}-{total - 1}/{total}"
             resp = client.put(
-                url,
+                tmp_url,
                 content=stream(),
-                headers={"Content-Length": str(total)},
+                headers=headers,
             )
             if resp.status_code not in (200, 201, 204):
+                if start_offset:
+                    # Fallback for servers that reject ranged PUTs: restart cleanly.
+                    return self.upload(local_path, remote_dir, filename, progress, start_offset=0)
                 raise RuntimeError(f"PUT failed: HTTP {resp.status_code} {resp.text[:300]}")
-        return url
+            move = client.request(
+                "MOVE",
+                tmp_url,
+                headers={"Destination": final_url, "Overwrite": "T"},
+            )
+            if move.status_code not in (201, 204):
+                raise RuntimeError(f"MOVE failed: HTTP {move.status_code} {move.text[:300]}")
+        return final_url

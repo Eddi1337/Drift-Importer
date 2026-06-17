@@ -7,7 +7,7 @@ from typing import Callable, Optional
 
 from ..models import Destination
 
-ProgressCb = Optional[Callable[[float], None]]
+ProgressCb = Optional[Callable[[int, int], None]]
 
 
 def render_remote_dir(template: str, when: Optional[dt.datetime]) -> str:
@@ -43,12 +43,17 @@ class UploadBackend:
         """Raise an exception if the destination is unreachable/misconfigured."""
         raise NotImplementedError
 
+    def get_resume_offset(self, remote_dir: str, filename: str, size_bytes: int) -> int:
+        """Return existing uploaded bytes for a temporary remote file."""
+        return 0
+
     def upload(
         self,
         local_path,
         remote_dir: str,
         filename: str,
         progress: ProgressCb = None,
+        start_offset: int = 0,
     ) -> str:
         """Upload local_path into remote_dir/filename. Return the remote path."""
         raise NotImplementedError

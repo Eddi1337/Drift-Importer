@@ -48,7 +48,37 @@ class SFTPBackend(UploadBackend):
             except IOError:
                 sftp.mkdir(accum)
 
-    def upload(self, local_path, remote_dir, filename, progress: ProgressCb = None) -> str:
+    def get_resume_offset(self, remote_dir: str, filename: str, size_bytes: int) -> int:
+        full_dir = join_remote(self.destination.base_path or "/", remote_dir)
+        remote_path = join_remote(full_dir, filename)
+        tmp_path = remote_path + ".part"
+        client = self._connect()
+        try:
+            sftp = client.open_sftp()
+            try:
+                stat = sftp.stat(remote_path)
+                if stat.st_size == size_bytes:
+                    return size_bytes
+            except IOError:
+                pass
+            try:
+                stat = sftp.stat(tmp_path)
+                return min(stat.st_size, size_bytes)
+            except IOError:
+                return 0
+            finally:
+                sftp.close()
+        finally:
+            client.close()
+
+    def upload(
+        self,
+        local_path,
+        remote_dir,
+        filename,
+        progress: ProgressCb = None,
+        start_offset: int = 0,
+    ) -> str:
         settings = get_settings()
         local_path = Path(local_path)
         total = local_path.stat().st_size
@@ -58,11 +88,18 @@ class SFTPBackend(UploadBackend):
         try:
             sftp = client.open_sftp()
             self._mkdirs(sftp, full_dir)
-            sent = 0
+            sent = start_offset
             chunk = settings.upload_chunk_bytes
             tmp_path = remote_path + ".part"
-            with local_path.open("rb") as src, sftp.open(tmp_path, "wb") as dst:
+            if start_offset >= total:
+                if progress and total:
+                    progress(total, total)
+                sftp.close()
+                return remote_path
+            with local_path.open("rb") as src, sftp.open(tmp_path, "ab" if start_offset else "wb") as dst:
                 dst.set_pipelined(True)
+                if start_offset:
+                    src.seek(start_offset)
                 while True:
                     buf = src.read(chunk)
                     if not buf:
@@ -70,7 +107,7 @@ class SFTPBackend(UploadBackend):
                     dst.write(buf)
                     sent += len(buf)
                     if progress and total:
-                        progress(sent / total)
+                        progress(sent, total)
             try:
                 sftp.remove(remote_path)
             except IOError:

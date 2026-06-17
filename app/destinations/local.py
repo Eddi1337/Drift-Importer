@@ -24,7 +24,24 @@ class LocalBackend(UploadBackend):
         if not os.access(root, os.W_OK):
             raise PermissionError(f"Path is not writable: {root}")
 
-    def upload(self, local_path, remote_dir, filename, progress: ProgressCb = None) -> str:
+    def get_resume_offset(self, remote_dir: str, filename: str, size_bytes: int) -> int:
+        dest_dir = Path(join_remote(str(self._root()), remote_dir))
+        target = dest_dir / filename
+        tmp = target.with_suffix(target.suffix + ".part")
+        if target.exists() and target.stat().st_size == size_bytes:
+            return size_bytes
+        if tmp.exists():
+            return min(tmp.stat().st_size, size_bytes)
+        return 0
+
+    def upload(
+        self,
+        local_path,
+        remote_dir,
+        filename,
+        progress: ProgressCb = None,
+        start_offset: int = 0,
+    ) -> str:
         settings = get_settings()
         local_path = Path(local_path)
         dest_dir = Path(join_remote(str(self._root()), remote_dir))
@@ -32,9 +49,16 @@ class LocalBackend(UploadBackend):
         target = dest_dir / filename
         tmp = target.with_suffix(target.suffix + ".part")
         total = local_path.stat().st_size
-        written = 0
+        written = start_offset
         chunk = settings.upload_chunk_bytes
-        with local_path.open("rb") as src, tmp.open("wb") as dst:
+        if start_offset >= total and target.exists():
+            if progress and total:
+                progress(total, total)
+            return str(target)
+        mode = "ab" if start_offset else "wb"
+        with local_path.open("rb") as src, tmp.open(mode) as dst:
+            if start_offset:
+                src.seek(start_offset)
             while True:
                 buf = src.read(chunk)
                 if not buf:
@@ -42,6 +66,6 @@ class LocalBackend(UploadBackend):
                 dst.write(buf)
                 written += len(buf)
                 if progress and total:
-                    progress(written / total)
+                    progress(written, total)
         os.replace(tmp, target)
         return str(target)

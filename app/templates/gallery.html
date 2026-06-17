@@ -3,8 +3,14 @@
 {% block content %}
 <section class="panel" id="devicePanel">
   <h2>Camera</h2>
+  <div id="deviceDefaults" class="hint"></div>
   <div id="devices" class="devices">Scanning…</div>
   <button onclick="refreshDevices()">Rescan</button>
+</section>
+
+<section class="panel live-panel">
+  <h2>Live upload activity</h2>
+  <div id="liveActivity" class="live-grid">Waiting for jobs…</div>
 </section>
 
 <section class="toolbar">

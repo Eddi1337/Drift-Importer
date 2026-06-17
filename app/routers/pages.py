@@ -33,3 +33,8 @@ def albums(request: Request):
 @router.get("/jobs", response_class=HTMLResponse)
 def jobs(request: Request):
     return _page(request, "jobs.html")
+
+
+@router.get("/settings", response_class=HTMLResponse)
+def settings(request: Request):
+    return _page(request, "settings.html")

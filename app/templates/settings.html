@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %} · Settings{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Camera defaults</h2>
+  <p class="hint">Choose what should happen when a Drift camera appears in the Library view.</p>
+  <div class="form-grid settings-grid">
+    <label class="inline"><input type="checkbox" id="sAutoImport"> Auto-import when a camera is detected</label>
+    <label class="inline"><input type="checkbox" id="sAutoUpload"> Auto-upload after import</label>
+    <label>
+      HA entity prefix
+      <input id="sHaPrefix" value="drift_import" placeholder="drift_import">
+    </label>
+    <label>
+      Home Assistant URL
+      <input id="sHaUrl" placeholder="http://192.168.10.120:8123">
+    </label>
+    <label class="span-2">
+      Home Assistant API token
+      <input id="sHaToken" type="password" placeholder="Long-lived access token">
+    </label>
+  </div>
+  <div class="panel inset">
+    <h3>Default upload destinations</h3>
+    <div id="settingsDestinations" class="stack">Loading…</div>
+  </div>
+  <div class="row">
+    <button onclick="saveSettings()">Save settings</button>
+    <button class="ghost" onclick="loadSettingsPage()">Reload</button>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Uploaded clip ledger</h2>
+  <p class="hint">Every upload is tracked by clip hash so retries can skip duplicates and resume interrupted transfers.</p>
+  <div id="uploadLedger">Loading…</div>
+</section>
+{% endblock %}
+{% block scripts %}<script>initSettings();</script>{% endblock %}

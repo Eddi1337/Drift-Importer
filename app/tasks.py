@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import time
 from pathlib import Path
 from typing import List
 
 from .config import get_settings
 from .database import session_scope
 from .destinations import get_backend
-from .destinations.base import render_remote_dir
+from .destinations.base import join_remote, render_remote_dir
+from .ha import publish_state
 from .jobs import JobContext, handler
 from .media import (
     capture_time_or_mtime,
@@ -19,7 +21,8 @@ from .media import (
     probe,
 )
 from .merge import merge_clips
-from .models import Destination, MediaItem, UploadState, utcnow
+from .models import AppSettings, Destination, MediaItem, UploadedClip, UploadState, utcnow
+from .settings_store import get_app_settings
 from .timestamps import set_file_mtime, shift_datetime, write_metadata_creation_time
 
 log = logging.getLogger("drift.tasks")
@@ -55,6 +58,48 @@ def import_one(session, path: Path, source: str, derived: bool = False) -> Media
     session.add(item)
     session.flush()
     return item
+
+
+def _mark_upload_progress(
+    mid: int,
+    did: int,
+    clip_id: int,
+    sent: int,
+    total: int,
+    status: str = "uploading",
+    error: str | None = None,
+) -> None:
+    with session_scope() as s:
+        state = (
+            s.query(UploadState)
+            .filter(UploadState.media_id == mid, UploadState.destination_id == did)
+            .first()
+        )
+        if state:
+            state.status = status
+            state.error = error
+            state.bytes_uploaded = sent
+            state.total_bytes = total
+            state.updated_at = utcnow()
+            if status == "done":
+                state.uploaded_at = utcnow()
+        clip = s.get(UploadedClip, clip_id)
+        if clip:
+            clip.status = status
+            clip.bytes_uploaded = sent
+            clip.size_bytes = total
+            clip.last_error = error
+            clip.updated_at = utcnow()
+
+
+def _publish_upload_status(
+    prefs: AppSettings,
+    job_id: int,
+    status: str,
+    attributes: dict,
+) -> None:
+    publish_state(prefs, f"job_{job_id}", status, attributes)
+    publish_state(prefs, "uploads", status, attributes)
 
 
 # --- import -----------------------------------------------------------------
@@ -189,6 +234,7 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
     dest_ids = payload.get("destination_ids")
 
     with session_scope() as s:
+        prefs = get_app_settings(s)
         if dest_ids:
             dests = s.query(Destination).filter(Destination.id.in_(dest_ids)).all()
         else:
@@ -205,6 +251,12 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
     units = [(mid, did) for mid in media_ids for did, _ in dest_meta]
     total = len(units) or 1
     done = 0
+    _publish_upload_status(
+        prefs,
+        job_id,
+        "running",
+        {"job_id": job_id, "total_items": total, "completed_items": 0, "progress_pct": 0},
+    )
 
     for mid, did in units:
         # 1) Read what we need and mark "uploading" in a short transaction, then
@@ -218,6 +270,9 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                 done += 1
                 ctx.set_progress(done / total)
                 continue
+            local_size = item.size_bytes or Path(item.path).stat().st_size
+            if not item.checksum:
+                item.checksum = checksum(Path(item.path))
             state = (
                 s.query(UploadState)
                 .filter(UploadState.media_id == mid, UploadState.destination_id == did)
@@ -226,29 +281,114 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
             if state is None:
                 state = UploadState(media_id=mid, destination_id=did)
                 s.add(state)
+            clip = (
+                s.query(UploadedClip)
+                .filter(UploadedClip.destination_id == did, UploadedClip.checksum == item.checksum)
+                .first()
+            )
+            if clip is None:
+                clip = UploadedClip(
+                    destination_id=did,
+                    source_media_id=mid,
+                    checksum=item.checksum,
+                    filename=item.filename,
+                    size_bytes=local_size,
+                    status="pending",
+                )
+                s.add(clip)
+                s.flush()
+            else:
+                clip.source_media_id = mid
+                clip.filename = item.filename
+                clip.size_bytes = local_size
+                clip.updated_at = utcnow()
+            if clip.status == "done" and clip.remote_path:
+                state.status = "done"
+                state.remote_path = clip.remote_path
+                state.error = None
+                state.bytes_uploaded = local_size
+                state.total_bytes = local_size
+                state.uploaded_at = utcnow()
+                state.updated_at = utcnow()
+                done += 1
+                ctx.set_progress(done / total, f"Skipped duplicate {item.filename}")
+                _publish_upload_status(
+                    prefs,
+                    job_id,
+                    "running",
+                    {
+                        "job_id": job_id,
+                        "current_file": item.filename,
+                        "current_destination": dest.name,
+                        "completed_items": done,
+                        "total_items": total,
+                        "progress_pct": round((done / total) * 100, 1),
+                        "mode": "deduplicated",
+                    },
+                )
+                continue
             if state.status == "done":
                 done += 1
                 ctx.set_progress(done / total)
                 continue
             state.status = "uploading"
             state.error = None
+            state.total_bytes = local_size
+            state.updated_at = utcnow()
+            clip.status = "uploading"
+            clip.last_error = None
             local_path = item.path
             filename = item.filename
+            checksum_value = item.checksum
             remote_dir = render_remote_dir(dest.path_template, item.capture_time)
             dest_detached = dest  # used only for read-only backend config below
             backend = get_backend(dest_detached)
             dest_name = dest.name
+            clip_id = clip.id
+            remote_hint = join_remote(dest.base_path or "/", remote_dir, filename)
 
         # 2) Perform the upload with no DB transaction held open.
-        def on_progress(frac: float, _done=done):
+        start_offset = backend.get_resume_offset(remote_dir, filename, local_size)
+        _mark_upload_progress(mid, did, clip_id, start_offset, local_size)
+        last_persist = 0.0
+
+        def on_progress(sent: int, total_bytes: int, _done=done):
+            nonlocal last_persist
+            frac = (sent / total_bytes) if total_bytes else 0
             ctx.set_progress((_done + frac) / total, f"Uploading {filename} -> {dest_name}")
+            now = time.monotonic()
+            if now - last_persist >= 0.75 or sent >= total_bytes:
+                _mark_upload_progress(mid, did, clip_id, sent, total_bytes)
+                _publish_upload_status(
+                    prefs,
+                    job_id,
+                    "running",
+                    {
+                        "job_id": job_id,
+                        "current_file": filename,
+                        "current_destination": dest_name,
+                        "checksum": checksum_value,
+                        "bytes_uploaded": sent,
+                        "total_bytes": total_bytes,
+                        "completed_items": done,
+                        "total_items": total,
+                        "progress_pct": round(((_done + frac) / total) * 100, 1),
+                    },
+                )
+                last_persist = now
 
         result_status = "done"
         result_remote = None
         result_error = None
         with ctx.upload_semaphore:
             try:
-                result_remote = backend.upload(local_path, remote_dir, filename, on_progress)
+                result_remote = backend.upload(
+                    local_path,
+                    remote_dir,
+                    filename,
+                    on_progress,
+                    start_offset=start_offset,
+                )
             except Exception as exc:  # noqa: BLE001
                 result_status = "error"
                 result_error = str(exc)[:2000]
@@ -261,14 +401,48 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                 .filter(UploadState.media_id == mid, UploadState.destination_id == did)
                 .first()
             )
+            clip = s.get(UploadedClip, clip_id)
             if state:
                 state.status = result_status
                 state.remote_path = result_remote
                 state.error = result_error
+                state.bytes_uploaded = local_size if result_status == "done" else state.bytes_uploaded
+                state.total_bytes = local_size
+                state.updated_at = utcnow()
                 if result_status == "done":
                     state.uploaded_at = utcnow()
+            if clip:
+                clip.remote_path = result_remote
+                clip.temp_remote_path = f"{remote_hint}.part"
+                clip.status = result_status
+                clip.size_bytes = local_size
+                clip.bytes_uploaded = local_size if result_status == "done" else clip.bytes_uploaded
+                clip.last_error = result_error
+                clip.updated_at = utcnow()
         done += 1
         ctx.set_progress(done / total)
+        _publish_upload_status(
+            prefs,
+            job_id,
+            "running" if done < total else result_status,
+            {
+                "job_id": job_id,
+                "current_file": filename,
+                "current_destination": dest_name,
+                "completed_items": done,
+                "total_items": total,
+                "progress_pct": round((done / total) * 100, 1),
+                "last_result": result_status,
+                "last_error": result_error,
+            },
+        )
+
+    _publish_upload_status(
+        prefs,
+        job_id,
+        "done",
+        {"job_id": job_id, "total_items": total, "completed_items": done, "progress_pct": 100},
+    )
 
 
 # --- helper to enqueue follow-up jobs without a circular import -------------
