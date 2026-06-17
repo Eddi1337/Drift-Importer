@@ -4,7 +4,7 @@ FROM python:3.11-slim
 
 # ffmpeg/ffprobe are required for probing, thumbnails, timestamps and merging.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg openssh-client rsync \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONUNBUFFERED=1 \
