@@ -29,54 +29,82 @@ def _disk_usage(path: Path):
         return 0, 0
 
 
-def find_dcim(root: Path) -> Optional[Path]:
+def find_dcim(root: Path, max_depth: int = 2) -> Optional[Path]:
     """Locate a DCIM directory under a mount root (case-insensitive)."""
+    root = root.resolve()
     try:
         if not root.exists():
             return None
-        for child in root.iterdir():
-            try:
-                if child.is_dir() and child.name.lower() == "dcim":
-                    return child
-            except OSError:
-                continue
+        queue: list[tuple[Path, int]] = [(root, 0)]
+        while queue:
+            current, depth = queue.pop(0)
+            for child in current.iterdir():
+                try:
+                    if not child.is_dir():
+                        continue
+                    if child.name.lower() == "dcim":
+                        return child
+                    if depth < max_depth:
+                        queue.append((child, depth + 1))
+                except OSError:
+                    continue
     except OSError:
         return None
     return None
+
+
+def _candidate_mounts(base: Path) -> list[Path]:
+    """Return likely mounted volumes below a configured mount base."""
+    candidates = [base]
+    try:
+        first_level = [p for p in base.iterdir() if p.is_dir()]
+    except OSError:
+        return candidates
+    candidates.extend(first_level)
+    for parent in first_level:
+        try:
+            candidates.extend(p for p in parent.iterdir() if p.is_dir())
+        except OSError:
+            continue
+    return candidates
+
+
+def _device_label(mount: Path, dcim: Path) -> str:
+    try:
+        return dcim.parent.name or mount.name or str(mount)
+    except IndexError:
+        return mount.name or str(mount)
+
+
+def _device_root(mount: Path, dcim: Path) -> Path:
+    try:
+        return dcim.parent
+    except IndexError:
+        return mount
 
 
 def detect_devices() -> List[DeviceCandidate]:
     """Scan configured mount paths for removable media with photos/videos."""
     settings = get_settings()
     found: List[DeviceCandidate] = []
-    seen = set()
+    seen_dcim = set()
     for base in settings.mount_path_list:
-        try:
-            if not base.exists():
-                continue
-            # A mount base like /media/<user> contains one dir per mounted volume.
-            sub = []
-            for p in base.iterdir():
-                try:
-                    if p.is_dir():
-                        sub.append(p)
-                except OSError:
-                    continue
-            candidates = [base] + sub
-        except OSError:
+        if not base.exists():
             continue
-        for mount in candidates:
-            if mount in seen:
-                continue
-            seen.add(mount)
+        for mount in _candidate_mounts(base):
             dcim = find_dcim(mount)
-            if dcim is None and mount == base:
+            if dcim is None:
                 continue
-            free, total = _disk_usage(mount)
+            dcim_key = str(dcim.resolve())
+            if dcim_key in seen_dcim:
+                continue
+            seen_dcim.add(dcim_key)
+            root = _device_root(mount, dcim)
+            free, total = _disk_usage(root)
             found.append(
                 DeviceCandidate(
-                    path=mount,
-                    label=mount.name or str(mount),
+                    path=root,
+                    label=_device_label(mount, dcim),
                     dcim_path=dcim,
                     free_bytes=free,
                     total_bytes=total,

@@ -518,8 +518,16 @@ async function addToAlbum() {
 
 async function deleteSelected() {
   if (!selected.size) return toast("Select clips first");
-  const delFile = confirm(`Delete ${selected.size} item(s) from the library.\n\nOK = also delete the underlying file.\nCancel = remove from library only.`);
-  for (const id of selIds()) await api.del(`/api/media/${id}?delete_file=${delFile}`);
+  const ids = selIds();
+  const items = ids.map(id => mediaCache.find(m => m.id === id)).filter(Boolean);
+  const hasCameraFiles = items.some(item => item.source === "device");
+  const delFile = hasCameraFiles
+    ? false
+    : confirm(`Delete ${selected.size} item(s) from the library.\n\nOK = also delete the underlying file.\nCancel = remove from library only.`);
+  if (hasCameraFiles) {
+    toast("Camera files are protected; removing selected items from the library only.");
+  }
+  for (const id of ids) await api.del(`/api/media/${id}?delete_file=${delFile}`);
   selected.clear();
   toast("Deleted");
   loadMedia();

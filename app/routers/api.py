@@ -136,6 +136,22 @@ def media_dict(m: MediaItem) -> dict:
     }
 
 
+def _is_attached_camera_path(path: Path) -> bool:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    for device in detect_devices():
+        if not device.dcim_path:
+            continue
+        try:
+            resolved.relative_to(device.dcim_path.resolve())
+            return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
 # --- devices ----------------------------------------------------------------
 
 @router.get("/devices")
@@ -317,8 +333,11 @@ def delete_media(media_id: int, delete_file: bool = False, session: Session = De
     m = session.get(MediaItem, media_id)
     if not m:
         raise HTTPException(404, "Not found")
-    if delete_file and Path(m.path).exists():
-        Path(m.path).unlink()
+    path = Path(m.path)
+    if delete_file and (m.source == "device" or _is_attached_camera_path(path)):
+        raise HTTPException(400, "Refusing to delete files from an attached camera")
+    if delete_file and path.exists():
+        path.unlink()
     if m.thumbnail and Path(m.thumbnail).exists():
         Path(m.thumbnail).unlink()
     session.delete(m)
