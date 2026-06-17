@@ -735,31 +735,45 @@ function resetDestForm() {
 
 async function testAndBrowseDestination() {
   const existingId = document.getElementById("dId").value;
-  let destinationId = existingId;
-  if (!destinationId) {
-    toast("Save the destination first so the server can connect with its stored credentials.");
-    return;
-  }
-  const test = await api.post(`/api/destinations/${destinationId}/test`);
+  const config = destForm();
+  if (!config.base_path) return toast("Base path required before browsing");
+  const test = existingId
+    ? await api.post(`/api/destinations/${existingId}/test`)
+    : await api.post("/api/destinations/preview/test", config);
   if (!test.ok) {
     toast("Connection failed: " + test.error);
     return;
   }
   toast("Connection OK");
-  browseDestinationFolders(destinationId, "folderBrowser", "");
+  browseDestinationFolders(existingId || null, "folderBrowser", "", config);
 }
 
-async function browseDestinationFolders(destinationId, targetId, path = "") {
+async function browseDestinationFolders(destinationId, targetId, path = "", config = null) {
   const target = document.getElementById(targetId);
   if (!target) return;
   target.textContent = "Loading folders…";
+  const browserConfig = destinationId ? null : (config || destForm());
+  const basePath = browserConfig?.base_path || document.getElementById("dBase")?.value.trim() || "";
   try {
-    const r = await api.get(`/api/destinations/${destinationId}/folders?path=${encodeURIComponent(path)}`);
-    appState.folderBrowsers[targetId] = { destinationId, path: r.path || "" };
+    const r = destinationId
+      ? await api.get(`/api/destinations/${destinationId}/folders?path=${encodeURIComponent(path)}`)
+      : await api.post(`/api/destinations/preview/folders?path=${encodeURIComponent(path)}`, browserConfig);
+    appState.folderBrowsers[targetId] = {
+      destinationId,
+      config: browserConfig,
+      basePath,
+      path: r.path || "",
+    };
     renderFolderBrowser(targetId, r.folders);
   } catch (e) {
     target.textContent = "Unable to load folders: " + e.message;
   }
+}
+
+function browseFolderTarget(targetId, path = "") {
+  const state = appState.folderBrowsers[targetId];
+  if (!state) return;
+  browseDestinationFolders(state.destinationId, targetId, path, state.config);
 }
 
 function renderFolderBrowser(targetId, folders) {
@@ -768,11 +782,12 @@ function renderFolderBrowser(targetId, folders) {
   const state = appState.folderBrowsers[targetId] || { destinationId: null, path: "" };
   const crumbs = state.path ? state.path.split("/").filter(Boolean) : [];
   const parent = crumbs.slice(0, -1).join("/");
+  const browseCall = nextPath => `browseFolderTarget('${escJs(targetId)}','${escJs(nextPath)}')`;
   const breadcrumbHtml = [
-    `<button class="folder-crumb" onclick="browseDestinationFolders(${state.destinationId}, '${escJs(targetId)}', '')">Root</button>`,
+    `<button class="folder-crumb" onclick="${browseCall("")}">Root</button>`,
     ...crumbs.map((part, idx) => {
       const crumbPath = crumbs.slice(0, idx + 1).join("/");
-      return `<button class="folder-crumb" onclick="browseDestinationFolders(${state.destinationId}, '${escJs(targetId)}', '${escJs(crumbPath)}')">${esc(part)}</button>`;
+      return `<button class="folder-crumb" onclick="${browseCall(crumbPath)}">${esc(part)}</button>`;
     }),
   ].join("<span class='folder-sep'>/</span>");
   const folderRows = folders.length
@@ -780,8 +795,8 @@ function renderFolderBrowser(targetId, folders) {
       const childPath = appendPath(state.path, name);
       return `
         <div class="folder-row">
-          <button class="folder-open" onclick="browseDestinationFolders(${state.destinationId}, '${escJs(targetId)}', '${escJs(childPath)}')">Open</button>
-          <button class="folder-name" onclick="browseDestinationFolders(${state.destinationId}, '${escJs(targetId)}', '${escJs(childPath)}')">${esc(name)}</button>
+          <button class="folder-open" onclick="${browseCall(childPath)}">Open</button>
+          <button class="folder-name" onclick="${browseCall(childPath)}">${esc(name)}</button>
           <button class="folder-select" onclick="applyFolderChoice('${escJs(targetId)}','${escJs(childPath)}')">Select</button>
         </div>
       `;
@@ -791,7 +806,7 @@ function renderFolderBrowser(targetId, folders) {
     <div class="folder-toolbar">
       <div class="folder-crumbs">${breadcrumbHtml}</div>
       <div class="row">
-        ${state.path ? `<button class="ghost" onclick="browseDestinationFolders(${state.destinationId}, '${escJs(targetId)}', '${escJs(parent)}')">Up</button>` : ""}
+        ${state.path ? `<button class="ghost" onclick="${browseCall(parent)}">Up</button>` : ""}
         <button class="ghost" onclick="applyFolderChoice('${escJs(targetId)}','${escJs(state.path)}')">Select current</button>
       </div>
     </div>
@@ -802,8 +817,9 @@ function renderFolderBrowser(targetId, folders) {
 function applyFolderChoice(targetId, path) {
   if (targetId === "folderBrowser") {
     const base = document.getElementById("dBase");
-    if (!path) return toast("Already at the destination root");
-    base.value = appendPath(base.value, path);
+    const state = appState.folderBrowsers[targetId] || {};
+    const root = state.basePath || base.value.trim();
+    base.value = path ? appendPath(root, path) : root;
     toast(`Base path set to ${base.value}`);
   }
 }

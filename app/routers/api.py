@@ -456,6 +456,27 @@ class DestinationReq(BaseModel):
     enabled: bool = True
 
 
+def _validate_destination_type(dest_type: str) -> None:
+    if dest_type not in ("nextcloud", "sftp", "local", "nfs", "smb", "rsync"):
+        raise HTTPException(400, "Invalid destination type")
+
+
+def _destination_from_req(req: DestinationReq) -> Destination:
+    _validate_destination_type(req.type)
+    return Destination(
+        name=req.name or "Preview",
+        type=req.type,
+        host=req.host,
+        port=req.port,
+        username=req.username,
+        secret_enc=encrypt(req.secret) if req.secret else None,
+        base_path=req.base_path,
+        path_template=req.path_template,
+        is_default=req.is_default,
+        enabled=req.enabled,
+    )
+
+
 def dest_dict(d: Destination) -> dict:
     return {
         "id": d.id,
@@ -512,20 +533,7 @@ def list_destinations(session: Session = Depends(get_session)):
 
 @router.post("/destinations")
 def create_destination(req: DestinationReq, session: Session = Depends(get_session)):
-    if req.type not in ("nextcloud", "sftp", "local", "nfs", "smb", "rsync"):
-        raise HTTPException(400, "Invalid destination type")
-    d = Destination(
-        name=req.name,
-        type=req.type,
-        host=req.host,
-        port=req.port,
-        username=req.username,
-        secret_enc=encrypt(req.secret) if req.secret else None,
-        base_path=req.base_path,
-        path_template=req.path_template,
-        is_default=req.is_default,
-        enabled=req.enabled,
-    )
+    d = _destination_from_req(req)
     session.add(d)
     session.commit()
     return dest_dict(d)
@@ -536,8 +544,7 @@ def update_destination(dest_id: int, req: DestinationReq, session: Session = Dep
     d = session.get(Destination, dest_id)
     if not d:
         raise HTTPException(404, "Not found")
-    if req.type not in ("nextcloud", "sftp", "local", "nfs", "smb", "rsync"):
-        raise HTTPException(400, "Invalid destination type")
+    _validate_destination_type(req.type)
     d.name = req.name
     d.type = req.type
     d.host = req.host
@@ -573,6 +580,26 @@ def test_destination(dest_id: int, session: Session = Depends(get_session)):
         return {"ok": True}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
+
+
+@router.post("/destinations/preview/test")
+def test_destination_preview(req: DestinationReq):
+    d = _destination_from_req(req)
+    try:
+        get_backend(d).test_connection()
+        return {"ok": True}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+@router.post("/destinations/preview/folders")
+def browse_destination_preview(req: DestinationReq, path: str = ""):
+    d = _destination_from_req(req)
+    try:
+        folders = get_backend(d).list_directories(path)
+        return {"path": path, "folders": folders}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("/destinations/{dest_id}/folders")
