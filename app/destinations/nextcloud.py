@@ -60,6 +60,79 @@ class NextcloudBackend(UploadBackend):
                 names.append(child)
         return sorted(set(names))
 
+    def storage_info(self) -> dict:
+        body = """<?xml version="1.0" encoding="utf-8" ?>
+<d:propfind xmlns:d="DAV:">
+  <d:prop>
+    <d:quota-available-bytes/>
+    <d:quota-used-bytes/>
+  </d:prop>
+</d:propfind>"""
+        with httpx.Client(timeout=30, auth=self._auth()) as client:
+            resp = client.request(
+                "PROPFIND",
+                self._base_url(),
+                headers={"Depth": "0", "Content-Type": "application/xml"},
+                content=body,
+            )
+            if resp.status_code >= 400:
+                return {"free_bytes": None, "total_bytes": None, "used_bytes": None}
+        ns = {"d": "DAV:"}
+        root = ET.fromstring(resp.text)
+        prop = root.find("d:response/d:propstat/d:prop", ns)
+        if prop is None:
+            return {"free_bytes": None, "total_bytes": None, "used_bytes": None}
+        free = prop.findtext("d:quota-available-bytes", namespaces=ns)
+        used = prop.findtext("d:quota-used-bytes", namespaces=ns)
+        try:
+            free_bytes = int(free) if free not in (None, "-3") else None
+            used_bytes = int(used) if used is not None else None
+        except ValueError:
+            return {"free_bytes": None, "total_bytes": None, "used_bytes": None}
+        total_bytes = (
+            free_bytes + used_bytes
+            if free_bytes is not None and used_bytes is not None
+            else None
+        )
+        return {
+            "free_bytes": free_bytes,
+            "total_bytes": total_bytes,
+            "used_bytes": used_bytes,
+        }
+
+    def get_storage_info(self) -> dict[str, int | None]:
+        with httpx.Client(timeout=30, auth=self._auth()) as client:
+            resp = client.request("PROPFIND", self._base_url(), headers={"Depth": "0"})
+            if resp.status_code >= 400:
+                raise RuntimeError(f"WebDAV PROPFIND failed: HTTP {resp.status_code}")
+        ns = {"d": "DAV:"}
+        root = ET.fromstring(resp.text)
+        response = root.find("d:response", ns)
+        if response is None:
+            return {"free_bytes": None, "total_bytes": None}
+        free_text = response.findtext(
+            "d:propstat/d:prop/d:quota-available-bytes",
+            default="",
+            namespaces=ns,
+        )
+        used_text = response.findtext(
+            "d:propstat/d:prop/d:quota-used-bytes",
+            default="",
+            namespaces=ns,
+        )
+        try:
+            free_bytes = int(free_text)
+        except (TypeError, ValueError):
+            free_bytes = None
+        try:
+            used_bytes = int(used_text)
+        except (TypeError, ValueError):
+            used_bytes = None
+        total_bytes = None
+        if free_bytes is not None and used_bytes is not None:
+            total_bytes = free_bytes + used_bytes
+        return {"free_bytes": free_bytes, "total_bytes": total_bytes}
+
     def _ensure_collections(self, client: httpx.Client, remote_dir: str) -> None:
         parts = [p for p in remote_dir.strip("/").split("/") if p]
         accum = self._base_url()

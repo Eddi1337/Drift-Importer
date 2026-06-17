@@ -18,7 +18,7 @@ def _slug(value: str) -> str:
 def publish_state(
     settings: AppSettings,
     entity_suffix: str,
-    state: str,
+    state: str | int | float,
     attributes: Optional[dict] = None,
 ) -> None:
     if not settings.ha_base_url or not settings.ha_token:

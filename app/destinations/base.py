@@ -47,6 +47,14 @@ class UploadBackend:
         """Return child directories for the destination path or a subpath."""
         raise NotImplementedError
 
+    def storage_info(self) -> dict:
+        """Return best-effort storage totals for the destination root."""
+        return {"free_bytes": None, "total_bytes": None, "used_bytes": None}
+
+    def get_storage_info(self) -> dict[str, int | None]:
+        """Return storage totals when the backend can determine them."""
+        return self.storage_info()
+
     def get_resume_offset(self, remote_dir: str, filename: str, size_bytes: int) -> int:
         """Return existing uploaded bytes for a temporary remote file."""
         return 0

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from pathlib import Path
 from typing import List, Optional
 
@@ -35,6 +36,73 @@ router = APIRouter()
 
 
 # --- serialization helpers --------------------------------------------------
+
+def _round_or_none(value: Optional[float], digits: int = 3) -> Optional[float]:
+    if value is None:
+        return None
+    return round(float(value), digits)
+
+
+def _build_upload_totals(rows: list[UploadedClip]) -> dict:
+    done_rows = [row for row in rows if row.status == "done"]
+    total_bytes = sum(int(row.size_bytes or 0) for row in done_rows)
+    durations = [float(row.upload_duration_s) for row in done_rows if row.upload_duration_s]
+    throughputs = [float(row.upload_throughput_bps) for row in done_rows if row.upload_throughput_bps]
+    return {
+        "uploaded_clip_count": len(done_rows),
+        "uploaded_bytes": total_bytes,
+        "average_upload_duration_s": _round_or_none(
+            (sum(durations) / len(durations)) if durations else None
+        ),
+        "average_throughput_bps": _round_or_none(
+            (sum(throughputs) / len(throughputs)) if throughputs else None
+        ),
+    }
+
+
+def _destination_storage_payload(
+    destination: Destination,
+    rows: list[UploadedClip],
+) -> dict:
+    uploaded_bytes = sum(int(row.size_bytes or 0) for row in rows if row.status == "done")
+    try:
+        backend_storage = get_backend(destination).storage_info()
+    except Exception as exc:  # noqa: BLE001
+        backend_storage = {
+            "free_bytes": None,
+            "total_bytes": None,
+            "error": str(exc),
+        }
+    return {
+        "free_bytes": backend_storage.get("free_bytes"),
+        "total_bytes": backend_storage.get("total_bytes"),
+        "used_bytes": backend_storage.get("used_bytes"),
+        "bytes_uploaded_by_app": uploaded_bytes,
+        **({"error": backend_storage["error"]} if backend_storage.get("error") else {}),
+    }
+
+
+def build_upload_stats(session: Session) -> dict:
+    destinations = session.query(Destination).order_by(Destination.name).all()
+    rows = session.query(UploadedClip).all()
+    rows_by_destination: dict[int, list[UploadedClip]] = {}
+    for row in rows:
+        rows_by_destination.setdefault(row.destination_id, []).append(row)
+
+    return {
+        "overview": _build_upload_totals(rows),
+        "destinations": [
+            {
+                **dest_dict(destination),
+                **_build_upload_totals(rows_by_destination.get(destination.id, [])),
+                "storage": _destination_storage_payload(
+                    destination,
+                    rows_by_destination.get(destination.id, []),
+                ),
+            }
+            for destination in destinations
+        ],
+    }
 
 def media_dict(m: MediaItem) -> dict:
     return {
@@ -397,14 +465,30 @@ def uploaded_clip_dict(r: UploadedClip) -> dict:
         "temp_remote_path": r.temp_remote_path,
         "status": r.status,
         "bytes_uploaded": r.bytes_uploaded,
+        "upload_duration_s": _round_or_none(r.upload_duration_s),
+        "upload_throughput_bps": _round_or_none(r.upload_throughput_bps),
         "last_error": r.last_error,
+        "uploaded_at": r.uploaded_at.isoformat() if r.uploaded_at else None,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
     }
 
 
 @router.get("/destinations")
 def list_destinations(session: Session = Depends(get_session)):
-    return [dest_dict(d) for d in session.query(Destination).order_by(Destination.name).all()]
+    rows = session.query(UploadedClip).all()
+    rows_by_destination: dict[int, list[UploadedClip]] = {}
+    for row in rows:
+        rows_by_destination.setdefault(row.destination_id, []).append(row)
+    return [
+        {
+            **dest_dict(destination),
+            "storage": _destination_storage_payload(
+                destination,
+                rows_by_destination.get(destination.id, []),
+            ),
+        }
+        for destination in session.query(Destination).order_by(Destination.name).all()
+    ]
 
 
 @router.post("/destinations")
@@ -519,6 +603,16 @@ def list_uploaded_clips(limit: int = 200, session: Session = Depends(get_session
     return [uploaded_clip_dict(r) for r in rows]
 
 
+@router.get("/stats/uploads")
+def upload_stats(session: Session = Depends(get_session)):
+    return build_upload_stats(session)
+
+
+@router.get("/stats")
+def stats(session: Session = Depends(get_session)):
+    return build_upload_stats(session)
+
+
 # --- actions: upload / timestamp / merge ------------------------------------
 
 class UploadReq(BaseModel):
@@ -565,6 +659,12 @@ class MergeReq(BaseModel):
     media_ids: List[int]  # ordered
     album_id: Optional[int] = None
     output_name: Optional[str] = None
+    order: str = "selected"  # selected|date|sequence
+
+
+def _sequence_key(filename: str) -> tuple[int, str]:
+    numbers = [int(n) for n in re.findall(r"\d+", filename)]
+    return (numbers[-1] if numbers else 0, filename.lower())
 
 
 @router.post("/merge")
@@ -575,6 +675,14 @@ def start_merge(req: MergeReq, session: Session = Depends(get_session)):
         if not a:
             raise HTTPException(404, "Album not found")
         media_ids = [it.media_id for it in a.items]
+    if req.order in ("date", "sequence"):
+        items = [session.get(MediaItem, mid) for mid in media_ids]
+        items = [item for item in items if item]
+        if req.order == "date":
+            items.sort(key=lambda item: (item.capture_time or dt.datetime.min, item.filename.lower()))
+        else:
+            items.sort(key=lambda item: _sequence_key(item.filename))
+        media_ids = [item.id for item in items]
     if len(media_ids) < 2:
         raise HTTPException(400, "Need at least two clips to merge")
     job_id = get_manager().enqueue(

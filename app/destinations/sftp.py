@@ -49,6 +49,27 @@ class SFTPBackend(UploadBackend):
         finally:
             client.close()
 
+    def storage_info(self) -> dict[str, int | None]:
+        client = self._connect()
+        try:
+            sftp = client.open_sftp()
+            try:
+                stats = sftp.statvfs(self.destination.base_path or "/")
+                block_size = int(getattr(stats, "f_frsize", 0) or getattr(stats, "f_bsize", 0) or 0)
+                if block_size <= 0:
+                    return {"free_bytes": None, "total_bytes": None, "used_bytes": None}
+                free_bytes = int(stats.f_bavail) * block_size
+                total_bytes = int(stats.f_blocks) * block_size
+                return {
+                    "free_bytes": free_bytes,
+                    "total_bytes": total_bytes,
+                    "used_bytes": total_bytes - free_bytes,
+                }
+            finally:
+                sftp.close()
+        finally:
+            client.close()
+
     @staticmethod
     def _mkdirs(sftp, remote_dir: str) -> None:
         parts = PurePosixPath(remote_dir).parts

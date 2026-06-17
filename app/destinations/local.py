@@ -7,6 +7,7 @@ mount point (e.g. /mnt/nas/camera).
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 from ..config import get_settings
@@ -33,6 +34,14 @@ class LocalBackend(UploadBackend):
             raise FileNotFoundError(f"Path does not exist: {root}")
         if not os.access(root, os.W_OK):
             raise PermissionError(f"Path is not writable: {root}")
+
+    def storage_info(self) -> dict[str, int | None]:
+        usage = shutil.disk_usage(self._root())
+        return {
+            "free_bytes": int(usage.free),
+            "total_bytes": int(usage.total),
+            "used_bytes": int(usage.used),
+        }
 
     def get_resume_offset(self, remote_dir: str, filename: str, size_bytes: int) -> int:
         dest_dir = Path(join_remote(str(self._root()), remote_dir))

@@ -98,8 +98,12 @@ def _publish_upload_status(
     status: str,
     attributes: dict,
 ) -> None:
-    publish_state(prefs, f"job_{job_id}", status, attributes)
-    publish_state(prefs, "uploads", status, attributes)
+    progress_pct = attributes.get("progress_pct")
+    state_value = progress_pct if isinstance(progress_pct, (int, float)) else status
+    payload = dict(attributes)
+    payload["status"] = status
+    publish_state(prefs, f"job_{job_id}", state_value, payload)
+    publish_state(prefs, "uploads", state_value, payload)
 
 
 # --- import -----------------------------------------------------------------
@@ -351,6 +355,7 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
         start_offset = backend.get_resume_offset(remote_dir, filename, local_size)
         _mark_upload_progress(mid, did, clip_id, start_offset, local_size)
         last_persist = 0.0
+        upload_started_at = time.monotonic()
 
         def on_progress(sent: int, total_bytes: int, _done=done):
             nonlocal last_persist
@@ -380,6 +385,8 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
         result_status = "done"
         result_remote = None
         result_error = None
+        duration_s = None
+        throughput_bps = None
         with ctx.upload_semaphore:
             try:
                 result_remote = backend.upload(
@@ -393,6 +400,11 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                 result_status = "error"
                 result_error = str(exc)[:2000]
                 log.exception("Upload failed for media %s -> dest %s", mid, did)
+        if result_status == "done":
+            duration_s = max(0.0, time.monotonic() - upload_started_at)
+            transferred_bytes = max(0, local_size - start_offset)
+            if transferred_bytes > 0 and duration_s > 0:
+                throughput_bps = transferred_bytes / duration_s
 
         # 3) Record the outcome in another short transaction.
         with session_scope() as s:
@@ -417,6 +429,11 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                 clip.status = result_status
                 clip.size_bytes = local_size
                 clip.bytes_uploaded = local_size if result_status == "done" else clip.bytes_uploaded
+                clip.upload_duration_s = duration_s if result_status == "done" else clip.upload_duration_s
+                clip.upload_throughput_bps = (
+                    throughput_bps if result_status == "done" else clip.upload_throughput_bps
+                )
+                clip.uploaded_at = utcnow() if result_status == "done" else clip.uploaded_at
                 clip.last_error = result_error
                 clip.updated_at = utcnow()
         done += 1

@@ -79,6 +79,30 @@ def _run_migrations() -> None:
                     "UPDATE upload_states SET updated_at = COALESCE(uploaded_at, CURRENT_TIMESTAMP)"
                 )
 
+        if "uploaded_clips" in tables:
+            cols = _column_names(conn, "uploaded_clips")
+            if "upload_duration_s" not in cols:
+                conn.execute(
+                    "ALTER TABLE uploaded_clips ADD COLUMN upload_duration_s FLOAT"
+                )
+            if "upload_throughput_bps" not in cols:
+                conn.execute(
+                    "ALTER TABLE uploaded_clips ADD COLUMN upload_throughput_bps FLOAT"
+                )
+            if "uploaded_at" not in cols:
+                conn.execute(
+                    "ALTER TABLE uploaded_clips ADD COLUMN uploaded_at DATETIME"
+                )
+                conn.execute(
+                    """
+                    UPDATE uploaded_clips
+                    SET uploaded_at = CASE
+                        WHEN status = 'done' THEN COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)
+                        ELSE NULL
+                    END
+                    """
+                )
+
         if "app_settings" in tables:
             cols = _column_names(conn, "app_settings")
             if "auto_import_on_connect" not in cols:
