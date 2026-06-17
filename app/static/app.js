@@ -68,6 +68,20 @@ function esc(value) {
     .replaceAll('"', "&quot;");
 }
 
+function escJs(value) {
+  return String(value ?? "").replaceAll("\\", "\\\\").replaceAll("'", "\\'");
+}
+
+function appendPath(base, child) {
+  if (!base) return child;
+  if (base.includes("://")) {
+    return base.replace(/\/$/, "") + "/" + child.replace(/^\//, "");
+  }
+  const left = base.endsWith("/") ? base.slice(0, -1) : base;
+  const right = child.startsWith("/") ? child.slice(1) : child;
+  return `${left}/${right}`;
+}
+
 function renderProgressRing(progress) {
   const pct = Math.max(0, Math.min(100, Math.round((progress || 0) * 100)));
   return `<span class="progress-chip"><span class="ring" style="--pct:${pct}"></span><span>${pct}%</span></span>`;
@@ -413,15 +427,53 @@ async function deleteSelected() {
 
 // ============================ DESTINATIONS ==================================
 
+const destinationMethodMap = {
+  local_mount: {
+    type: "local",
+    port: "",
+    hint: "Use a directory already mounted on the Pi or Docker host, such as /mnt/nas/camera.",
+  },
+  nextcloud_webdav: {
+    type: "nextcloud",
+    port: "",
+    hint: "Use your WebDAV URL and an app password. Base path should be the full DAV user root.",
+  },
+  sftp_password: {
+    type: "sftp",
+    port: "22",
+    hint: "Connect to an SSH/SFTP server with hostname, username, password, and a remote base folder.",
+  },
+};
+
 function initDestinations() {
   ensureGlobalJobPolling();
   loadDestinations();
-  onTypeChange();
+  onMethodChange();
+  clearFolderBrowser();
 }
 
 function onTypeChange() {
   const t = document.getElementById("dType").value;
   document.querySelectorAll(".net").forEach(el => el.classList.toggle("show", t !== "local"));
+  syncMethodFromType(t);
+}
+
+function onMethodChange() {
+  const method = document.getElementById("dMethod").value;
+  const cfg = destinationMethodMap[method];
+  if (!cfg) return;
+  document.getElementById("dType").value = cfg.type;
+  if (cfg.port) document.getElementById("dPort").value = document.getElementById("dPort").value || cfg.port;
+  document.getElementById("dMethodHint").textContent = cfg.hint;
+  document.querySelectorAll(".net").forEach(el => el.classList.toggle("show", cfg.type !== "local"));
+}
+
+function syncMethodFromType(type) {
+  const match = Object.entries(destinationMethodMap).find(([, cfg]) => cfg.type === type);
+  if (match) {
+    document.getElementById("dMethod").value = match[0];
+    document.getElementById("dMethodHint").textContent = match[1].hint;
+  }
 }
 
 async function loadDestinations() {
@@ -436,7 +488,13 @@ async function loadDestinations() {
   dests.forEach(d => {
     const row = document.createElement("div");
     row.className = "dest-row";
-    row.innerHTML = `<div><b>${esc(d.name)}</b> <span class="hint">[${esc(d.type)}]${d.is_default ? " default" : ""}${d.enabled ? "" : " (disabled)"}</span><br><span class="hint">${esc(d.base_path)} → ${esc(d.path_template)}</span></div>`;
+    row.innerHTML = `
+      <div class="dest-body">
+        <div><b>${esc(d.name)}</b> <span class="hint">[${esc(d.type)}]${d.is_default ? " default" : ""}${d.enabled ? "" : " (disabled)"}</span></div>
+        <span class="hint">${esc(d.base_path)} → ${esc(d.path_template)}</span>
+        <div class="folder-browser compact" id="destFolders-${d.id}">Test and browse to see available folders.</div>
+      </div>
+    `;
     const actions = document.createElement("div");
     actions.className = "row";
     const test = document.createElement("button");
@@ -448,6 +506,10 @@ async function loadDestinations() {
       toast(r.ok ? "Connection OK" : "Failed: " + r.error);
       test.textContent = "Test";
     };
+    const browse = document.createElement("button");
+    browse.className = "ghost";
+    browse.textContent = "Browse";
+    browse.onclick = () => browseDestinationFolders(d.id, d.base_path, `destFolders-${d.id}`);
     const edit = document.createElement("button");
     edit.className = "ghost";
     edit.textContent = "Edit";
@@ -461,7 +523,7 @@ async function loadDestinations() {
         loadDestinations();
       }
     };
-    actions.append(test, edit, del);
+    actions.append(test, browse, edit, del);
     row.append(actions);
     el.append(row);
   });
@@ -510,18 +572,76 @@ function editDestination(d) {
   document.getElementById("dDefault").checked = d.is_default;
   document.getElementById("dEnabled").checked = d.enabled;
   document.getElementById("formTitle").textContent = "Edit destination";
+  syncMethodFromType(d.type);
   onTypeChange();
+  clearFolderBrowser();
   window.scrollTo(0, document.body.scrollHeight);
 }
 
 function resetDestForm() {
   ["dId", "dName", "dHost", "dPort", "dUser", "dSecret", "dBase"].forEach(i => { document.getElementById(i).value = ""; });
   document.getElementById("dTemplate").value = "{year}/{month:02d}";
+  document.getElementById("dMethod").value = "local_mount";
   document.getElementById("dType").value = "local";
   document.getElementById("dDefault").checked = false;
   document.getElementById("dEnabled").checked = true;
   document.getElementById("formTitle").textContent = "Add destination";
-  onTypeChange();
+  onMethodChange();
+  clearFolderBrowser();
+}
+
+async function testAndBrowseDestination() {
+  const existingId = document.getElementById("dId").value;
+  let destinationId = existingId;
+  if (!destinationId) {
+    toast("Save the destination first so the server can connect with its stored credentials.");
+    return;
+  }
+  const test = await api.post(`/api/destinations/${destinationId}/test`);
+  if (!test.ok) {
+    toast("Connection failed: " + test.error);
+    return;
+  }
+  toast("Connection OK");
+  browseDestinationFolders(destinationId, document.getElementById("dBase").value, "folderBrowser");
+}
+
+async function browseDestinationFolders(destinationId, currentPath, targetId) {
+  const target = document.getElementById(targetId);
+  if (!target) return;
+  target.textContent = "Loading folders…";
+  const path = targetId === "folderBrowser" ? "" : "";
+  try {
+    const r = await api.get(`/api/destinations/${destinationId}/folders?path=${encodeURIComponent(path)}`);
+    renderFolderBrowser(targetId, r.folders, currentPath);
+  } catch (e) {
+    target.textContent = "Unable to load folders: " + e.message;
+  }
+}
+
+function renderFolderBrowser(targetId, folders, currentPath) {
+  const target = document.getElementById(targetId);
+  if (!target) return;
+  if (!folders.length) {
+    target.innerHTML = "<span class='hint'>No child folders found at this base path.</span>";
+    return;
+  }
+  target.innerHTML = folders.map(name => `
+    <button class="folder-pill" onclick="applyFolderChoice('${escJs(targetId)}','${escJs(name)}','${escJs(currentPath || "")}')">${esc(name)}</button>
+  `).join("");
+}
+
+function applyFolderChoice(targetId, name, currentPath) {
+  if (targetId === "folderBrowser") {
+    const base = document.getElementById("dBase");
+    base.value = appendPath(base.value || currentPath, name);
+    toast(`Base path set to ${base.value}`);
+  }
+}
+
+function clearFolderBrowser() {
+  const el = document.getElementById("folderBrowser");
+  if (el) el.textContent = "No folder listing loaded yet.";
 }
 
 // ============================ ALBUMS ========================================
@@ -685,9 +805,9 @@ function renderSettingsDestinations(dests, selectedIds) {
   const set = new Set(selectedIds);
   el.innerHTML = `<div class="check-list">${
     dests.map(d => `
-      <label class="check-row">
+      <label class="check-row choice-card">
         <input type="checkbox" value="${d.id}" ${set.has(d.id) ? "checked" : ""}>
-        <span><b>${esc(d.name)}</b> <span class="hint">[${esc(d.type)}]${d.enabled ? "" : " disabled"}</span></span>
+        <span><b>${esc(d.name)}</b><small>[${esc(d.type)}]${d.enabled ? "" : " disabled"}</small></span>
       </label>
     `).join("")
   }</div>`;

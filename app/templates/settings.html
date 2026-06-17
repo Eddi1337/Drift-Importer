@@ -1,12 +1,24 @@
 {% extends "base.html" %}
 {% block title %} · Settings{% endblock %}
 {% block content %}
-<section class="panel">
+<section class="panel form-panel">
   <h2>Camera defaults</h2>
   <p class="hint">Choose what should happen when a Drift camera appears in the Library view.</p>
   <div class="form-grid settings-grid">
-    <label class="inline"><input type="checkbox" id="sAutoImport"> Auto-import when a camera is detected</label>
-    <label class="inline"><input type="checkbox" id="sAutoUpload"> Auto-upload after import</label>
+    <label class="inline choice-card">
+      <input type="checkbox" id="sAutoImport">
+      <span>
+        <strong>Auto-import on connect</strong>
+        <small>Queue an import job as soon as a Drift camera mount appears.</small>
+      </span>
+    </label>
+    <label class="inline choice-card">
+      <input type="checkbox" id="sAutoUpload">
+      <span>
+        <strong>Auto-upload after import</strong>
+        <small>Send newly imported clips to the default destinations immediately.</small>
+      </span>
+    </label>
     <label>
       HA entity prefix
       <input id="sHaPrefix" value="drift_import" placeholder="drift_import">
@@ -19,6 +31,10 @@
       Home Assistant API token
       <input id="sHaToken" type="password" placeholder="Long-lived access token">
     </label>
+  </div>
+  <div class="panel inset">
+    <h3>Home Assistant integration</h3>
+    <p class="hint">If configured, Drift-Import publishes upload progress into Home Assistant as sensor states. The entity prefix becomes sensor names such as <code>sensor.drift_import_uploads</code> and <code>sensor.drift_import_job_123</code>. Leave these fields blank if you do not want HA updates.</p>
   </div>
   <div class="panel inset">
     <h3>Default upload destinations</h3>
