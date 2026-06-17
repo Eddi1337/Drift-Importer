@@ -128,7 +128,7 @@ function renderJobBadge() {
   if (!b) return;
   const active = appState.jobs.filter(j => j.status === "queued" || j.status === "running");
   if (!active.length) {
-    b.textContent = "Road clear";
+    b.textContent = "";
     return;
   }
   const running = active.filter(j => j.status === "running").length;
