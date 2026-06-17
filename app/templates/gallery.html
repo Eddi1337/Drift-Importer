@@ -36,7 +36,6 @@
     <select id="tagFilter" onchange="loadMedia()"><option value="">All tags</option></select>
     <select id="statusFilter" onchange="loadMedia()">
       <option value="">Any status</option>
-      <option value="done">Uploaded</option>
       <option value="error">Upload error</option>
       <option value="uploading">Uploading</option>
     </select>
@@ -53,6 +52,17 @@
 </section>
 
 <section id="grid" class="grid">Loading…</section>
+
+<section class="panel" id="uploadedPanel" hidden>
+  <div class="row spread">
+    <div>
+      <h2>Uploaded</h2>
+      <p class="hint">Clips confirmed uploaded to at least one destination.</p>
+    </div>
+    <span id="uploadedCount" class="hint"></span>
+  </div>
+  <div id="uploadedGrid" class="grid"></div>
+</section>
 
 <dialog id="playerDlg">
   <video id="player" controls preload="metadata" style="max-width:80vw;max-height:70vh"></video>

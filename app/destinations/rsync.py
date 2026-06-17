@@ -6,12 +6,27 @@ with SSH keys for unattended background uploads.
 """
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
 from pathlib import Path
 
+from ..config import get_settings
 from .base import ProgressCb, UploadBackend, join_remote
+
+
+def _ensure_known_hosts_dir() -> None:
+    """StrictHostKeyChecking=accept-new needs a writable ~/.ssh to record hosts.
+
+    In the container the process often runs as root with no ~/.ssh yet, which
+    makes the first connection fail with an opaque error.
+    """
+    home = Path(os.path.expanduser("~"))
+    try:
+        (home / ".ssh").mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError:
+        pass
 
 
 class RsyncBackend(UploadBackend):
@@ -22,6 +37,7 @@ class RsyncBackend(UploadBackend):
         return f"{user}{self.destination.host}"
 
     def _ssh_cmd(self) -> list[str]:
+        _ensure_known_hosts_dir()
         cmd = [
             "ssh",
             "-o",
@@ -29,6 +45,9 @@ class RsyncBackend(UploadBackend):
             "-o",
             "StrictHostKeyChecking=accept-new",
         ]
+        key_path = get_settings().ssh_key_path
+        if key_path:
+            cmd.extend(["-i", key_path, "-o", "IdentitiesOnly=yes"])
         if self.destination.port:
             cmd.extend(["-p", str(self.destination.port)])
         return cmd
@@ -41,10 +60,33 @@ class RsyncBackend(UploadBackend):
 
     def _run_ssh(self, remote_command: str) -> str:
         cmd = [*self._ssh_cmd(), self._target(), remote_command]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        except FileNotFoundError as exc:  # ssh not installed
+            raise RuntimeError("ssh client not found on the server") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"SSH connection to {self._target()} timed out") from exc
         if result.returncode != 0:
-            raise RuntimeError((result.stderr or result.stdout or "SSH command failed").strip())
+            raise RuntimeError(self._friendly_error(result.stderr or result.stdout))
         return result.stdout
+
+    def _friendly_error(self, stderr: str) -> str:
+        text = (stderr or "").strip()
+        low = text.lower()
+        if "permission denied" in low or "batch mode" in low or "publickey" in low:
+            return (
+                "SSH authentication failed — rsync over SSH needs key-based auth. "
+                "Add the server's key to the running user's ~/.ssh (or set "
+                "DRIFT_SSH_KEY_PATH) and authorise it on the remote host. "
+                f"(ssh said: {text})"
+            )
+        if "host key verification" in low:
+            return f"SSH host key verification failed: {text}"
+        if "could not resolve" in low or "name or service not known" in low:
+            return f"Could not resolve host {self.destination.host}: {text}"
+        if "connection refused" in low or "connection timed out" in low:
+            return f"Cannot reach {self._target()} on port {self.destination.port or 22}: {text}"
+        return text or "SSH command failed"
 
     def test_connection(self) -> None:
         self._run_ssh(f"test -d {shlex.quote(self._remote_base())}")
@@ -108,22 +150,31 @@ class RsyncBackend(UploadBackend):
             str(local_path),
             f"{self._target()}:{remote_path}",
         ]
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError("rsync is not installed on the server") from exc
         assert proc.stdout is not None
         progress_re = re.compile(r"\s*([\d,]+)\s+(\d+)%")
+        recent: list[str] = []
         for line in proc.stdout:
+            recent.append(line.rstrip())
+            del recent[:-12]  # keep only the tail for error reporting
             match = progress_re.search(line)
             if match and progress and total:
                 sent = int(match.group(1).replace(",", ""))
                 progress(min(sent, total), total)
         code = proc.wait()
         if code != 0:
-            raise RuntimeError(f"rsync failed with exit code {code}")
+            tail = "\n".join(line for line in recent if line.strip())
+            raise RuntimeError(
+                self._friendly_error(tail) + f" (rsync exit code {code})"
+            )
         if progress and total:
             progress(total, total)
         return remote_path

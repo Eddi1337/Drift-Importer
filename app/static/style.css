@@ -399,11 +399,30 @@ input:focus, select:focus {
   padding: 0.42rem;
 }
 
+.folder-row.selected {
+  border-color: var(--acc);
+  background: var(--soft-strong);
+}
+
 .folder-name {
   text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.base-status {
+  display: block;
+  margin-top: 0.35rem;
+}
+
+.base-status.ok {
+  color: var(--acc);
+}
+
+#dBase.just-set {
+  border-color: var(--acc);
+  box-shadow: 0 0 0 2px var(--soft-strong);
 }
 
 .folder-select {

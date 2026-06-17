@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     ffmpeg: str = "ffmpeg"
     ffprobe: str = "ffprobe"
 
+    # Optional path to an SSH private key used by the rsync-over-SSH backend.
+    # Leave blank to rely on the default SSH agent / ~/.ssh keys.
+    ssh_key_path: str = ""
+
     @property
     def mount_path_list(self) -> List[Path]:
         return [Path(p.strip()) for p in self.mount_paths.split(",") if p.strip()]

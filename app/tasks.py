@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import List
 
+from sqlalchemy.exc import IntegrityError
+
 from .config import get_settings
 from .database import session_scope
 from .destinations import get_backend
@@ -111,17 +113,37 @@ def _publish_upload_status(
 @handler("import")
 def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
     """Import a set of files (by path) into the library."""
-    paths: List[str] = payload.get("paths", [])
+    # De-duplicate while preserving order: the same clip can be listed twice if
+    # a device exposes nested/duplicate DCIM mounts.
+    paths: List[str] = list(dict.fromkeys(payload.get("paths", [])))
     total = len(paths) or 1
     new_ids: List[int] = []
     for i, p in enumerate(paths):
         path = Path(p)
         if not path.exists():
+            ctx.set_progress((i + 1) / total)
             continue
-        with session_scope() as s:
-            item = import_one(s, path, source=payload.get("source", "device"))
-            new_ids.append(item.id)
-        ctx.set_progress((i + 1) / total, f"Imported {path.name}")
+        # Each file imports in its own transaction. A single failure (e.g. a
+        # concurrent import job inserting the same path first, which trips the
+        # UNIQUE constraint on media_items.path) must not abort the whole job.
+        try:
+            with session_scope() as s:
+                item = import_one(s, path, source=payload.get("source", "device"))
+                new_ids.append(item.id)
+            ctx.set_progress((i + 1) / total, f"Imported {path.name}")
+        except IntegrityError:
+            # Already imported by a concurrent job / earlier run — reuse it.
+            with session_scope() as s:
+                existing = (
+                    s.query(MediaItem).filter(MediaItem.path == str(path)).first()
+                )
+                if existing:
+                    new_ids.append(existing.id)
+            log.info("Skipped already-imported file %s", path)
+            ctx.set_progress((i + 1) / total, f"Already imported {path.name}")
+        except Exception:  # noqa: BLE001
+            log.exception("Failed to import %s", path)
+            ctx.set_progress((i + 1) / total, f"Failed {path.name}")
     # Thumbnails as a follow-up so import returns fast.
     get_manager_enqueue("thumbnail", {"media_ids": new_ids})
     # Optionally queue uploads (the "Upload Everything" flow).

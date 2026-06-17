@@ -6,9 +6,12 @@
   <p class="hint">Configure where clips are uploaded. A local/NAS destination is simplest
   if your NAS is mounted on the Pi (e.g. <code>/mnt/nas/camera</code>).</p>
   <div id="destList">Loading…</div>
+  <div class="row">
+    <button id="addDestBtn" onclick="showDestForm()">+ Add new destination</button>
+  </div>
 </section>
 
-<section class="panel form-panel">
+<section class="panel form-panel" id="destFormPanel" hidden>
   <h2 id="formTitle">Add destination</h2>
   <p class="hint">Pick a connection method, enter the base location, then test it and browse folders before saving.</p>
   <input type="hidden" id="dId">
@@ -30,7 +33,8 @@
     <label class="field-user">Username <input id="dUser"></label>
     <label class="field-secret">Secret / password <input id="dSecret" type="password" placeholder="leave blank to keep existing"></label>
     <label class="span-2">Base path
-      <input id="dBase" placeholder="/mnt/nas/camera  or  https://cloud/remote.php/dav/files/USER">
+      <input id="dBase" placeholder="/mnt/nas/camera  or  https://cloud/remote.php/dav/files/USER" oninput="updateBaseStatus()">
+      <span id="dBaseStatus" class="base-status hint span-2"></span>
     </label>
     <label class="span-2">Path template <input id="dTemplate" value="{year}/{month:02d}"></label>
     <label class="inline choice-card">
@@ -63,7 +67,8 @@
   </div>
   <div class="row">
     <button onclick="saveDestination()">Save</button>
-    <button onclick="resetDestForm()">Clear</button>
+    <button class="ghost" onclick="resetDestForm()">Clear</button>
+    <button class="ghost" onclick="hideDestForm()">Cancel</button>
   </div>
 </section>
 {% endblock %}

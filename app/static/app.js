@@ -369,23 +369,48 @@ async function loadMedia() {
   if (tag) p.set("tag", tag);
   if (st) p.set("status", st);
   mediaCache = await api.get("/api/media?" + p.toString());
+  // Verified-uploaded clips live in their own section so the library only
+  // shows clips that still need attention. "Verified" = an upload that the
+  // backend reported as fully done (not merely attempted/failed).
+  const uploaded = mediaCache.filter(isVerifiedUploaded);
+  const library = mediaCache.filter(m => !isVerifiedUploaded(m));
   grid.innerHTML = "";
-  if (!mediaCache.length) {
-    grid.innerHTML = "<span class='hint'>No media. Import from the camera above.</span>";
-    return;
+  if (!library.length) {
+    grid.innerHTML = "<span class='hint'>No clips awaiting upload. Import from the camera above.</span>";
+  } else {
+    library.forEach(m => grid.append(renderCard(m)));
   }
-  mediaCache.forEach(m => grid.append(renderCard(m)));
+  renderUploaded(uploaded);
   updateSelCount();
 }
 
-function renderCard(m) {
+function isVerifiedUploaded(m) {
+  return (m.uploads || []).some(u => u.status === "done");
+}
+
+function renderUploaded(items) {
+  const panel = document.getElementById("uploadedPanel");
+  const grid = document.getElementById("uploadedGrid");
+  const count = document.getElementById("uploadedCount");
+  if (!panel || !grid) return;
+  panel.hidden = items.length === 0;
+  if (count) count.textContent = `${items.length} clip${items.length === 1 ? "" : "s"}`;
+  grid.innerHTML = "";
+  items.forEach(m => grid.append(renderCard(m, { uploaded: true })));
+}
+
+function renderCard(m, opts = {}) {
   const c = document.createElement("div");
   c.className = "card" + (selected.has(m.id) ? " sel" : "");
   const thumb = m.has_thumb ? `/api/media/${m.id}/thumb` : "";
-  const ups = m.uploads.map(u => {
-    const pct = u.total_bytes ? `${Math.round((u.bytes_uploaded / u.total_bytes) * 100)}%` : u.status;
-    return `<span class="pill up-${esc(u.status)}" title="${esc(u.error || "")}">${renderProgressRing(u.progress || 0)} ${esc(pct)}</span>`;
-  }).join("");
+  // In the Uploaded section only show the confirmed destinations; in the
+  // library only show in-flight/failed attempts (confirmed ones moved out).
+  const ups = m.uploads
+    .filter(u => (opts.uploaded ? u.status === "done" : u.status !== "done"))
+    .map(u => {
+      const pct = u.total_bytes ? `${Math.round((u.bytes_uploaded / u.total_bytes) * 100)}%` : u.status;
+      return `<span class="pill up-${esc(u.status)}" title="${esc(u.error || "")}">${renderProgressRing(u.progress || 0)} ${esc(pct)}</span>`;
+    }).join("");
   c.innerHTML = `
     <input type="checkbox" class="pick" ${selected.has(m.id) ? "checked" : ""}>
     <img class="thumb" src="${thumb}" alt="" loading="lazy">
@@ -591,6 +616,20 @@ function initDestinations() {
   loadDestinations();
   onTypeChange();
   clearFolderBrowser("folderBrowser");
+  hideDestForm();
+}
+
+function showDestForm() {
+  const panel = document.getElementById("destFormPanel");
+  if (!panel) return;
+  panel.hidden = false;
+  updateBaseStatus();
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function hideDestForm() {
+  const panel = document.getElementById("destFormPanel");
+  if (panel) panel.hidden = true;
 }
 
 function onTypeChange(applyDefaultPort = false) {
@@ -699,6 +738,7 @@ async function saveDestination() {
     else await api.post("/api/destinations", body);
     toast("Saved");
     resetDestForm();
+    hideDestForm();
     loadDestinations();
   } catch (e) {
     toast("Save failed: " + e.message);
@@ -720,7 +760,7 @@ function editDestination(d) {
   document.getElementById("formTitle").textContent = "Edit destination";
   onTypeChange();
   clearFolderBrowser("folderBrowser");
-  window.scrollTo(0, document.body.scrollHeight);
+  showDestForm();
 }
 
 function resetDestForm() {
@@ -732,6 +772,7 @@ function resetDestForm() {
   document.getElementById("formTitle").textContent = "Add destination";
   onTypeChange();
   clearFolderBrowser("folderBrowser");
+  updateBaseStatus();
 }
 
 async function testAndBrowseDestination() {
@@ -764,6 +805,8 @@ async function browseDestinationFolders(destinationId, targetId, path = "", conf
       config: browserConfig,
       basePath,
       path: r.path || "",
+      lastFolders: r.folders || [],
+      selectedPath: appState.folderBrowsers[targetId]?.selectedPath,
     };
     renderFolderBrowser(targetId, r.folders);
   } catch (e) {
@@ -791,24 +834,27 @@ function renderFolderBrowser(targetId, folders) {
       return `<button class="folder-crumb" onclick="${browseCall(crumbPath)}">${esc(part)}</button>`;
     }),
   ].join("<span class='folder-sep'>/</span>");
+  const selectedPath = state.selectedPath;
   const folderRows = folders.length
     ? folders.map(name => {
       const childPath = appendPath(state.path, name);
+      const isSel = selectedPath != null && childPath === selectedPath;
       return `
-        <div class="folder-row">
+        <div class="folder-row${isSel ? " selected" : ""}">
           <button class="folder-open" onclick="${browseCall(childPath)}">Open</button>
           <button class="folder-name" onclick="${browseCall(childPath)}">${esc(name)}</button>
-          <button class="folder-select" onclick="applyFolderChoice('${escJs(targetId)}','${escJs(childPath)}')">Select</button>
+          <button class="folder-select" onclick="applyFolderChoice('${escJs(targetId)}','${escJs(childPath)}')">${isSel ? "✓ Selected" : "Select"}</button>
         </div>
       `;
     }).join("")
     : "<div class='folder-empty'>No child folders at this level.</div>";
+  const currentSelected = selectedPath != null && (selectedPath || "") === (state.path || "");
   target.innerHTML = `
     <div class="folder-toolbar">
       <div class="folder-crumbs">${breadcrumbHtml}</div>
       <div class="row">
         ${state.path ? `<button class="ghost" onclick="${browseCall(parent)}">Up</button>` : ""}
-        <button class="ghost" onclick="applyFolderChoice('${escJs(targetId)}','${escJs(state.path)}')">Select current</button>
+        <button class="ghost" onclick="applyFolderChoice('${escJs(targetId)}','${escJs(state.path)}')">${currentSelected ? "✓ This folder selected" : "Use this folder"}</button>
       </div>
     </div>
     <div class="folder-list">${folderRows}</div>
@@ -816,13 +862,33 @@ function renderFolderBrowser(targetId, folders) {
 }
 
 function applyFolderChoice(targetId, path) {
-  if (targetId === "folderBrowser") {
-    const base = document.getElementById("dBase");
-    const state = appState.folderBrowsers[targetId] || {};
-    const root = state.basePath || base.value.trim();
-    base.value = path ? appendPath(root, path) : root;
-    toast(`Base path set to ${base.value}`);
+  if (targetId !== "folderBrowser") return;
+  const base = document.getElementById("dBase");
+  const state = appState.folderBrowsers[targetId] || {};
+  const root = state.basePath || base.value.trim();
+  base.value = path ? appendPath(root, path) : root;
+  state.selectedPath = path;
+  base.classList.add("just-set");
+  setTimeout(() => base.classList.remove("just-set"), 1200);
+  updateBaseStatus(true);
+  renderFolderBrowser(targetId, state.lastFolders || []);
+  toast(`Base path set to ${base.value} — click Save to store it`);
+}
+
+function updateBaseStatus(picked = false) {
+  const el = document.getElementById("dBaseStatus");
+  const base = document.getElementById("dBase");
+  if (!el || !base) return;
+  const value = base.value.trim();
+  if (!value) {
+    el.textContent = "No base path set yet.";
+    el.classList.remove("ok");
+    return;
   }
+  el.textContent = picked
+    ? `✓ Selected: ${value} — not saved yet. Click Save to store this destination.`
+    : `Current base path: ${value} — click Save to store changes.`;
+  el.classList.toggle("ok", picked);
 }
 
 function clearFolderBrowser(targetId) {
