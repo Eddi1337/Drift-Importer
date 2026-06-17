@@ -426,7 +426,7 @@ def delete_album(album_id: int, session: Session = Depends(get_session)):
 
 class DestinationReq(BaseModel):
     name: str
-    type: str  # nextcloud|sftp|local
+    type: str  # local|nfs|smb|nextcloud|sftp|rsync
     host: Optional[str] = None
     port: Optional[int] = None
     username: Optional[str] = None
@@ -493,7 +493,7 @@ def list_destinations(session: Session = Depends(get_session)):
 
 @router.post("/destinations")
 def create_destination(req: DestinationReq, session: Session = Depends(get_session)):
-    if req.type not in ("nextcloud", "sftp", "local"):
+    if req.type not in ("nextcloud", "sftp", "local", "nfs", "smb", "rsync"):
         raise HTTPException(400, "Invalid destination type")
     d = Destination(
         name=req.name,
@@ -517,6 +517,8 @@ def update_destination(dest_id: int, req: DestinationReq, session: Session = Dep
     d = session.get(Destination, dest_id)
     if not d:
         raise HTTPException(404, "Not found")
+    if req.type not in ("nextcloud", "sftp", "local", "nfs", "smb", "rsync"):
+        raise HTTPException(400, "Invalid destination type")
     d.name = req.name
     d.type = req.type
     d.host = req.host

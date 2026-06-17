@@ -14,28 +14,21 @@
   <input type="hidden" id="dId">
   <div class="form-grid form-grid-wide">
     <label>Name <input id="dName"></label>
-    <label>Connection method
-      <select id="dMethod" onchange="onMethodChange()">
-        <option value="local_mount">Local / NAS mounted path</option>
-        <option value="nfs_mount">NFS mounted share</option>
-        <option value="smb_mount">SMB / CIFS mounted share</option>
-        <option value="nextcloud_webdav">Nextcloud via WebDAV</option>
-        <option value="sftp_password">SFTP with username + password</option>
-        <option value="rsync_ssh">Rsync over SSH path</option>
-      </select>
-    </label>
-    <label>Service type
+    <label>Connection
       <select id="dType" onchange="onTypeChange()">
-        <option value="local">Local / NAS</option>
-        <option value="nextcloud">Nextcloud</option>
-        <option value="sftp">SFTP</option>
+        <option value="local">Local / mounted path</option>
+        <option value="nfs">NFS mounted share</option>
+        <option value="smb">SMB / CIFS mounted share</option>
+        <option value="nextcloud">Nextcloud via WebDAV</option>
+        <option value="sftp">SFTP with username + password</option>
+        <option value="rsync">Rsync over SSH path</option>
       </select>
     </label>
-    <div id="dMethodHint" class="hint field-note"></div>
-    <label class="net">Host <input id="dHost" placeholder="sftp host or leave blank"></label>
-    <label class="net">Port <input id="dPort" type="number"></label>
-    <label class="net">Username <input id="dUser"></label>
-    <label class="net">Secret / password <input id="dSecret" type="password" placeholder="leave blank to keep existing"></label>
+    <div id="dMethodHint" class="hint field-note span-2"></div>
+    <label class="field-host">Host / server <input id="dHost" placeholder="server or host"></label>
+    <label class="field-port">Port <input id="dPort" type="number"></label>
+    <label class="field-user">Username <input id="dUser"></label>
+    <label class="field-secret">Secret / password <input id="dSecret" type="password" placeholder="leave blank to keep existing"></label>
     <label class="span-2">Base path
       <input id="dBase" placeholder="/mnt/nas/camera  or  https://cloud/remote.php/dav/files/USER">
     </label>

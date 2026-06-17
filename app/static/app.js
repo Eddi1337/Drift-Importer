@@ -29,6 +29,7 @@ const appState = {
   cameraFiles: [],
   cameraFileSelection: new Set(),
   currentDcimPath: "",
+  lastDeviceSignature: "",
   jobPollStarted: false,
   galleryPollers: [],
   jobsPoller: null,
@@ -178,9 +179,18 @@ async function initGallery() {
 async function refreshDevices() {
   const el = document.getElementById("devices");
   if (!el) return;
-  el.textContent = "Scanning…";
+  if (!el.children.length) el.textContent = "Scanning…";
   try {
     const devs = await api.get("/api/devices");
+    const signature = JSON.stringify(devs.map(d => ({
+      path: d.path,
+      dcim_path: d.dcim_path,
+      file_count: d.file_count,
+      free_bytes: d.free_bytes,
+      total_bytes: d.total_bytes,
+    })));
+    if (signature === appState.lastDeviceSignature) return;
+    appState.lastDeviceSignature = signature;
     if (!devs.length) {
       el.innerHTML = "<span class='hint'>No camera detected. Plug in the Drift camera.</span>";
       return;
@@ -464,9 +474,17 @@ async function submitTimestamp() {
 async function mergeSelected() {
   const ids = selIds();
   if (ids.length < 2) return toast("Select 2+ clips (in capture order)");
-  if (!confirm(`Merge ${ids.length} clips in displayed order?`)) return;
+  const order = prompt(
+    "Merge order: selected, date, or sequence",
+    "date",
+  );
+  if (order === null) return;
+  const cleanOrder = ["selected", "date", "sequence"].includes(order.trim())
+    ? order.trim()
+    : "selected";
+  if (!confirm(`Merge ${ids.length} clips using ${cleanOrder} order?`)) return;
   try {
-    await api.post("/api/merge", { media_ids: ids });
+    await api.post("/api/merge", { media_ids: ids, order: cleanOrder });
     toast("Merge queued");
   } catch (e) {
     toast("Merge failed: " + e.message);
@@ -509,73 +527,75 @@ async function deleteSelected() {
 
 // ============================ DESTINATIONS ==================================
 
-const destinationMethodMap = {
-  local_mount: {
-    type: "local",
+const destinationTypeMap = {
+  local: {
     port: "",
-    hint: "Use a directory already mounted on the Pi or Docker host, such as /mnt/nas/camera.",
+    host: false,
+    user: false,
+    secret: false,
+    basePlaceholder: "/mnt/nas/camera",
+    hint: "Use a directory already mounted on the Pi or Docker host.",
   },
-  nfs_mount: {
-    type: "local",
+  nfs: {
     port: "",
-    hint: "Mount the NFS share on the Pi first, then point this at the mounted path.",
+    host: true,
+    user: false,
+    secret: false,
+    basePlaceholder: "/mnt/nfs/camera or /export/camera",
+    hint: "NFS uses server/export settings and does not need a password. The share must be mounted on the Pi/container host for uploads.",
   },
-  smb_mount: {
-    type: "local",
+  smb: {
     port: "",
-    hint: "Mount the SMB/CIFS share on the Pi first, then point this at the mounted path.",
+    host: true,
+    user: true,
+    secret: true,
+    basePlaceholder: "/mnt/smb/camera",
+    hint: "SMB/CIFS uses server, username, password, and a mounted base path on the Pi/container host.",
   },
-  nextcloud_webdav: {
-    type: "nextcloud",
+  nextcloud: {
     port: "",
+    host: false,
+    user: true,
+    secret: true,
+    basePlaceholder: "https://cloud/remote.php/dav/files/USER",
     hint: "Use your WebDAV URL and an app password. Base path should be the full DAV user root.",
   },
-  sftp_password: {
-    type: "sftp",
+  sftp: {
     port: "22",
+    host: true,
+    user: true,
+    secret: true,
+    basePlaceholder: "/remote/camera",
     hint: "Connect to an SSH/SFTP server with hostname, username, password, and a remote base folder.",
   },
-  rsync_ssh: {
-    type: "sftp",
+  rsync: {
     port: "22",
-    hint: "Use an SSH-accessible path that rsync can mirror to. Browsing uses the same SSH/SFTP connection details.",
+    host: true,
+    user: true,
+    secret: false,
+    basePlaceholder: "/remote/camera",
+    hint: "Rsync over SSH uses host, port, username, and an SSH-accessible remote path. It should use SSH keys rather than a password.",
   },
 };
 
 function initDestinations() {
   ensureGlobalJobPolling();
   loadDestinations();
-  onMethodChange();
+  onTypeChange();
   clearFolderBrowser("folderBrowser");
 }
 
 function onTypeChange() {
   const t = document.getElementById("dType").value;
-  document.querySelectorAll(".net").forEach(el => el.classList.toggle("show", t !== "local"));
-  syncMethodFromType(t);
-}
-
-function onMethodChange() {
-  const method = document.getElementById("dMethod").value;
-  const cfg = destinationMethodMap[method];
+  const cfg = destinationTypeMap[t];
   if (!cfg) return;
-  document.getElementById("dType").value = cfg.type;
   if (cfg.port) document.getElementById("dPort").value = document.getElementById("dPort").value || cfg.port;
   document.getElementById("dMethodHint").textContent = cfg.hint;
-  document.querySelectorAll(".net").forEach(el => el.classList.toggle("show", cfg.type !== "local"));
-}
-
-function syncMethodFromType(type) {
-  const current = destinationMethodMap[document.getElementById("dMethod").value];
-  if (current?.type === type) {
-    document.getElementById("dMethodHint").textContent = current.hint;
-    return;
-  }
-  const match = Object.entries(destinationMethodMap).find(([, cfg]) => cfg.type === type);
-  if (match) {
-    document.getElementById("dMethod").value = match[0];
-    document.getElementById("dMethodHint").textContent = match[1].hint;
-  }
+  document.getElementById("dBase").placeholder = cfg.basePlaceholder;
+  document.querySelector(".field-host").classList.toggle("show", cfg.host);
+  document.querySelector(".field-port").classList.toggle("show", cfg.host);
+  document.querySelector(".field-user").classList.toggle("show", cfg.user);
+  document.querySelector(".field-secret").classList.toggle("show", cfg.secret);
 }
 
 async function loadDestinations() {
@@ -594,6 +614,7 @@ async function loadDestinations() {
       <div class="dest-body">
         <div><b>${esc(d.name)}</b> <span class="hint">[${esc(d.type)}]${d.is_default ? " default" : ""}${d.enabled ? "" : " (disabled)"}</span></div>
         <span class="hint">${esc(d.base_path)} → ${esc(d.path_template)}</span>
+        <span class="hint">${renderDestinationStorageText(d)}</span>
         <div class="folder-window compact" id="destFolders-${d.id}">Browse to see available folders.</div>
       </div>
     `;
@@ -629,6 +650,20 @@ async function loadDestinations() {
     row.append(actions);
     el.append(row);
   });
+}
+
+function renderDestinationStorageText(d) {
+  const storage = d.storage || {};
+  const uploaded = storage.bytes_uploaded_by_app ?? 0;
+  const free = storage.free_bytes;
+  const total = storage.total_bytes;
+  const used = storage.used_bytes;
+  const parts = [`App uploaded ${fmtBytes(uploaded)}`];
+  if (free !== null && free !== undefined) parts.push(`${fmtBytes(free)} free`);
+  if (used !== null && used !== undefined) parts.push(`${fmtBytes(used)} used`);
+  if (total !== null && total !== undefined) parts.push(`${fmtBytes(total)} total`);
+  if (storage.error) parts.push(`storage check failed`);
+  return parts.join(" · ");
 }
 
 function destForm() {
@@ -674,7 +709,6 @@ function editDestination(d) {
   document.getElementById("dDefault").checked = d.is_default;
   document.getElementById("dEnabled").checked = d.enabled;
   document.getElementById("formTitle").textContent = "Edit destination";
-  syncMethodFromType(d.type);
   onTypeChange();
   clearFolderBrowser("folderBrowser");
   window.scrollTo(0, document.body.scrollHeight);
@@ -683,12 +717,11 @@ function editDestination(d) {
 function resetDestForm() {
   ["dId", "dName", "dHost", "dPort", "dUser", "dSecret", "dBase"].forEach(i => { document.getElementById(i).value = ""; });
   document.getElementById("dTemplate").value = "{year}/{month:02d}";
-  document.getElementById("dMethod").value = "local_mount";
   document.getElementById("dType").value = "local";
   document.getElementById("dDefault").checked = false;
   document.getElementById("dEnabled").checked = true;
   document.getElementById("formTitle").textContent = "Add destination";
-  onMethodChange();
+  onTypeChange();
   clearFolderBrowser("folderBrowser");
 }
 
@@ -830,7 +863,7 @@ async function loadAlbums() {
     const merge = document.createElement("button");
     merge.textContent = "Merge album";
     merge.onclick = async () => {
-      await api.post("/api/merge", { album_id: a.id });
+      await api.post("/api/merge", { album_id: a.id, order: "date" });
       toast("Merge queued");
     };
     const upl = document.createElement("button");
@@ -902,6 +935,64 @@ function renderJobsPage() {
 async function cancelJob(id) {
   await api.post(`/api/jobs/${id}/cancel`);
   refreshGlobalJobs();
+}
+
+// ============================ STATS =========================================
+
+function initStats() {
+  ensureGlobalJobPolling();
+  loadStats();
+}
+
+async function loadStats() {
+  const overview = document.getElementById("statsOverview");
+  const destinations = document.getElementById("statsDestinations");
+  if (!overview || !destinations) return;
+  overview.textContent = "Loading…";
+  destinations.textContent = "Loading…";
+  try {
+    const stats = await api.get("/api/stats");
+    const data = stats.overview || {};
+    overview.innerHTML = `
+      <div class="live-card"><div class="hint">Uploaded clips</div><div class="value">${data.uploaded_clip_count || 0}</div></div>
+      <div class="live-card"><div class="hint">Uploaded size</div><div class="value">${fmtBytes(data.uploaded_bytes || 0)}</div></div>
+      <div class="live-card"><div class="hint">Average upload time</div><div class="value">${fmtDurationText(data.average_upload_duration_s)}</div></div>
+      <div class="live-card"><div class="hint">Average throughput</div><div class="value">${fmtBytes(data.average_throughput_bps || 0)}/s</div></div>
+    `;
+    renderStatsDestinations(stats.destinations || []);
+  } catch (e) {
+    overview.textContent = "Unable to load stats: " + e.message;
+    destinations.textContent = "";
+  }
+}
+
+function fmtDurationText(seconds) {
+  if (!seconds) return "n/a";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.round(seconds % 60);
+  return `${mins}m ${secs}s`;
+}
+
+function renderStatsDestinations(rows) {
+  const el = document.getElementById("statsDestinations");
+  if (!el) return;
+  if (!rows.length) {
+    el.innerHTML = "<span class='hint'>No destinations configured.</span>";
+    return;
+  }
+  let html = "<table><tr><th>Destination</th><th>Uploads</th><th>App storage</th><th>Destination storage</th><th>Average</th></tr>";
+  rows.forEach(row => {
+    const storage = row.storage || {};
+    html += `<tr>
+      <td><b>${esc(row.name)}</b><br><span class="hint">${esc(row.type)}</span></td>
+      <td>${row.uploaded_clip_count || 0}</td>
+      <td>${fmtBytes(row.uploaded_bytes || 0)}</td>
+      <td>${renderDestinationStorageText({ storage })}</td>
+      <td>${fmtDurationText(row.average_upload_duration_s)} · ${fmtBytes(row.average_throughput_bps || 0)}/s</td>
+    </tr>`;
+  });
+  el.innerHTML = html + "</table>";
 }
 
 // ============================ SETTINGS ======================================

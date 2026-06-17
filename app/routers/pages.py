@@ -38,3 +38,8 @@ def jobs(request: Request):
 @router.get("/settings", response_class=HTMLResponse)
 def settings(request: Request):
     return _page(request, "settings.html")
+
+
+@router.get("/stats", response_class=HTMLResponse)
+def stats(request: Request):
+    return _page(request, "stats.html")

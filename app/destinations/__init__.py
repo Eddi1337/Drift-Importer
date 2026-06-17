@@ -15,8 +15,8 @@ ProgressCb = Optional[Callable[[float], None]]
 def get_backend(destination: Destination) -> UploadBackend:
     if destination.type == "nextcloud":
         return NextcloudBackend(destination)
-    if destination.type == "sftp":
+    if destination.type in ("sftp", "rsync"):
         return SFTPBackend(destination)
-    if destination.type == "local":
+    if destination.type in ("local", "nfs", "smb"):
         return LocalBackend(destination)
     raise ValueError(f"Unknown destination type: {destination.type}")

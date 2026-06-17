@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %} · Stats{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="row spread">
+    <div>
+      <h2>Upload stats</h2>
+      <p class="hint">Persistent upload history and destination usage from the app database.</p>
+    </div>
+    <button class="ghost" onclick="loadStats()">Refresh</button>
+  </div>
+  <div id="statsOverview" class="live-grid">Loading…</div>
+</section>
+
+<section class="panel">
+  <h2>Destination usage</h2>
+  <div id="statsDestinations">Loading…</div>
+</section>
+{% endblock %}
+{% block scripts %}<script>initStats();</script>{% endblock %}

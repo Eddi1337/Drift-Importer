@@ -119,7 +119,7 @@ class Destination(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(256), unique=True)
-    type: Mapped[str] = mapped_column(String(32))  # nextcloud|sftp|local
+    type: Mapped[str] = mapped_column(String(32))  # local|nfs|smb|nextcloud|sftp|rsync
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
