@@ -17,8 +17,11 @@
     <label>Connection method
       <select id="dMethod" onchange="onMethodChange()">
         <option value="local_mount">Local / NAS mounted path</option>
+        <option value="nfs_mount">NFS mounted share</option>
+        <option value="smb_mount">SMB / CIFS mounted share</option>
         <option value="nextcloud_webdav">Nextcloud via WebDAV</option>
         <option value="sftp_password">SFTP with username + password</option>
+        <option value="rsync_ssh">Rsync over SSH path</option>
       </select>
     </label>
     <label>Service type
@@ -56,14 +59,14 @@
     <div class="row spread">
       <div>
         <h3>Available folders</h3>
-        <p class="hint">Use this after a connection test. Clicking a folder appends it to the current base path.</p>
+        <p class="hint">Use this after a connection test. Open folders to navigate, then select a folder to use it as the base path.</p>
       </div>
       <div class="row">
         <button class="ghost" onclick="testAndBrowseDestination()">Test and browse</button>
-        <button class="ghost" onclick="clearFolderBrowser()">Clear folders</button>
+        <button class="ghost" onclick="clearFolderBrowser('folderBrowser')">Clear folders</button>
       </div>
     </div>
-    <div id="folderBrowser" class="folder-browser">No folder listing loaded yet.</div>
+    <div id="folderBrowser" class="folder-window">No folder listing loaded yet.</div>
   </div>
   <div class="row">
     <button onclick="saveDestination()">Save</button>

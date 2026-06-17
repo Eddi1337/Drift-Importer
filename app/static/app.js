@@ -25,6 +25,7 @@ const appState = {
   jobs: [],
   seenDevices: new Set(),
   autoImportTriggered: new Set(),
+  folderBrowsers: {},
   jobPollStarted: false,
   galleryPollers: [],
   jobsPoller: null,
@@ -433,6 +434,16 @@ const destinationMethodMap = {
     port: "",
     hint: "Use a directory already mounted on the Pi or Docker host, such as /mnt/nas/camera.",
   },
+  nfs_mount: {
+    type: "local",
+    port: "",
+    hint: "Mount the NFS share on the Pi first, then point this at the mounted path.",
+  },
+  smb_mount: {
+    type: "local",
+    port: "",
+    hint: "Mount the SMB/CIFS share on the Pi first, then point this at the mounted path.",
+  },
   nextcloud_webdav: {
     type: "nextcloud",
     port: "",
@@ -443,13 +454,18 @@ const destinationMethodMap = {
     port: "22",
     hint: "Connect to an SSH/SFTP server with hostname, username, password, and a remote base folder.",
   },
+  rsync_ssh: {
+    type: "sftp",
+    port: "22",
+    hint: "Use an SSH-accessible path that rsync can mirror to. Browsing uses the same SSH/SFTP connection details.",
+  },
 };
 
 function initDestinations() {
   ensureGlobalJobPolling();
   loadDestinations();
   onMethodChange();
-  clearFolderBrowser();
+  clearFolderBrowser("folderBrowser");
 }
 
 function onTypeChange() {
@@ -469,6 +485,11 @@ function onMethodChange() {
 }
 
 function syncMethodFromType(type) {
+  const current = destinationMethodMap[document.getElementById("dMethod").value];
+  if (current?.type === type) {
+    document.getElementById("dMethodHint").textContent = current.hint;
+    return;
+  }
   const match = Object.entries(destinationMethodMap).find(([, cfg]) => cfg.type === type);
   if (match) {
     document.getElementById("dMethod").value = match[0];
@@ -492,7 +513,7 @@ async function loadDestinations() {
       <div class="dest-body">
         <div><b>${esc(d.name)}</b> <span class="hint">[${esc(d.type)}]${d.is_default ? " default" : ""}${d.enabled ? "" : " (disabled)"}</span></div>
         <span class="hint">${esc(d.base_path)} → ${esc(d.path_template)}</span>
-        <div class="folder-browser compact" id="destFolders-${d.id}">Test and browse to see available folders.</div>
+        <div class="folder-window compact" id="destFolders-${d.id}">Browse to see available folders.</div>
       </div>
     `;
     const actions = document.createElement("div");
@@ -509,7 +530,7 @@ async function loadDestinations() {
     const browse = document.createElement("button");
     browse.className = "ghost";
     browse.textContent = "Browse";
-    browse.onclick = () => browseDestinationFolders(d.id, d.base_path, `destFolders-${d.id}`);
+    browse.onclick = () => browseDestinationFolders(d.id, `destFolders-${d.id}`, "");
     const edit = document.createElement("button");
     edit.className = "ghost";
     edit.textContent = "Edit";
@@ -574,7 +595,7 @@ function editDestination(d) {
   document.getElementById("formTitle").textContent = "Edit destination";
   syncMethodFromType(d.type);
   onTypeChange();
-  clearFolderBrowser();
+  clearFolderBrowser("folderBrowser");
   window.scrollTo(0, document.body.scrollHeight);
 }
 
@@ -587,7 +608,7 @@ function resetDestForm() {
   document.getElementById("dEnabled").checked = true;
   document.getElementById("formTitle").textContent = "Add destination";
   onMethodChange();
-  clearFolderBrowser();
+  clearFolderBrowser("folderBrowser");
 }
 
 async function testAndBrowseDestination() {
@@ -603,45 +624,72 @@ async function testAndBrowseDestination() {
     return;
   }
   toast("Connection OK");
-  browseDestinationFolders(destinationId, document.getElementById("dBase").value, "folderBrowser");
+  browseDestinationFolders(destinationId, "folderBrowser", "");
 }
 
-async function browseDestinationFolders(destinationId, currentPath, targetId) {
+async function browseDestinationFolders(destinationId, targetId, path = "") {
   const target = document.getElementById(targetId);
   if (!target) return;
   target.textContent = "Loading folders…";
-  const path = targetId === "folderBrowser" ? "" : "";
   try {
     const r = await api.get(`/api/destinations/${destinationId}/folders?path=${encodeURIComponent(path)}`);
-    renderFolderBrowser(targetId, r.folders, currentPath);
+    appState.folderBrowsers[targetId] = { destinationId, path: r.path || "" };
+    renderFolderBrowser(targetId, r.folders);
   } catch (e) {
     target.textContent = "Unable to load folders: " + e.message;
   }
 }
 
-function renderFolderBrowser(targetId, folders, currentPath) {
+function renderFolderBrowser(targetId, folders) {
   const target = document.getElementById(targetId);
   if (!target) return;
-  if (!folders.length) {
-    target.innerHTML = "<span class='hint'>No child folders found at this base path.</span>";
-    return;
-  }
-  target.innerHTML = folders.map(name => `
-    <button class="folder-pill" onclick="applyFolderChoice('${escJs(targetId)}','${escJs(name)}','${escJs(currentPath || "")}')">${esc(name)}</button>
-  `).join("");
+  const state = appState.folderBrowsers[targetId] || { destinationId: null, path: "" };
+  const crumbs = state.path ? state.path.split("/").filter(Boolean) : [];
+  const parent = crumbs.slice(0, -1).join("/");
+  const breadcrumbHtml = [
+    `<button class="folder-crumb" onclick="browseDestinationFolders(${state.destinationId}, '${escJs(targetId)}', '')">Root</button>`,
+    ...crumbs.map((part, idx) => {
+      const crumbPath = crumbs.slice(0, idx + 1).join("/");
+      return `<button class="folder-crumb" onclick="browseDestinationFolders(${state.destinationId}, '${escJs(targetId)}', '${escJs(crumbPath)}')">${esc(part)}</button>`;
+    }),
+  ].join("<span class='folder-sep'>/</span>");
+  const folderRows = folders.length
+    ? folders.map(name => {
+      const childPath = appendPath(state.path, name);
+      return `
+        <div class="folder-row">
+          <button class="folder-open" onclick="browseDestinationFolders(${state.destinationId}, '${escJs(targetId)}', '${escJs(childPath)}')">Open</button>
+          <button class="folder-name" onclick="browseDestinationFolders(${state.destinationId}, '${escJs(targetId)}', '${escJs(childPath)}')">${esc(name)}</button>
+          <button class="folder-select" onclick="applyFolderChoice('${escJs(targetId)}','${escJs(childPath)}')">Select</button>
+        </div>
+      `;
+    }).join("")
+    : "<div class='folder-empty'>No child folders at this level.</div>";
+  target.innerHTML = `
+    <div class="folder-toolbar">
+      <div class="folder-crumbs">${breadcrumbHtml}</div>
+      <div class="row">
+        ${state.path ? `<button class="ghost" onclick="browseDestinationFolders(${state.destinationId}, '${escJs(targetId)}', '${escJs(parent)}')">Up</button>` : ""}
+        <button class="ghost" onclick="applyFolderChoice('${escJs(targetId)}','${escJs(state.path)}')">Select current</button>
+      </div>
+    </div>
+    <div class="folder-list">${folderRows}</div>
+  `;
 }
 
-function applyFolderChoice(targetId, name, currentPath) {
+function applyFolderChoice(targetId, path) {
   if (targetId === "folderBrowser") {
     const base = document.getElementById("dBase");
-    base.value = appendPath(base.value || currentPath, name);
+    if (!path) return toast("Already at the destination root");
+    base.value = appendPath(base.value, path);
     toast(`Base path set to ${base.value}`);
   }
 }
 
-function clearFolderBrowser() {
-  const el = document.getElementById("folderBrowser");
+function clearFolderBrowser(targetId) {
+  const el = document.getElementById(targetId);
   if (el) el.textContent = "No folder listing loaded yet.";
+  delete appState.folderBrowsers[targetId];
 }
 
 // ============================ ALBUMS ========================================
