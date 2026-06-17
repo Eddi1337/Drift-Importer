@@ -15,6 +15,7 @@ from ..crypto import encrypt
 from ..database import get_session
 from ..destinations import get_backend
 from ..devices import detect_devices, scan_media_files
+from ..media import classify
 from ..jobs import get_manager
 from ..models import (
     Album,
@@ -89,6 +90,33 @@ class ImportDeviceReq(BaseModel):
     dcim_path: str
     auto_upload: Optional[bool] = None
     destination_ids: Optional[List[int]] = None
+    paths: Optional[List[str]] = None
+
+
+@router.get("/device-files")
+def list_device_files(dcim_path: str):
+    root = Path(dcim_path)
+    if not root.exists():
+        raise HTTPException(400, "DCIM path does not exist")
+    files = []
+    for path in scan_media_files(root):
+        kind = classify(path)
+        if kind != "video":
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        files.append(
+            {
+                "path": str(path),
+                "filename": path.name,
+                "relative_path": str(path.relative_to(root)),
+                "size_bytes": stat.st_size,
+                "modified_at": dt.datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            }
+        )
+    return {"dcim_path": str(root), "files": files}
 
 
 @router.post("/import-device")
@@ -102,6 +130,9 @@ def import_device(req: ImportDeviceReq, session: Session = Depends(get_session))
     if not root.exists():
         raise HTTPException(400, "DCIM path does not exist")
     paths = [str(p) for p in scan_media_files(root)]
+    if req.paths:
+        requested = {str(Path(p)) for p in req.paths}
+        paths = [p for p in paths if p in requested and Path(p).is_relative_to(root)]
     if not paths:
         raise HTTPException(400, "No media files found on device")
     auto_upload = prefs.auto_upload_on_import if req.auto_upload is None else req.auto_upload

@@ -26,6 +26,9 @@ const appState = {
   seenDevices: new Set(),
   autoImportTriggered: new Set(),
   folderBrowsers: {},
+  cameraFiles: [],
+  cameraFileSelection: new Set(),
+  currentDcimPath: "",
   jobPollStarted: false,
   galleryPollers: [],
   jobsPoller: null,
@@ -202,6 +205,11 @@ async function refreshDevices() {
         defaults.textContent = "Use Defaults";
         defaults.onclick = () => importDevice(d.dcim_path);
 
+        const view = document.createElement("button");
+        view.className = "ghost";
+        view.textContent = "View videos";
+        view.onclick = () => loadCameraFiles(d.dcim_path);
+
         const imp = document.createElement("button");
         imp.className = "ghost";
         imp.textContent = "Import";
@@ -211,7 +219,7 @@ async function refreshDevices() {
         all.textContent = "Upload Everything";
         all.onclick = () => importDevice(d.dcim_path, true);
 
-        actions.append(defaults, imp, all);
+        actions.append(view, defaults, imp, all);
         row.append(actions);
       }
       el.append(row);
@@ -231,10 +239,12 @@ async function refreshDevices() {
   }
 }
 
-async function importDevice(dcim, autoUpload, quiet = false) {
+async function importDevice(dcim, autoUpload, quiet = false, paths = null, destinationIds = null) {
   try {
     const body = { dcim_path: dcim };
     if (typeof autoUpload === "boolean") body.auto_upload = autoUpload;
+    if (paths?.length) body.paths = paths;
+    if (destinationIds?.length) body.destination_ids = destinationIds;
     const r = await api.post("/api/import-device", body);
     if (!quiet) {
       toast(`Queued import of ${r.file_count} files${r.auto_upload ? " + upload" : ""}`);
@@ -242,6 +252,68 @@ async function importDevice(dcim, autoUpload, quiet = false) {
   } catch (e) {
     toast("Import failed: " + e.message);
   }
+}
+
+async function loadCameraFiles(dcimPath) {
+  const list = document.getElementById("cameraFiles");
+  const summary = document.getElementById("cameraFileSummary");
+  if (!list || !summary) return;
+  appState.currentDcimPath = dcimPath;
+  appState.cameraFileSelection.clear();
+  list.textContent = "Loading camera videos…";
+  summary.textContent = "Scanning camera storage…";
+  try {
+    const data = await api.get(`/api/device-files?dcim_path=${encodeURIComponent(dcimPath)}`);
+    appState.cameraFiles = data.files || [];
+    renderCameraFiles();
+  } catch (e) {
+    list.textContent = "Unable to load camera videos: " + e.message;
+    summary.textContent = "";
+  }
+}
+
+function renderCameraFiles() {
+  const list = document.getElementById("cameraFiles");
+  const summary = document.getElementById("cameraFileSummary");
+  if (!list || !summary) return;
+  const totalBytes = appState.cameraFiles.reduce((sum, file) => sum + (file.size_bytes || 0), 0);
+  summary.textContent = `${appState.cameraFiles.length} video file${appState.cameraFiles.length === 1 ? "" : "s"} on camera · ${appState.cameraFileSelection.size} selected · ${fmtBytes(totalBytes)}`;
+  if (!appState.cameraFiles.length) {
+    list.innerHTML = "<span class='hint'>No video files found on this camera.</span>";
+    return;
+  }
+  list.innerHTML = appState.cameraFiles.map(file => `
+    <label class="camera-file-row">
+      <input type="checkbox" value="${esc(file.path)}" ${appState.cameraFileSelection.has(file.path) ? "checked" : ""} onchange="toggleCameraFile('${escJs(file.path)}', this.checked)">
+      <span class="camera-file-name">${esc(file.relative_path || file.filename)}</span>
+      <span class="hint">${esc(fmtBytes(file.size_bytes))}</span>
+      <span class="hint">${esc((file.modified_at || "").slice(0, 16).replace("T", " "))}</span>
+    </label>
+  `).join("");
+}
+
+function toggleCameraFile(path, checked) {
+  if (checked) appState.cameraFileSelection.add(path);
+  else appState.cameraFileSelection.delete(path);
+  renderCameraFiles();
+}
+
+function toggleCameraSelection(checked) {
+  if (checked) appState.cameraFiles.forEach(file => appState.cameraFileSelection.add(file.path));
+  else appState.cameraFileSelection.clear();
+  renderCameraFiles();
+}
+
+async function importSelectedCameraFiles(autoUpload) {
+  if (!appState.currentDcimPath) return toast("Load a camera video list first");
+  const paths = [...appState.cameraFileSelection];
+  if (!paths.length) return toast("Select camera videos first");
+  let destinationIds = null;
+  if (autoUpload) {
+    destinationIds = await chooseDestinationIds();
+    if (destinationIds === false) return;
+  }
+  await importDevice(appState.currentDcimPath, autoUpload, false, paths, destinationIds);
 }
 
 async function loadFilters() {
@@ -339,18 +411,27 @@ function selIds() { return [...selected]; }
 
 async function uploadSelected() {
   if (!selected.size) return toast("Select clips first");
-  const dests = await api.get("/api/destinations");
-  if (!dests.length) return toast("Add a destination first");
-  const names = dests.map(d => `${d.id}: ${d.name}${d.is_default ? " (default)" : ""}`).join("\n");
-  const pick = prompt(`Destination IDs (comma-separated), blank = defaults:\n${names}`, "");
-  let ids = null;
-  if (pick && pick.trim()) ids = pick.split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+  const ids = await chooseDestinationIds();
+  if (ids === false) return;
   try {
     await api.post("/api/upload", { media_ids: selIds(), destination_ids: ids });
     toast("Upload queued");
   } catch (e) {
     toast("Upload failed: " + e.message);
   }
+}
+
+async function chooseDestinationIds() {
+  const dests = await api.get("/api/destinations");
+  if (!dests.length) {
+    toast("Add a destination first");
+    return false;
+  }
+  const names = dests.map(d => `${d.id}: ${d.name}${d.is_default ? " (default)" : ""}`).join("\n");
+  const pick = prompt(`Destination IDs (comma-separated), blank = defaults:\n${names}`, "");
+  if (pick === null) return false;
+  if (!pick.trim()) return null;
+  return pick.split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
 }
 
 function openTimestamp() {

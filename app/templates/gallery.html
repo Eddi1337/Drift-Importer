@@ -8,6 +8,23 @@
   <button onclick="refreshDevices()">Rescan</button>
 </section>
 
+<section class="panel" id="cameraFilesPanel">
+  <div class="row spread">
+    <div>
+      <h2>Camera videos</h2>
+      <p class="hint">Browse video files directly on the attached Drift camera and queue only the clips you want.</p>
+    </div>
+    <div class="row">
+      <button class="ghost" onclick="toggleCameraSelection(true)">Select all</button>
+      <button class="ghost" onclick="toggleCameraSelection(false)">Clear</button>
+      <button onclick="importSelectedCameraFiles(false)">Import selected</button>
+      <button onclick="importSelectedCameraFiles(true)">Upload selected</button>
+    </div>
+  </div>
+  <div id="cameraFileSummary" class="hint">Select a detected camera above to load its videos.</div>
+  <div id="cameraFiles" class="camera-file-list">No camera video list loaded.</div>
+</section>
+
 <section class="panel live-panel">
   <h2>Live upload activity</h2>
   <div id="liveActivity" class="live-grid">Waiting for jobs…</div>

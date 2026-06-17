@@ -399,6 +399,40 @@ input:focus, select:focus {
   padding: 1rem;
 }
 
+.camera-file-list {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.85rem;
+  max-height: 24rem;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.camera-file-row {
+  display: grid;
+  grid-template-columns: auto minmax(12rem, 1fr) auto auto;
+  gap: 0.75rem;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(210, 173, 133, 0.08);
+  border-radius: 12px;
+  padding: 0.7rem 0.8rem;
+  cursor: pointer;
+}
+
+.camera-file-row:hover {
+  background: rgba(200, 135, 60, 0.08);
+  border-color: rgba(200, 135, 60, 0.2);
+}
+
+.camera-file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
 table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
 th, td { text-align: left; padding: 0.52rem 0.35rem; border-bottom: 1px solid rgba(210, 173, 133, 0.08); vertical-align: top; }
 
@@ -495,4 +529,5 @@ code { color: #ffd7a8; }
   .form-grid .span-2 { grid-column: auto; }
   .device, .dest-row, .order-item { flex-direction: column; align-items: flex-start; }
   .spread { align-items: flex-start; }
+  .camera-file-row { grid-template-columns: auto minmax(0, 1fr); }
 }
