@@ -36,7 +36,10 @@
       <input id="dBase" placeholder="/mnt/nas/camera  or  https://cloud/remote.php/dav/files/USER" oninput="updateBaseStatus()">
       <span id="dBaseStatus" class="base-status hint span-2"></span>
     </label>
-    <label class="span-2">Path template <input id="dTemplate" value="{year}/{month:02d}"></label>
+    <label class="span-2">Upload folder pattern
+      <input id="dTemplate" value="{year}/{month:02d}" placeholder="Year / Month">
+      <span class="hint">Shown as Year / Month. You can also use {day:02d} or {hour:02d} for deeper folders.</span>
+    </label>
     <label class="inline choice-card">
       <input type="checkbox" id="dDefault">
       <span>

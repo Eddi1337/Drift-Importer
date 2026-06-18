@@ -37,14 +37,18 @@ def _thumb_path_for(media_id: int) -> Path:
 
 def import_one(session, path: Path, source: str, derived: bool = False) -> MediaItem:
     """Insert or fetch a MediaItem for a path, populating metadata."""
-    existing = session.query(MediaItem).filter(MediaItem.path == str(path)).first()
+    path_str = str(path)
+    existing = session.query(MediaItem).filter(MediaItem.path == path_str).first()
     if existing:
         return existing
     kind = classify(path) or "video"
     info = probe(path)
     cs = checksum(path)
+    existing = session.query(MediaItem).filter(MediaItem.checksum == cs).first()
+    if existing:
+        return existing
     item = MediaItem(
-        path=str(path),
+        path=path_str,
         filename=path.name,
         kind=kind,
         size_bytes=path.stat().st_size,
@@ -58,7 +62,18 @@ def import_one(session, path: Path, source: str, derived: bool = False) -> Media
         derived=derived,
     )
     session.add(item)
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError:
+        session.rollback()
+        existing = (
+            session.query(MediaItem)
+            .filter((MediaItem.path == path_str) | (MediaItem.checksum == cs))
+            .first()
+        )
+        if existing:
+            return existing
+        raise
     return item
 
 
@@ -144,6 +159,7 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
         except Exception:  # noqa: BLE001
             log.exception("Failed to import %s", path)
             ctx.set_progress((i + 1) / total, f"Failed {path.name}")
+    new_ids = list(dict.fromkeys(new_ids))
     # Thumbnails as a follow-up so import returns fast.
     get_manager_enqueue("thumbnail", {"media_ids": new_ids})
     # Optionally queue uploads (the "Upload Everything" flow).

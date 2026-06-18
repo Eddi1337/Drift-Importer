@@ -130,6 +130,8 @@ def media_dict(m: MediaItem) -> dict:
                 "bytes_uploaded": u.bytes_uploaded,
                 "total_bytes": u.total_bytes,
                 "progress": round((u.bytes_uploaded / u.total_bytes), 4) if u.total_bytes else 0,
+                "remote_path": u.remote_path,
+                "uploaded_at": u.uploaded_at.isoformat() if u.uploaded_at else None,
             }
             for u in m.upload_states
         ],
@@ -497,6 +499,7 @@ def uploaded_clip_dict(r: UploadedClip) -> dict:
     return {
         "id": r.id,
         "destination_id": r.destination_id,
+        "destination_name": r.destination.name if r.destination else None,
         "source_media_id": r.source_media_id,
         "checksum": r.checksum,
         "filename": r.filename,
@@ -510,6 +513,14 @@ def uploaded_clip_dict(r: UploadedClip) -> dict:
         "last_error": r.last_error,
         "uploaded_at": r.uploaded_at.isoformat() if r.uploaded_at else None,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+    }
+
+
+def recent_upload_dict(r: UploadedClip) -> dict:
+    media = r.media
+    return {
+        **uploaded_clip_dict(r),
+        "media": media_dict(media) if media else None,
     }
 
 
@@ -649,6 +660,24 @@ def update_settings(req: AppSettingsReq, session: Session = Depends(get_session)
 def list_uploaded_clips(limit: int = 200, session: Session = Depends(get_session)):
     rows = session.query(UploadedClip).order_by(UploadedClip.updated_at.desc()).limit(limit).all()
     return [uploaded_clip_dict(r) for r in rows]
+
+
+@router.get("/recent-uploads")
+def list_recent_uploads(
+    limit: int = 24,
+    days: int = 7,
+    session: Session = Depends(get_session),
+):
+    since = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.timedelta(days=max(days, 1))
+    rows = (
+        session.query(UploadedClip)
+        .filter(UploadedClip.status == "done", UploadedClip.uploaded_at.isnot(None))
+        .filter(UploadedClip.uploaded_at >= since)
+        .order_by(UploadedClip.uploaded_at.desc())
+        .limit(max(1, min(limit, 100)))
+        .all()
+    )
+    return [recent_upload_dict(r) for r in rows]
 
 
 @router.get("/stats/uploads")

@@ -30,6 +30,8 @@ const appState = {
   cameraFileSelection: new Set(),
   currentDcimPath: "",
   lastDeviceSignature: "",
+  lastMediaSignature: "",
+  lastRecentUploadSignature: "",
   jobPollStarted: false,
   galleryPollers: [],
   jobsPoller: null,
@@ -63,6 +65,36 @@ function fmtDur(s) {
   const m = Math.floor(s / 60);
   const x = Math.round(s % 60);
   return `${m}:${String(x).padStart(2, "0")}`;
+}
+
+function fmtMonthYear(year, month) {
+  const date = new Date(Number(year), Number(month) - 1, 1);
+  return date.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+}
+
+function fmtDateTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 16).replace("T", " ");
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function humanTemplate(template) {
+  return (template || "{year}/{month:02d}")
+    .replaceAll("{year}", "Year")
+    .replaceAll("{month:02d}", "Month")
+    .replaceAll("{month}", "Month")
+    .replaceAll("{day:02d}", "Day")
+    .replaceAll("{day}", "Day")
+    .replaceAll("{hour:02d}", "Hour")
+    .replaceAll("{hour}", "Hour")
+    .replaceAll("/", " / ");
 }
 
 function esc(value) {
@@ -166,12 +198,15 @@ function renderDeviceDefaults() {
 async function initGallery() {
   ensureGlobalJobPolling();
   await loadSettings();
-  await Promise.all([refreshDevices(), loadFilters(), loadMedia()]);
+  await Promise.all([refreshDevices(), loadFilters(), loadMedia(), loadRecentUploads()]);
   appState.galleryPollers.forEach(clearInterval);
   appState.galleryPollers = [
     setInterval(refreshDevices, 5000),
     setInterval(() => {
-      if (!document.hidden) loadMedia();
+      if (!document.hidden) {
+        loadMedia();
+        loadRecentUploads();
+      }
     }, 7000),
   ];
 }
@@ -338,7 +373,7 @@ async function loadFilters() {
     months.forEach(m => {
       const o = document.createElement("option");
       o.value = `${m.year}-${m.month}`;
-      o.textContent = `${m.year}-${String(m.month).padStart(2, "0")} (${m.count})`;
+      o.textContent = `${fmtMonthYear(m.year, m.month)} (${m.count})`;
       mf.append(o);
     });
   }
@@ -356,7 +391,7 @@ async function loadFilters() {
 async function loadMedia() {
   const grid = document.getElementById("grid");
   if (!grid) return;
-  grid.textContent = "Loading…";
+  if (!mediaCache.length && !grid.children.length) grid.textContent = "Loading…";
   const p = new URLSearchParams();
   const mv = document.getElementById("monthFilter")?.value;
   if (mv) {
@@ -368,11 +403,31 @@ async function loadMedia() {
   const st = document.getElementById("statusFilter")?.value;
   if (tag) p.set("tag", tag);
   if (st) p.set("status", st);
-  mediaCache = await api.get("/api/media?" + p.toString());
+  const nextMedia = await api.get("/api/media?" + p.toString());
+  const signature = JSON.stringify(nextMedia.map(m => ({
+    id: m.id,
+    filename: m.filename,
+    capture_time: m.capture_time,
+    thumbnail: m.has_thumb,
+    uploads: (m.uploads || []).map(u => [
+      u.destination_id,
+      u.status,
+      u.bytes_uploaded,
+      u.total_bytes,
+      u.remote_path,
+      u.uploaded_at,
+    ]),
+    tags: m.tags,
+  })));
+  mediaCache = nextMedia;
+  if (signature === appState.lastMediaSignature) {
+    updateSelCount();
+    return;
+  }
+  appState.lastMediaSignature = signature;
   // Verified-uploaded clips live in their own section so the library only
   // shows clips that still need attention. "Verified" = an upload that the
   // backend reported as fully done (not merely attempted/failed).
-  const uploaded = mediaCache.filter(isVerifiedUploaded);
   const library = mediaCache.filter(m => !isVerifiedUploaded(m));
   grid.innerHTML = "";
   if (!library.length) {
@@ -380,12 +435,26 @@ async function loadMedia() {
   } else {
     library.forEach(m => grid.append(renderCard(m)));
   }
-  renderUploaded(uploaded);
   updateSelCount();
 }
 
 function isVerifiedUploaded(m) {
   return (m.uploads || []).some(u => u.status === "done");
+}
+
+async function loadRecentUploads() {
+  const rows = await api.get("/api/recent-uploads?limit=24&days=7");
+  const signature = JSON.stringify(rows.map(r => [
+    r.id,
+    r.status,
+    r.uploaded_at,
+    r.remote_path,
+    r.destination_name,
+    r.media?.has_thumb,
+  ]));
+  if (signature === appState.lastRecentUploadSignature) return;
+  appState.lastRecentUploadSignature = signature;
+  renderUploaded(rows);
 }
 
 function renderUploaded(items) {
@@ -394,9 +463,33 @@ function renderUploaded(items) {
   const count = document.getElementById("uploadedCount");
   if (!panel || !grid) return;
   panel.hidden = items.length === 0;
-  if (count) count.textContent = `${items.length} clip${items.length === 1 ? "" : "s"}`;
+  if (count) count.textContent = `${items.length} recent upload${items.length === 1 ? "" : "s"}`;
   grid.innerHTML = "";
-  items.forEach(m => grid.append(renderCard(m, { uploaded: true })));
+  items.forEach(row => grid.append(renderRecentUploadCard(row)));
+}
+
+function renderRecentUploadCard(row) {
+  const media = row.media || {};
+  const c = document.createElement("div");
+  c.className = "card uploaded-card";
+  const thumb = media.has_thumb && row.source_media_id ? `/api/media/${row.source_media_id}/thumb` : "";
+  const thumbHtml = thumb
+    ? `<img class="thumb" src="${thumb}" alt="" loading="lazy">`
+    : `<div class="thumb upload-placeholder">Uploaded</div>`;
+  c.innerHTML = `
+    ${thumbHtml}
+    <div class="meta">
+      <div class="fn" title="${esc(row.filename)}">${esc(row.filename)}</div>
+      <div class="sub">${esc(row.destination_name || `Destination ${row.destination_id}`)} · ${esc(fmtDateTime(row.uploaded_at))}</div>
+      <div class="status-row">
+        <span class="pill up-done">Uploaded</span>
+        <span class="pill" title="${esc(row.remote_path || "")}">${esc(row.remote_path || "Remote path recorded")}</span>
+      </div>
+    </div>`;
+  const thumbEl = c.querySelector(".thumb");
+  if (row.source_media_id && media.kind === "video") thumbEl.onclick = () => playVideo(row.source_media_id);
+  else if (row.source_media_id) thumbEl.onclick = () => window.open(`/api/media/${row.source_media_id}/stream`);
+  return c;
 }
 
 function renderCard(m, opts = {}) {
@@ -661,7 +754,7 @@ async function loadDestinations() {
     row.innerHTML = `
       <div class="dest-body">
         <div><b>${esc(d.name)}</b> <span class="hint">[${esc(d.type)}]${d.is_default ? " default" : ""}${d.enabled ? "" : " (disabled)"}</span></div>
-        <span class="hint">${esc(d.base_path)} → ${esc(d.path_template)}</span>
+        <span class="hint">${esc(d.base_path)} → ${esc(humanTemplate(d.path_template))}</span>
         <span class="hint">${renderDestinationStorageText(d)}</span>
         <div class="folder-window compact" id="destFolders-${d.id}">Browse to see available folders.</div>
       </div>
@@ -680,7 +773,7 @@ async function loadDestinations() {
     const browse = document.createElement("button");
     browse.className = "ghost";
     browse.textContent = "Browse";
-    browse.onclick = () => browseDestinationFolders(d.id, `destFolders-${d.id}`, "");
+    browse.onclick = () => browseDestinationFolders(d.id, `destFolders-${d.id}`, "", d);
     const edit = document.createElement("button");
     edit.className = "ghost";
     edit.textContent = "Edit";
@@ -794,7 +887,7 @@ async function browseDestinationFolders(destinationId, targetId, path = "", conf
   const target = document.getElementById(targetId);
   if (!target) return;
   target.textContent = "Loading folders…";
-  const browserConfig = destinationId ? null : (config || destForm());
+  const browserConfig = destinationId ? config : (config || destForm());
   const basePath = browserConfig?.base_path || document.getElementById("dBase")?.value.trim() || "";
   try {
     const r = destinationId
@@ -861,12 +954,22 @@ function renderFolderBrowser(targetId, folders) {
   `;
 }
 
-function applyFolderChoice(targetId, path) {
-  if (targetId !== "folderBrowser") return;
+async function applyFolderChoice(targetId, path) {
   const base = document.getElementById("dBase");
   const state = appState.folderBrowsers[targetId] || {};
-  const root = state.basePath || base.value.trim();
-  base.value = path ? appendPath(root, path) : root;
+  const root = state.basePath || base?.value.trim() || "/";
+  const pickedPath = path ? appendPath(root, path) : root;
+  state.selectedPath = path;
+  if (targetId !== "folderBrowser" && state.destinationId && state.config) {
+    const body = { ...state.config, base_path: pickedPath };
+    await api.put(`/api/destinations/${state.destinationId}`, body);
+    renderFolderBrowser(targetId, state.lastFolders || []);
+    toast(`Using ${pickedPath} for ${state.config.name}`);
+    loadDestinations();
+    return;
+  }
+  if (!base) return;
+  base.value = pickedPath;
   state.selectedPath = path;
   base.classList.add("just-set");
   setTimeout(() => base.classList.remove("just-set"), 1200);
