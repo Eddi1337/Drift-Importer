@@ -129,7 +129,7 @@ class Destination(Base):
     username: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     secret_enc: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Base URL for nextcloud webdav, or remote/local base directory otherwise.
-    base_path: Mapped[str] = mapped_column(String(1024), default="/")
+    base_path: Mapped[str] = mapped_column(String(1024), default="/mnt/nas")
     # Template applied per upload, e.g. "{year}/{month:02d}".
     path_template: Mapped[str] = mapped_column(String(512), default="{year}/{month:02d}")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)

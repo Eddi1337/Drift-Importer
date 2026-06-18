@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 
 from . import __version__
 from .config import get_settings
-from .database import init_db
+from .database import init_db, session_scope
 from .jobs import get_manager
 from . import tasks  # noqa: F401  (registers job handlers)
 
@@ -39,6 +39,10 @@ def _setup_logging() -> None:
 async def lifespan(app: FastAPI):
     _setup_logging()
     init_db()
+    from .routers.api import ensure_default_nas_destination
+
+    with session_scope() as session:
+        ensure_default_nas_destination(session)
     get_manager().start()
     logging.getLogger("drift").info("Drift-Import %s started", __version__)
     yield

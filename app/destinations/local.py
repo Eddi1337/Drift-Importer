@@ -8,10 +8,20 @@ from __future__ import annotations
 
 import os
 import shutil
+import datetime as dt
+import hashlib
 from pathlib import Path
 
 from ..config import get_settings
-from .base import ProgressCb, UploadBackend, join_remote
+from .base import ProgressCb, RemoteEntry, UploadBackend, join_remote
+
+
+def _file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 class LocalBackend(UploadBackend):
@@ -27,6 +37,29 @@ class LocalBackend(UploadBackend):
         return sorted(
             entry.name for entry in root.iterdir() if entry.is_dir()
         )
+
+    def list_entries(self, path: str = "") -> list[RemoteEntry]:
+        root = self._root() / path.strip("/")
+        if not root.exists():
+            raise FileNotFoundError(f"Path does not exist: {root}")
+        if not root.is_dir():
+            raise NotADirectoryError(f"Path is not a directory: {root}")
+        rows: list[RemoteEntry] = []
+        for entry in sorted(root.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            try:
+                stat = entry.stat()
+            except OSError:
+                continue
+            rows.append(
+                {
+                    "name": entry.name,
+                    "path": join_remote("/", path, entry.name).strip("/"),
+                    "type": "directory" if entry.is_dir() else "file",
+                    "size_bytes": None if entry.is_dir() else int(stat.st_size),
+                    "modified_at": dt.datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                }
+            )
+        return rows
 
     def test_connection(self) -> None:
         root = self._root()
@@ -47,11 +80,23 @@ class LocalBackend(UploadBackend):
         dest_dir = Path(join_remote(str(self._root()), remote_dir))
         target = dest_dir / filename
         tmp = target.with_suffix(target.suffix + ".part")
-        if target.exists() and target.stat().st_size == size_bytes:
-            return size_bytes
         if tmp.exists():
             return min(tmp.stat().st_size, size_bytes)
         return 0
+
+    def remote_file_matches(
+        self,
+        remote_dir: str,
+        filename: str,
+        size_bytes: int,
+        checksum: str,
+    ) -> bool:
+        target = Path(join_remote(str(self._root()), remote_dir)) / filename
+        if not target.exists() or not target.is_file():
+            return False
+        if target.stat().st_size != size_bytes:
+            return False
+        return _file_sha256(target) == checksum
 
     def upload(
         self,

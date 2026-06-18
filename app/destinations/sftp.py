@@ -1,6 +1,8 @@
 """SFTP destination via paramiko. Streams from disk in chunks."""
 from __future__ import annotations
 
+import datetime as dt
+import hashlib
 import stat
 from pathlib import Path, PurePosixPath
 
@@ -8,7 +10,7 @@ import paramiko
 
 from ..config import get_settings
 from ..crypto import decrypt
-from .base import ProgressCb, UploadBackend, join_remote
+from .base import ProgressCb, RemoteEntry, UploadBackend, join_remote
 
 
 class SFTPBackend(UploadBackend):
@@ -46,6 +48,31 @@ class SFTPBackend(UploadBackend):
                     names.append(entry.filename)
             sftp.close()
             return sorted(names)
+        finally:
+            client.close()
+
+    def list_entries(self, path: str = "") -> list[RemoteEntry]:
+        client = self._connect()
+        try:
+            sftp = client.open_sftp()
+            root = join_remote(self.destination.base_path or "/", path)
+            rows: list[RemoteEntry] = []
+            for entry in sftp.listdir_attr(root):
+                entry_path = join_remote("/", path, entry.filename).strip("/")
+                is_dir = stat.S_ISDIR(entry.st_mode)
+                rows.append(
+                    {
+                        "name": entry.filename,
+                        "path": entry_path,
+                        "type": "directory" if is_dir else "file",
+                        "size_bytes": None if is_dir else int(entry.st_size),
+                        "modified_at": dt.datetime.fromtimestamp(entry.st_mtime).isoformat()
+                        if entry.st_mtime
+                        else None,
+                    }
+                )
+            sftp.close()
+            return sorted(rows, key=lambda row: (row["type"] != "directory", row["name"].lower()))
         finally:
             client.close()
 
@@ -92,16 +119,41 @@ class SFTPBackend(UploadBackend):
         try:
             sftp = client.open_sftp()
             try:
-                stat = sftp.stat(remote_path)
-                if stat.st_size == size_bytes:
-                    return size_bytes
-            except IOError:
-                pass
-            try:
                 stat = sftp.stat(tmp_path)
                 return min(stat.st_size, size_bytes)
             except IOError:
                 return 0
+            finally:
+                sftp.close()
+        finally:
+            client.close()
+
+    def remote_file_matches(
+        self,
+        remote_dir: str,
+        filename: str,
+        size_bytes: int,
+        checksum: str,
+    ) -> bool:
+        full_dir = join_remote(self.destination.base_path or "/", remote_dir)
+        remote_path = join_remote(full_dir, filename)
+        client = self._connect()
+        try:
+            sftp = client.open_sftp()
+            try:
+                remote_stat = sftp.stat(remote_path)
+                if remote_stat.st_size != size_bytes:
+                    return False
+                h = hashlib.sha256()
+                with sftp.open(remote_path, "rb") as remote:
+                    while True:
+                        chunk = remote.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        h.update(chunk)
+                return h.hexdigest() == checksum
+            except IOError:
+                return False
             finally:
                 sftp.close()
         finally:

@@ -45,11 +45,17 @@ def _round_or_none(value: Optional[float], digits: int = 3) -> Optional[float]:
 
 def _build_upload_totals(rows: list[UploadedClip]) -> dict:
     done_rows = [row for row in rows if row.status == "done"]
+    error_rows = [row for row in rows if row.status == "error"]
+    uploading_rows = [row for row in rows if row.status == "uploading"]
+    pending_rows = [row for row in rows if row.status == "pending"]
     total_bytes = sum(int(row.size_bytes or 0) for row in done_rows)
     durations = [float(row.upload_duration_s) for row in done_rows if row.upload_duration_s]
     throughputs = [float(row.upload_throughput_bps) for row in done_rows if row.upload_throughput_bps]
     return {
         "uploaded_clip_count": len(done_rows),
+        "error_clip_count": len(error_rows),
+        "uploading_clip_count": len(uploading_rows),
+        "pending_clip_count": len(pending_rows),
         "uploaded_bytes": total_bytes,
         "average_upload_duration_s": _round_or_none(
             (sum(durations) / len(durations)) if durations else None
@@ -154,6 +160,16 @@ def _is_attached_camera_path(path: Path) -> bool:
     return False
 
 
+def _safe_child_path(root: Path, path: str = "") -> Path:
+    try:
+        resolved_root = root.resolve()
+        child = (resolved_root / path.strip("/")).resolve()
+        child.relative_to(resolved_root)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(400, "Path is outside the camera root") from exc
+    return child
+
+
 # --- devices ----------------------------------------------------------------
 
 @router.get("/devices")
@@ -203,6 +219,37 @@ def list_device_files(dcim_path: str):
             }
         )
     return {"dcim_path": str(root), "files": files}
+
+
+@router.get("/device-entries")
+def list_device_entries(dcim_path: str, path: str = ""):
+    root = Path(dcim_path)
+    if not root.exists():
+        raise HTTPException(400, "DCIM path does not exist")
+    current = _safe_child_path(root, path)
+    if not current.exists() or not current.is_dir():
+        raise HTTPException(400, "Camera path is not a directory")
+    entries = []
+    for entry in sorted(current.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+        try:
+            stat = entry.stat()
+            rel = str(entry.relative_to(root))
+        except OSError:
+            continue
+        kind = "directory" if entry.is_dir() else "file"
+        if kind == "file" and classify(entry) != "video":
+            continue
+        entries.append(
+            {
+                "name": entry.name,
+                "path": rel,
+                "full_path": str(entry) if kind == "file" else None,
+                "type": kind,
+                "size_bytes": None if kind == "directory" else stat.st_size,
+                "modified_at": dt.datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            }
+        )
+    return {"dcim_path": str(root), "path": path.strip("/"), "entries": entries}
 
 
 @router.post("/import-device")
@@ -452,7 +499,7 @@ class DestinationReq(BaseModel):
     port: Optional[int] = None
     username: Optional[str] = None
     secret: Optional[str] = None  # plaintext in; stored encrypted
-    base_path: str = "/"
+    base_path: str = "/mnt/nas"
     path_template: str = "{year}/{month:02d}"
     is_default: bool = False
     enabled: bool = True
@@ -461,6 +508,37 @@ class DestinationReq(BaseModel):
 def _validate_destination_type(dest_type: str) -> None:
     if dest_type not in ("nextcloud", "sftp", "local", "nfs", "smb", "rsync"):
         raise HTTPException(400, "Invalid destination type")
+
+
+def ensure_default_nas_destination(session: Session) -> None:
+    existing_default = (
+        session.query(Destination)
+        .filter(Destination.is_default == True, Destination.enabled == True)  # noqa: E712
+        .first()
+    )
+    if existing_default:
+        return
+    existing_nas = (
+        session.query(Destination)
+        .filter(Destination.type == "local", Destination.base_path == "/mnt/nas")
+        .first()
+    )
+    if existing_nas:
+        existing_nas.is_default = True
+        existing_nas.enabled = True
+        session.commit()
+        return
+    session.add(
+        Destination(
+            name="Mounted NAS",
+            type="local",
+            base_path="/mnt/nas",
+            path_template="{year}/{month:02d}",
+            is_default=True,
+            enabled=True,
+        )
+    )
+    session.commit()
 
 
 def _destination_from_req(req: DestinationReq) -> Destination:
@@ -526,6 +604,7 @@ def recent_upload_dict(r: UploadedClip) -> dict:
 
 @router.get("/destinations")
 def list_destinations(session: Session = Depends(get_session)):
+    ensure_default_nas_destination(session)
     rows = session.query(UploadedClip).all()
     rows_by_destination: dict[int, list[UploadedClip]] = {}
     for row in rows:
@@ -613,6 +692,16 @@ def browse_destination_preview(req: DestinationReq, path: str = ""):
         raise HTTPException(400, str(exc)) from exc
 
 
+@router.post("/destinations/preview/entries")
+def browse_destination_preview_entries(req: DestinationReq, path: str = ""):
+    d = _destination_from_req(req)
+    try:
+        entries = get_backend(d).list_entries(path)
+        return {"path": path, "entries": entries}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.get("/destinations/{dest_id}/folders")
 def browse_destination(dest_id: int, path: str = "", session: Session = Depends(get_session)):
     d = session.get(Destination, dest_id)
@@ -621,6 +710,18 @@ def browse_destination(dest_id: int, path: str = "", session: Session = Depends(
     try:
         folders = get_backend(d).list_directories(path)
         return {"destination_id": dest_id, "path": path, "folders": folders}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/destinations/{dest_id}/entries")
+def browse_destination_entries(dest_id: int, path: str = "", session: Session = Depends(get_session)):
+    d = session.get(Destination, dest_id)
+    if not d:
+        raise HTTPException(404, "Not found")
+    try:
+        entries = get_backend(d).list_entries(path)
+        return {"destination_id": dest_id, "path": path, "entries": entries}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, str(exc)) from exc
 

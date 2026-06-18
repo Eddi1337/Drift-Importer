@@ -10,10 +10,11 @@ import os
 import re
 import shlex
 import subprocess
+import datetime as dt
 from pathlib import Path
 
 from ..config import get_settings
-from .base import ProgressCb, UploadBackend, join_remote
+from .base import ProgressCb, RemoteEntry, UploadBackend, join_remote
 
 
 def _ensure_known_hosts_dir() -> None:
@@ -100,6 +101,36 @@ class RsyncBackend(UploadBackend):
         )
         return sorted(line for line in output.splitlines() if line)
 
+    def list_entries(self, path: str = "") -> list[RemoteEntry]:
+        root = join_remote(self._remote_base(), path)
+        output = self._run_ssh(
+            "find "
+            + shlex.quote(root)
+            + " -mindepth 1 -maxdepth 1 -printf '%f\\t%y\\t%s\\t%T@\\n'"
+        )
+        rows: list[RemoteEntry] = []
+        for line in output.splitlines():
+            parts = line.split("\t")
+            if len(parts) != 4:
+                continue
+            name, kind, size, mtime = parts
+            if kind not in ("d", "f"):
+                continue
+            try:
+                modified_at = dt.datetime.fromtimestamp(float(mtime)).isoformat()
+            except ValueError:
+                modified_at = None
+            rows.append(
+                {
+                    "name": name,
+                    "path": join_remote("/", path, name).strip("/"),
+                    "type": "directory" if kind == "d" else "file",
+                    "size_bytes": None if kind == "d" else int(size or 0),
+                    "modified_at": modified_at,
+                }
+            )
+        return sorted(rows, key=lambda row: (row["type"] != "directory", row["name"].lower()))
+
     def storage_info(self) -> dict:
         output = self._run_ssh(f"df -P -B1 {shlex.quote(self._remote_base())} | tail -1")
         parts = output.split()
@@ -111,18 +142,33 @@ class RsyncBackend(UploadBackend):
         return {"free_bytes": free, "total_bytes": total, "used_bytes": used}
 
     def get_resume_offset(self, remote_dir: str, filename: str, size_bytes: int) -> int:
+        return 0
+
+    def remote_file_matches(
+        self,
+        remote_dir: str,
+        filename: str,
+        size_bytes: int,
+        checksum: str,
+    ) -> bool:
         remote_path = join_remote(self._remote_dir(remote_dir), filename)
         output = self._run_ssh(
             "if [ -f "
             + shlex.quote(remote_path)
             + " ]; then stat -c %s "
             + shlex.quote(remote_path)
-            + "; else echo 0; fi"
-        )
+            + " && sha256sum "
+            + shlex.quote(remote_path)
+            + " | awk '{print $1}'; else echo missing; fi"
+        ).splitlines()
+        if len(output) < 2:
+            return False
         try:
-            return min(int(output.strip() or "0"), size_bytes)
+            if int(output[0].strip()) != size_bytes:
+                return False
         except ValueError:
-            return 0
+            return False
+        return output[1].strip().lower() == checksum.lower()
 
     def upload(
         self,
@@ -142,8 +188,8 @@ class RsyncBackend(UploadBackend):
         cmd = [
             "rsync",
             "-a",
+            "--checksum",
             "--partial",
-            "--append-verify",
             "--info=progress2",
             "-e",
             ssh_transport,

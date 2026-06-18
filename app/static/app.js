@@ -28,6 +28,7 @@ const appState = {
   folderBrowsers: {},
   cameraFiles: [],
   cameraFileSelection: new Set(),
+  cameraBrowserPath: "",
   currentDcimPath: "",
   lastDeviceSignature: "",
   lastMediaSignature: "",
@@ -304,15 +305,27 @@ async function loadCameraFiles(dcimPath) {
   const summary = document.getElementById("cameraFileSummary");
   if (!list || !summary) return;
   appState.currentDcimPath = dcimPath;
+  appState.cameraBrowserPath = "";
   appState.cameraFileSelection.clear();
-  list.textContent = "Loading camera videos…";
+  list.textContent = "Loading camera folder…";
   summary.textContent = "Scanning camera storage…";
+  await browseCameraFolder("");
+}
+
+async function browseCameraFolder(path = "") {
+  const list = document.getElementById("cameraFiles");
+  const summary = document.getElementById("cameraFileSummary");
+  if (!list || !summary || !appState.currentDcimPath) return;
+  list.textContent = "Loading camera folder…";
   try {
-    const data = await api.get(`/api/device-files?dcim_path=${encodeURIComponent(dcimPath)}`);
-    appState.cameraFiles = data.files || [];
+    const data = await api.get(
+      `/api/device-entries?dcim_path=${encodeURIComponent(appState.currentDcimPath)}&path=${encodeURIComponent(path)}`
+    );
+    appState.cameraBrowserPath = data.path || "";
+    appState.cameraFiles = data.entries || [];
     renderCameraFiles();
   } catch (e) {
-    list.textContent = "Unable to load camera videos: " + e.message;
+    list.textContent = "Unable to load camera folder: " + e.message;
     summary.textContent = "";
   }
 }
@@ -321,20 +334,103 @@ function renderCameraFiles() {
   const list = document.getElementById("cameraFiles");
   const summary = document.getElementById("cameraFileSummary");
   if (!list || !summary) return;
-  const totalBytes = appState.cameraFiles.reduce((sum, file) => sum + (file.size_bytes || 0), 0);
-  summary.textContent = `${appState.cameraFiles.length} video file${appState.cameraFiles.length === 1 ? "" : "s"} on camera · ${appState.cameraFileSelection.size} selected · ${fmtBytes(totalBytes)}`;
+  const files = appState.cameraFiles.filter(entry => entry.type === "file");
+  const folders = appState.cameraFiles.filter(entry => entry.type === "directory");
+  const totalBytes = files.reduce((sum, file) => sum + (file.size_bytes || 0), 0);
+  summary.textContent = `${files.length} video file${files.length === 1 ? "" : "s"} in this folder · ${appState.cameraFileSelection.size} selected · ${fmtBytes(totalBytes)}`;
   if (!appState.cameraFiles.length) {
-    list.innerHTML = "<span class='hint'>No video files found on this camera.</span>";
+    list.innerHTML = renderCameraBreadcrumb() + "<span class='hint'>No video files or folders at this level.</span>";
     return;
   }
-  list.innerHTML = appState.cameraFiles.map(file => `
-    <label class="camera-file-row">
-      <input type="checkbox" value="${esc(file.path)}" ${appState.cameraFileSelection.has(file.path) ? "checked" : ""} onchange="toggleCameraFile('${escJs(file.path)}', this.checked)">
-      <span class="camera-file-name">${esc(file.relative_path || file.filename)}</span>
-      <span class="hint">${esc(fmtBytes(file.size_bytes))}</span>
-      <span class="hint">${esc((file.modified_at || "").slice(0, 16).replace("T", " "))}</span>
-    </label>
+  const folderHtml = folders.map(entry => `
+    <div class="camera-file-row folder-row">
+      <button class="folder-open" onclick="browseCameraFolder('${escJs(entry.path)}')">Open</button>
+      <span class="camera-file-name">${esc(entry.name)}</span>
+      <span class="hint">Folder</span>
+    </div>
   `).join("");
+  const fileHtml = renderCameraDateGroups(files);
+  list.innerHTML = renderCameraBreadcrumb() + folderHtml + fileHtml;
+}
+
+function renderCameraDateGroups(files) {
+  if (!files.length) return "<span class='hint'>No video files in this folder.</span>";
+  const sorted = [...files].sort((a, b) => {
+    const at = new Date(a.modified_at || 0).getTime() || 0;
+    const bt = new Date(b.modified_at || 0).getTime() || 0;
+    if (at !== bt) return bt - at;
+    return String(a.name || a.path).localeCompare(String(b.name || b.path), undefined, { numeric: true });
+  });
+  const groups = new Map();
+  sorted.forEach(file => {
+    const date = new Date(file.modified_at || "");
+    const key = Number.isNaN(date.getTime())
+      ? "Undated"
+      : `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(file);
+  });
+  return [...groups.entries()].map(([key, groupFiles]) => {
+    const paths = groupFiles.map(file => file.full_path || file.path);
+    const selectedInGroup = paths.filter(path => appState.cameraFileSelection.has(path)).length;
+    return `
+      <div class="camera-date-group">
+        <div class="row spread camera-date-head">
+          <strong>${esc(key.replaceAll("/", " / "))}</strong>
+          <div class="row">
+            <span class="hint">${selectedInGroup}/${groupFiles.length} selected</span>
+            <button class="ghost" onclick="toggleCameraGroup('${escJs(key)}', true)">Select day</button>
+            <button class="ghost" onclick="toggleCameraGroup('${escJs(key)}', false)">Clear day</button>
+          </div>
+        </div>
+        ${groupFiles.map(entry => {
+          const filePath = entry.full_path || entry.path;
+          return `
+            <label class="camera-file-row">
+              <input type="checkbox" value="${esc(filePath)}" ${appState.cameraFileSelection.has(filePath) ? "checked" : ""} onchange="toggleCameraFile('${escJs(filePath)}', this.checked)">
+              <span class="camera-file-name">${esc(entry.path || entry.name)}</span>
+              <span class="hint">${esc(fmtBytes(entry.size_bytes))}</span>
+              <span class="hint">${esc((entry.modified_at || "").slice(0, 16).replace("T", " "))}</span>
+            </label>
+          `;
+        }).join("")}
+      </div>
+    `;
+  }).join("");
+}
+
+function toggleCameraGroup(key, checked) {
+  appState.cameraFiles
+    .filter(entry => entry.type === "file")
+    .forEach(file => {
+      const date = new Date(file.modified_at || "");
+      const fileKey = Number.isNaN(date.getTime())
+        ? "Undated"
+        : `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`;
+      if (fileKey !== key) return;
+      const path = file.full_path || file.path;
+      if (checked) appState.cameraFileSelection.add(path);
+      else appState.cameraFileSelection.delete(path);
+    });
+  renderCameraFiles();
+}
+
+function renderCameraBreadcrumb() {
+  const crumbs = appState.cameraBrowserPath ? appState.cameraBrowserPath.split("/").filter(Boolean) : [];
+  const parent = crumbs.slice(0, -1).join("/");
+  const parts = [
+    `<button class="folder-crumb" onclick="browseCameraFolder('')">Camera</button>`,
+    ...crumbs.map((part, idx) => {
+      const crumbPath = crumbs.slice(0, idx + 1).join("/");
+      return `<button class="folder-crumb" onclick="browseCameraFolder('${escJs(crumbPath)}')">${esc(part)}</button>`;
+    }),
+  ].join("<span class='folder-sep'>/</span>");
+  return `
+    <div class="folder-toolbar">
+      <div class="folder-crumbs">${parts}</div>
+      ${appState.cameraBrowserPath ? `<button class="ghost" onclick="browseCameraFolder('${escJs(parent)}')">Up</button>` : ""}
+    </div>
+  `;
 }
 
 function toggleCameraFile(path, checked) {
@@ -344,7 +440,11 @@ function toggleCameraFile(path, checked) {
 }
 
 function toggleCameraSelection(checked) {
-  if (checked) appState.cameraFiles.forEach(file => appState.cameraFileSelection.add(file.path));
+  if (checked) {
+    appState.cameraFiles
+      .filter(file => file.type === "file")
+      .forEach(file => appState.cameraFileSelection.add(file.full_path || file.path));
+  }
   else appState.cameraFileSelection.clear();
   renderCameraFiles();
 }
@@ -659,24 +759,24 @@ const destinationTypeMap = {
     host: false,
     user: false,
     secret: false,
-    basePlaceholder: "/mnt/nas/camera",
+    basePlaceholder: "/mnt/nas",
     hint: "Use a directory already mounted on the Pi or Docker host.",
   },
   nfs: {
-    port: "2049",
-    host: true,
+    port: "",
+    host: false,
     user: false,
     secret: false,
-    basePlaceholder: "/mnt/nfs/camera or /export/camera",
-    hint: "NFS uses server/export settings and does not need a password. The share must be mounted on the Pi/container host for uploads.",
+    basePlaceholder: "/mnt/nas",
+    hint: "Use an NFS share that is already mounted on the Pi or Docker host. This app does not mount NFS shares itself.",
   },
   smb: {
-    port: "445",
-    host: true,
-    user: true,
-    secret: true,
+    port: "",
+    host: false,
+    user: false,
+    secret: false,
     basePlaceholder: "/mnt/smb/camera",
-    hint: "SMB/CIFS uses server, username, password, and a mounted base path on the Pi/container host.",
+    hint: "Use an SMB/CIFS share that is already mounted on the Pi or Docker host. This app does not mount SMB shares itself.",
   },
   nextcloud: {
     port: "",
@@ -715,6 +815,9 @@ function initDestinations() {
 function showDestForm() {
   const panel = document.getElementById("destFormPanel");
   if (!panel) return;
+  if (!document.getElementById("dId").value && !document.getElementById("dBase").value.trim()) {
+    document.getElementById("dBase").value = "/mnt/nas";
+  }
   panel.hidden = false;
   updateBaseStatus();
   panel.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -858,6 +961,7 @@ function editDestination(d) {
 
 function resetDestForm() {
   ["dId", "dName", "dHost", "dPort", "dUser", "dSecret", "dBase"].forEach(i => { document.getElementById(i).value = ""; });
+  document.getElementById("dBase").value = "/mnt/nas";
   document.getElementById("dTemplate").value = "{year}/{month:02d}";
   document.getElementById("dType").value = "local";
   document.getElementById("dDefault").checked = false;
@@ -886,24 +990,24 @@ async function testAndBrowseDestination() {
 async function browseDestinationFolders(destinationId, targetId, path = "", config = null) {
   const target = document.getElementById(targetId);
   if (!target) return;
-  target.textContent = "Loading folders…";
+  target.textContent = "Loading remote files…";
   const browserConfig = destinationId ? config : (config || destForm());
   const basePath = browserConfig?.base_path || document.getElementById("dBase")?.value.trim() || "";
   try {
     const r = destinationId
-      ? await api.get(`/api/destinations/${destinationId}/folders?path=${encodeURIComponent(path)}`)
-      : await api.post(`/api/destinations/preview/folders?path=${encodeURIComponent(path)}`, browserConfig);
+      ? await api.get(`/api/destinations/${destinationId}/entries?path=${encodeURIComponent(path)}`)
+      : await api.post(`/api/destinations/preview/entries?path=${encodeURIComponent(path)}`, browserConfig);
     appState.folderBrowsers[targetId] = {
       destinationId,
       config: browserConfig,
       basePath,
       path: r.path || "",
-      lastFolders: r.folders || [],
+      lastEntries: r.entries || [],
       selectedPath: appState.folderBrowsers[targetId]?.selectedPath,
     };
-    renderFolderBrowser(targetId, r.folders);
+    renderFolderBrowser(targetId, r.entries || []);
   } catch (e) {
-    target.textContent = "Unable to load folders: " + e.message;
+    target.textContent = "Unable to load remote files: " + e.message;
   }
 }
 
@@ -913,7 +1017,7 @@ function browseFolderTarget(targetId, path = "") {
   browseDestinationFolders(state.destinationId, targetId, path, state.config);
 }
 
-function renderFolderBrowser(targetId, folders) {
+function renderFolderBrowser(targetId, entries) {
   const target = document.getElementById(targetId);
   if (!target) return;
   const state = appState.folderBrowsers[targetId] || { destinationId: null, path: "" };
@@ -928,19 +1032,28 @@ function renderFolderBrowser(targetId, folders) {
     }),
   ].join("<span class='folder-sep'>/</span>");
   const selectedPath = state.selectedPath;
-  const folderRows = folders.length
-    ? folders.map(name => {
-      const childPath = appendPath(state.path, name);
+  const entryRows = entries.length
+    ? entries.map(entry => {
+      const childPath = entry.path || appendPath(state.path, entry.name);
       const isSel = selectedPath != null && childPath === selectedPath;
+      if (entry.type === "directory") {
+        return `
+          <div class="folder-row${isSel ? " selected" : ""}">
+            <button class="folder-open" onclick="${browseCall(childPath)}">Open</button>
+            <button class="folder-name" onclick="${browseCall(childPath)}">${esc(entry.name)}</button>
+            <button class="folder-select" onclick="applyFolderChoice('${escJs(targetId)}','${escJs(childPath)}')">${isSel ? "✓ Selected" : "Select"}</button>
+          </div>
+        `;
+      }
       return `
-        <div class="folder-row${isSel ? " selected" : ""}">
-          <button class="folder-open" onclick="${browseCall(childPath)}">Open</button>
-          <button class="folder-name" onclick="${browseCall(childPath)}">${esc(name)}</button>
-          <button class="folder-select" onclick="applyFolderChoice('${escJs(targetId)}','${escJs(childPath)}')">${isSel ? "✓ Selected" : "Select"}</button>
+        <div class="folder-row file-row">
+          <span class="folder-open">File</span>
+          <span class="folder-name">${esc(entry.name)}</span>
+          <span class="hint">${esc(fmtBytes(entry.size_bytes || 0))}</span>
         </div>
       `;
     }).join("")
-    : "<div class='folder-empty'>No child folders at this level.</div>";
+    : "<div class='folder-empty'>No remote files or folders at this level.</div>";
   const currentSelected = selectedPath != null && (selectedPath || "") === (state.path || "");
   target.innerHTML = `
     <div class="folder-toolbar">
@@ -950,7 +1063,7 @@ function renderFolderBrowser(targetId, folders) {
         <button class="ghost" onclick="applyFolderChoice('${escJs(targetId)}','${escJs(state.path)}')">${currentSelected ? "✓ This folder selected" : "Use this folder"}</button>
       </div>
     </div>
-    <div class="folder-list">${folderRows}</div>
+    <div class="folder-list">${entryRows}</div>
   `;
 }
 
@@ -963,7 +1076,7 @@ async function applyFolderChoice(targetId, path) {
   if (targetId !== "folderBrowser" && state.destinationId && state.config) {
     const body = { ...state.config, base_path: pickedPath };
     await api.put(`/api/destinations/${state.destinationId}`, body);
-    renderFolderBrowser(targetId, state.lastFolders || []);
+    renderFolderBrowser(targetId, state.lastEntries || []);
     toast(`Using ${pickedPath} for ${state.config.name}`);
     loadDestinations();
     return;
@@ -974,7 +1087,7 @@ async function applyFolderChoice(targetId, path) {
   base.classList.add("just-set");
   setTimeout(() => base.classList.remove("just-set"), 1200);
   updateBaseStatus(true);
-  renderFolderBrowser(targetId, state.lastFolders || []);
+  renderFolderBrowser(targetId, state.lastEntries || []);
   toast(`Base path set to ${base.value} — click Save to store it`);
 }
 
@@ -1149,6 +1262,8 @@ async function loadStats() {
     const data = stats.overview || {};
     overview.innerHTML = `
       <div class="live-card"><div class="hint">Uploaded clips</div><div class="value">${data.uploaded_clip_count || 0}</div></div>
+      <div class="live-card"><div class="hint">Upload errors</div><div class="value">${data.error_clip_count || 0}</div></div>
+      <div class="live-card"><div class="hint">Pending / active</div><div class="value">${(data.pending_clip_count || 0) + (data.uploading_clip_count || 0)}</div></div>
       <div class="live-card"><div class="hint">Uploaded size</div><div class="value">${fmtBytes(data.uploaded_bytes || 0)}</div></div>
       <div class="live-card"><div class="hint">Average upload time</div><div class="value">${fmtDurationText(data.average_upload_duration_s)}</div></div>
       <div class="live-card"><div class="hint">Average throughput</div><div class="value">${fmtBytes(data.average_throughput_bps || 0)}/s</div></div>
@@ -1175,12 +1290,14 @@ function renderStatsDestinations(rows) {
     el.innerHTML = "<span class='hint'>No destinations configured.</span>";
     return;
   }
-  let html = "<table><tr><th>Destination</th><th>Uploads</th><th>App storage</th><th>Destination storage</th><th>Average</th></tr>";
+  let html = "<table><tr><th>Destination</th><th>Uploads</th><th>Errors</th><th>Pending / active</th><th>App storage</th><th>Destination storage</th><th>Average</th></tr>";
   rows.forEach(row => {
     const storage = row.storage || {};
     html += `<tr>
       <td><b>${esc(row.name)}</b><br><span class="hint">${esc(row.type)}</span></td>
       <td>${row.uploaded_clip_count || 0}</td>
+      <td>${row.error_clip_count || 0}</td>
+      <td>${(row.pending_clip_count || 0) + (row.uploading_clip_count || 0)}</td>
       <td>${fmtBytes(row.uploaded_bytes || 0)}</td>
       <td>${renderDestinationStorageText({ storage })}</td>
       <td>${fmtDurationText(row.average_upload_duration_s)} · ${fmtBytes(row.average_throughput_bps || 0)}/s</td>

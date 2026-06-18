@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 
 from app.destinations.local import LocalBackend
 from app.models import Destination
@@ -40,3 +41,23 @@ def test_local_backend_resumes_partial_upload(tmp_path, monkeypatch):
     assert Path(remote_path).read_bytes() == source.read_bytes()
     assert not partial.exists()
     assert progress[-1] == (source.stat().st_size, source.stat().st_size)
+
+
+def test_local_backend_verifies_remote_hash(tmp_path):
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"same-size-content")
+    checksum = hashlib.sha256(source.read_bytes()).hexdigest()
+
+    root = tmp_path / "remote"
+    remote_dir = root / "2026" / "06"
+    remote_dir.mkdir(parents=True)
+    remote = remote_dir / "clip.mp4"
+    remote.write_bytes(source.read_bytes())
+
+    backend = LocalBackend(Destination(name="NAS", type="local", base_path=str(root)))
+
+    assert backend.remote_file_matches("2026/06", "clip.mp4", source.stat().st_size, checksum)
+
+    remote.write_bytes(b"different-content")
+
+    assert not backend.remote_file_matches("2026/06", "clip.mp4", source.stat().st_size, checksum)

@@ -6,6 +6,7 @@ root for the user, e.g. https://cloud.example.com/remote.php/dav/files/USER
 """
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 from typing import Iterator
 from urllib.parse import unquote
@@ -15,7 +16,7 @@ import httpx
 
 from ..config import get_settings
 from ..crypto import decrypt
-from .base import ProgressCb, UploadBackend, join_remote
+from .base import ProgressCb, RemoteEntry, UploadBackend, join_remote
 
 
 class NextcloudBackend(UploadBackend):
@@ -59,6 +60,47 @@ class NextcloudBackend(UploadBackend):
             if child:
                 names.append(child)
         return sorted(set(names))
+
+    def list_entries(self, path: str = "") -> list[RemoteEntry]:
+        target = self._base_url() + join_remote("/", path)
+        with httpx.Client(timeout=30, auth=self._auth()) as client:
+            resp = client.request("PROPFIND", target, headers={"Depth": "1"})
+            if resp.status_code >= 400:
+                raise RuntimeError(f"WebDAV PROPFIND failed: HTTP {resp.status_code}")
+        ns = {"d": "DAV:"}
+        root = ET.fromstring(resp.text)
+        rows: list[RemoteEntry] = []
+        first = True
+        for response in root.findall("d:response", ns):
+            if first:
+                first = False
+                continue
+            href = response.findtext("d:href", default="", namespaces=ns)
+            name = unquote(href.rstrip("/").split("/")[-1])
+            if not name:
+                continue
+            is_dir = response.find("d:propstat/d:prop/d:resourcetype/d:collection", ns) is not None
+            size_text = response.findtext("d:propstat/d:prop/d:getcontentlength", namespaces=ns)
+            modified_text = response.findtext("d:propstat/d:prop/d:getlastmodified", namespaces=ns)
+            modified_at = None
+            if modified_text:
+                try:
+                    modified_at = dt.datetime.strptime(
+                        modified_text,
+                        "%a, %d %b %Y %H:%M:%S %Z",
+                    ).isoformat()
+                except ValueError:
+                    modified_at = modified_text
+            rows.append(
+                {
+                    "name": name,
+                    "path": join_remote("/", path, name).strip("/"),
+                    "type": "directory" if is_dir else "file",
+                    "size_bytes": None if is_dir else int(size_text or 0),
+                    "modified_at": modified_at,
+                }
+            )
+        return sorted(rows, key=lambda row: (row["type"] != "directory", row["name"].lower()))
 
     def storage_info(self) -> dict:
         body = """<?xml version="1.0" encoding="utf-8" ?>
@@ -145,16 +187,36 @@ class NextcloudBackend(UploadBackend):
 
     def get_resume_offset(self, remote_dir: str, filename: str, size_bytes: int) -> int:
         tmp_url = self._build_url(remote_dir, filename, part=True)
-        final_url = self._build_url(remote_dir, filename, part=False)
         with httpx.Client(timeout=30, auth=self._auth()) as client:
-            final_resp = client.head(final_url)
-            final_size = int(final_resp.headers.get("Content-Length", "0") or 0)
-            if final_resp.status_code < 400 and final_size == size_bytes:
-                return size_bytes
             resp = client.head(tmp_url)
             if resp.status_code >= 400:
                 return 0
             return min(int(resp.headers.get("Content-Length", "0") or 0), size_bytes)
+
+    def remote_file_matches(
+        self,
+        remote_dir: str,
+        filename: str,
+        size_bytes: int,
+        checksum: str,
+    ) -> bool:
+        import hashlib
+
+        final_url = self._build_url(remote_dir, filename, part=False)
+        with httpx.Client(timeout=None, auth=self._auth()) as client:
+            head = client.head(final_url)
+            if head.status_code >= 400:
+                return False
+            remote_size = int(head.headers.get("Content-Length", "0") or 0)
+            if remote_size != size_bytes:
+                return False
+            h = hashlib.sha256()
+            with client.stream("GET", final_url) as resp:
+                if resp.status_code >= 400:
+                    return False
+                for chunk in resp.iter_bytes():
+                    h.update(chunk)
+            return h.hexdigest() == checksum
 
     def upload(
         self,

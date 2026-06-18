@@ -3,11 +3,19 @@ from __future__ import annotations
 
 import datetime as dt
 from pathlib import PurePosixPath
-from typing import Callable, Optional
+from typing import Callable, Optional, TypedDict
 
 from ..models import Destination
 
 ProgressCb = Optional[Callable[[int, int], None]]
+
+
+class RemoteEntry(TypedDict):
+    name: str
+    path: str
+    type: str
+    size_bytes: int | None
+    modified_at: str | None
 
 
 def render_remote_dir(template: str, when: Optional[dt.datetime]) -> str:
@@ -47,6 +55,19 @@ class UploadBackend:
         """Return child directories for the destination path or a subpath."""
         raise NotImplementedError
 
+    def list_entries(self, path: str = "") -> list[RemoteEntry]:
+        """Return child directories and files for a destination path."""
+        return [
+            {
+                "name": name,
+                "path": join_remote(path, name).strip("/"),
+                "type": "directory",
+                "size_bytes": None,
+                "modified_at": None,
+            }
+            for name in self.list_directories(path)
+        ]
+
     def storage_info(self) -> dict:
         """Return best-effort storage totals for the destination root."""
         return {"free_bytes": None, "total_bytes": None, "used_bytes": None}
@@ -58,6 +79,16 @@ class UploadBackend:
     def get_resume_offset(self, remote_dir: str, filename: str, size_bytes: int) -> int:
         """Return existing uploaded bytes for a temporary remote file."""
         return 0
+
+    def remote_file_matches(
+        self,
+        remote_dir: str,
+        filename: str,
+        size_bytes: int,
+        checksum: str,
+    ) -> bool:
+        """Return True only when the final remote file matches size and sha256."""
+        return False
 
     def upload(
         self,

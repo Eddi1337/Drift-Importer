@@ -66,6 +66,9 @@ def test_build_upload_stats_aggregates_persistent_metrics(monkeypatch):
 
     assert stats["overview"] == {
         "uploaded_clip_count": 2,
+        "error_clip_count": 1,
+        "uploading_clip_count": 0,
+        "pending_clip_count": 0,
         "uploaded_bytes": 300,
         "average_upload_duration_s": 4.5,
         "average_throughput_bps": 32.5,
@@ -84,6 +87,9 @@ def test_build_upload_stats_aggregates_persistent_metrics(monkeypatch):
             "enabled": True,
             "has_secret": False,
             "uploaded_clip_count": 2,
+            "error_clip_count": 1,
+            "uploading_clip_count": 0,
+            "pending_clip_count": 0,
             "uploaded_bytes": 300,
             "average_upload_duration_s": 4.5,
             "average_throughput_bps": 32.5,

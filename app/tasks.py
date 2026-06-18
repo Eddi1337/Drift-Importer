@@ -344,35 +344,7 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                 clip.filename = item.filename
                 clip.size_bytes = local_size
                 clip.updated_at = utcnow()
-            if clip.status == "done" and clip.remote_path:
-                state.status = "done"
-                state.remote_path = clip.remote_path
-                state.error = None
-                state.bytes_uploaded = local_size
-                state.total_bytes = local_size
-                state.uploaded_at = utcnow()
-                state.updated_at = utcnow()
-                done += 1
-                ctx.set_progress(done / total, f"Skipped duplicate {item.filename}")
-                _publish_upload_status(
-                    prefs,
-                    job_id,
-                    "running",
-                    {
-                        "job_id": job_id,
-                        "current_file": item.filename,
-                        "current_destination": dest.name,
-                        "completed_items": done,
-                        "total_items": total,
-                        "progress_pct": round((done / total) * 100, 1),
-                        "mode": "deduplicated",
-                    },
-                )
-                continue
-            if state.status == "done":
-                done += 1
-                ctx.set_progress(done / total)
-                continue
+            ledger_done = clip.status == "done" and bool(clip.remote_path)
             state.status = "uploading"
             state.error = None
             state.total_bytes = local_size
@@ -390,6 +362,76 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
             remote_hint = join_remote(dest.base_path or "/", remote_dir, filename)
 
         # 2) Perform the upload with no DB transaction held open.
+        if ledger_done:
+            ctx.set_progress(done / total, f"Verifying {filename} on {dest_name}")
+            try:
+                if backend.remote_file_matches(remote_dir, filename, local_size, checksum_value):
+                    log.info(
+                        "Verified existing upload for media=%s destination=%s remote=%s",
+                        mid,
+                        did,
+                        remote_hint,
+                    )
+                    with session_scope() as s:
+                        state = (
+                            s.query(UploadState)
+                            .filter(
+                                UploadState.media_id == mid,
+                                UploadState.destination_id == did,
+                            )
+                            .first()
+                        )
+                        clip = s.get(UploadedClip, clip_id)
+                        if state:
+                            state.status = "done"
+                            state.remote_path = clip.remote_path if clip else remote_hint
+                            state.error = None
+                            state.bytes_uploaded = local_size
+                            state.total_bytes = local_size
+                            state.uploaded_at = state.uploaded_at or utcnow()
+                            state.updated_at = utcnow()
+                        if clip:
+                            clip.status = "done"
+                            clip.bytes_uploaded = local_size
+                            clip.size_bytes = local_size
+                            clip.last_error = None
+                            clip.uploaded_at = clip.uploaded_at or utcnow()
+                            clip.updated_at = utcnow()
+                    done += 1
+                    ctx.set_progress(done / total, f"Verified existing {filename}")
+                    _publish_upload_status(
+                        prefs,
+                        job_id,
+                        "running",
+                        {
+                            "job_id": job_id,
+                            "current_file": filename,
+                            "current_destination": dest_name,
+                            "completed_items": done,
+                            "total_items": total,
+                            "progress_pct": round((done / total) * 100, 1),
+                            "mode": "verified-deduplicated",
+                        },
+                    )
+                    continue
+                log.warning(
+                    "Ledger row for media=%s destination=%s did not verify; re-uploading",
+                    mid,
+                    did,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.exception(
+                    "Remote verification failed before upload for media=%s destination=%s",
+                    mid,
+                    did,
+                )
+                with session_scope() as s:
+                    clip = s.get(UploadedClip, clip_id)
+                    if clip:
+                        clip.status = "pending"
+                        clip.last_error = f"Pre-upload verification failed: {exc}"
+                        clip.updated_at = utcnow()
+
         start_offset = backend.get_resume_offset(remote_dir, filename, local_size)
         _mark_upload_progress(mid, did, clip_id, start_offset, local_size)
         last_persist = 0.0
@@ -427,6 +469,14 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
         throughput_bps = None
         with ctx.upload_semaphore:
             try:
+                log.info(
+                    "Starting upload media=%s destination=%s file=%s bytes=%s offset=%s",
+                    mid,
+                    did,
+                    filename,
+                    local_size,
+                    start_offset,
+                )
                 result_remote = backend.upload(
                     local_path,
                     remote_dir,
@@ -443,6 +493,31 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
             transferred_bytes = max(0, local_size - start_offset)
             if transferred_bytes > 0 and duration_s > 0:
                 throughput_bps = transferred_bytes / duration_s
+            try:
+                if not backend.remote_file_matches(remote_dir, filename, local_size, checksum_value):
+                    result_status = "error"
+                    result_error = "Remote verification failed after upload"
+                    log.error(
+                        "Remote verification failed after upload media=%s destination=%s remote=%s",
+                        mid,
+                        did,
+                        result_remote,
+                    )
+                else:
+                    log.info(
+                        "Verified uploaded file media=%s destination=%s remote=%s",
+                        mid,
+                        did,
+                        result_remote,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                result_status = "error"
+                result_error = f"Remote verification failed after upload: {exc}"[:2000]
+                log.exception(
+                    "Remote verification errored after upload media=%s destination=%s",
+                    mid,
+                    did,
+                )
 
         # 3) Record the outcome in another short transaction.
         with session_scope() as s:
