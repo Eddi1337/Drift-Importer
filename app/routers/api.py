@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 import re
+import shutil
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -13,6 +16,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..crypto import encrypt
+from ..config import get_settings
 from ..database import get_session
 from ..destinations import get_backend
 from ..devices import detect_devices, scan_media_files
@@ -33,6 +37,9 @@ from ..settings_store import app_settings_dict, encode_destination_ids, get_app_
 from ..streaming import stream_file
 
 router = APIRouter()
+
+_last_cpu_sample: tuple[float, int, int] | None = None
+_last_net_sample: tuple[float, int, int] | None = None
 
 
 # --- serialization helpers --------------------------------------------------
@@ -88,7 +95,220 @@ def _destination_storage_payload(
     }
 
 
-def build_upload_stats(session: Session) -> dict:
+def _read_cpu_totals() -> tuple[int, int] | None:
+    try:
+        first = Path("/proc/stat").read_text().splitlines()[0].split()
+    except (OSError, IndexError):
+        return None
+    if not first or first[0] != "cpu":
+        return None
+    values = [int(v) for v in first[1:]]
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    total = sum(values)
+    return total, idle
+
+
+def _cpu_payload() -> dict:
+    global _last_cpu_sample
+    sample = _read_cpu_totals()
+    now = time.monotonic()
+    load = None
+    if hasattr(os, "getloadavg"):
+        try:
+            load = os.getloadavg()
+        except OSError:
+            load = None
+    payload = {
+        "percent": None,
+        "load_1m": _round_or_none(load[0]) if load else None,
+        "load_5m": _round_or_none(load[1]) if load else None,
+        "load_15m": _round_or_none(load[2]) if load else None,
+        "cpu_count": os.cpu_count(),
+    }
+    if sample is None:
+        return payload
+    total, idle = sample
+    if _last_cpu_sample is not None:
+        _, last_total, last_idle = _last_cpu_sample
+        total_delta = total - last_total
+        idle_delta = idle - last_idle
+        if total_delta > 0:
+            payload["percent"] = round(max(0.0, min(100.0, (1 - idle_delta / total_delta) * 100)), 1)
+    _last_cpu_sample = (now, total, idle)
+    return payload
+
+
+def _read_network_totals() -> tuple[int, int] | None:
+    try:
+        lines = Path("/proc/net/dev").read_text().splitlines()[2:]
+    except OSError:
+        return None
+    rx = 0
+    tx = 0
+    for line in lines:
+        if ":" not in line:
+            continue
+        iface, data = line.split(":", 1)
+        iface = iface.strip()
+        if iface == "lo":
+            continue
+        parts = data.split()
+        if len(parts) < 16:
+            continue
+        rx += int(parts[0])
+        tx += int(parts[8])
+    return rx, tx
+
+
+def _network_payload() -> dict:
+    global _last_net_sample
+    sample = _read_network_totals()
+    now = time.monotonic()
+    payload = {
+        "rx_bytes_total": None,
+        "tx_bytes_total": None,
+        "rx_bytes_per_s": 0,
+        "tx_bytes_per_s": 0,
+    }
+    if sample is None:
+        return payload
+    rx, tx = sample
+    payload["rx_bytes_total"] = rx
+    payload["tx_bytes_total"] = tx
+    if _last_net_sample is not None:
+        last_now, last_rx, last_tx = _last_net_sample
+        elapsed = max(0.001, now - last_now)
+        payload["rx_bytes_per_s"] = max(0, int((rx - last_rx) / elapsed))
+        payload["tx_bytes_per_s"] = max(0, int((tx - last_tx) / elapsed))
+    _last_net_sample = (now, rx, tx)
+    return payload
+
+
+def _filesystem_payload() -> list[dict]:
+    settings = get_settings()
+    paths = [
+        ("Root", Path("/")),
+        ("Data", settings.data_dir),
+        ("Working", settings.working_dir),
+        ("Thumbnails", settings.thumbnail_dir),
+    ]
+    seen: set[str] = set()
+    rows = []
+    for label, path in paths:
+        try:
+            resolved = str(path.resolve())
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            usage = shutil.disk_usage(path)
+            used = int(usage.total - usage.free)
+            rows.append(
+                {
+                    "label": label,
+                    "path": resolved,
+                    "total_bytes": int(usage.total),
+                    "used_bytes": used,
+                    "free_bytes": int(usage.free),
+                    "used_percent": round((used / usage.total) * 100, 1) if usage.total else None,
+                }
+            )
+        except OSError as exc:
+            rows.append(
+                {
+                    "label": label,
+                    "path": str(path),
+                    "total_bytes": None,
+                    "used_bytes": None,
+                    "free_bytes": None,
+                    "used_percent": None,
+                    "error": str(exc),
+                }
+            )
+    return rows
+
+
+def _timeline_bucket_minutes(hours: float) -> int:
+    if hours <= 1:
+        return 5
+    if hours <= 3:
+        return 10
+    if hours <= 6:
+        return 15
+    if hours <= 12:
+        return 30
+    return 60
+
+
+def build_upload_timeline(
+    rows: list[UploadedClip],
+    hours: float = 3,
+    now: dt.datetime | None = None,
+) -> dict:
+    hours = max(0.25, min(float(hours or 3), 72.0))
+    bucket_minutes = _timeline_bucket_minutes(hours)
+    now = now or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    since = now - dt.timedelta(hours=hours)
+    bucket_delta = dt.timedelta(minutes=bucket_minutes)
+    bucket_count = max(1, int((dt.timedelta(hours=hours) / bucket_delta) + 0.999))
+    start = now - (bucket_delta * bucket_count)
+    buckets = [
+        {
+            "start": (start + bucket_delta * i),
+            "end": (start + bucket_delta * (i + 1)),
+            "uploaded_bytes": 0,
+            "error_bytes": 0,
+            "active_bytes": 0,
+            "clip_count": 0,
+        }
+        for i in range(bucket_count)
+    ]
+    for row in rows:
+        event_time = row.uploaded_at if row.status == "done" else row.updated_at
+        if event_time is None or event_time < since or event_time > now:
+            continue
+        idx = int((event_time - start) / bucket_delta)
+        if idx < 0 or idx >= len(buckets):
+            continue
+        bytes_value = int(row.size_bytes or 0) if row.status == "done" else int(row.bytes_uploaded or 0)
+        buckets[idx]["clip_count"] += 1
+        if row.status == "done":
+            buckets[idx]["uploaded_bytes"] += bytes_value
+        elif row.status == "error":
+            buckets[idx]["error_bytes"] += bytes_value
+        elif row.status == "uploading":
+            buckets[idx]["active_bytes"] += bytes_value
+    points = [
+        {
+            "start": bucket["start"].isoformat(),
+            "end": bucket["end"].isoformat(),
+            "uploaded_bytes": bucket["uploaded_bytes"],
+            "error_bytes": bucket["error_bytes"],
+            "active_bytes": bucket["active_bytes"],
+            "clip_count": bucket["clip_count"],
+        }
+        for bucket in buckets
+    ]
+    return {
+        "hours": hours,
+        "bucket_minutes": bucket_minutes,
+        "total_uploaded_bytes": sum(point["uploaded_bytes"] for point in points),
+        "total_error_bytes": sum(point["error_bytes"] for point in points),
+        "total_active_bytes": sum(point["active_bytes"] for point in points),
+        "points": points,
+    }
+
+
+def build_system_stats(upload_rows: list[UploadedClip] | None = None, timeline_hours: float = 3) -> dict:
+    return {
+        "sampled_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "cpu": _cpu_payload(),
+        "network": _network_payload(),
+        "upload_timeline": build_upload_timeline(upload_rows or [], timeline_hours),
+        "filesystems": _filesystem_payload(),
+    }
+
+
+def build_upload_stats(session: Session, timeline_hours: float = 3) -> dict:
     destinations = session.query(Destination).order_by(Destination.name).all()
     rows = session.query(UploadedClip).all()
     rows_by_destination: dict[int, list[UploadedClip]] = {}
@@ -97,6 +317,7 @@ def build_upload_stats(session: Session) -> dict:
 
     return {
         "overview": _build_upload_totals(rows),
+        "system": build_system_stats(rows, timeline_hours),
         "destinations": [
             {
                 **dest_dict(destination),
@@ -787,13 +1008,19 @@ def list_recent_uploads(
 
 
 @router.get("/stats/uploads")
-def upload_stats(session: Session = Depends(get_session)):
-    return build_upload_stats(session)
+def upload_stats(
+    timeline_hours: float = 3,
+    session: Session = Depends(get_session),
+):
+    return build_upload_stats(session, timeline_hours=timeline_hours)
 
 
 @router.get("/stats")
-def stats(session: Session = Depends(get_session)):
-    return build_upload_stats(session)
+def stats(
+    timeline_hours: float = 3,
+    session: Session = Depends(get_session),
+):
+    return build_upload_stats(session, timeline_hours=timeline_hours)
 
 
 # --- actions: upload / timestamp / merge ------------------------------------

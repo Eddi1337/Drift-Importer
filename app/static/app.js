@@ -37,7 +37,13 @@ const appState = {
   jobPollStarted: false,
   galleryPollers: [],
   jobsPoller: null,
+  statsPoller: null,
   settingsPoller: null,
+  systemHistory: {
+    cpu: [],
+    rx: [],
+    tx: [],
+  },
 };
 
 const selected = new Set();
@@ -1357,16 +1363,25 @@ async function dismissJob(id) {
 function initStats() {
   ensureGlobalJobPolling();
   loadStats();
+  clearInterval(appState.statsPoller);
+  appState.statsPoller = setInterval(() => {
+    if (!document.hidden) loadStats(false);
+  }, 5000);
 }
 
-async function loadStats() {
+async function loadStats(showLoading = true) {
   const overview = document.getElementById("statsOverview");
   const destinations = document.getElementById("statsDestinations");
+  const system = document.getElementById("systemStats");
   if (!overview || !destinations) return;
-  overview.textContent = "Loading…";
-  destinations.textContent = "Loading…";
+  if (showLoading) {
+    overview.textContent = "Loading…";
+    destinations.textContent = "Loading…";
+    if (system) system.textContent = "Loading…";
+  }
   try {
-    const stats = await api.get("/api/stats");
+    const hours = getTimelineHours();
+    const stats = await api.get(`/api/stats?timeline_hours=${encodeURIComponent(hours)}`);
     const data = stats.overview || {};
     overview.innerHTML = `
       <div class="live-card"><div class="hint">Uploaded clips</div><div class="value">${data.uploaded_clip_count || 0}</div></div>
@@ -1376,11 +1391,20 @@ async function loadStats() {
       <div class="live-card"><div class="hint">Average upload time</div><div class="value">${fmtDurationText(data.average_upload_duration_s)}</div></div>
       <div class="live-card"><div class="hint">Average throughput</div><div class="value">${fmtBytes(data.average_throughput_bps || 0)}/s</div></div>
     `;
+    renderSystemStats(stats.system || {});
     renderStatsDestinations(stats.destinations || []);
   } catch (e) {
     overview.textContent = "Unable to load stats: " + e.message;
     destinations.textContent = "";
+    if (system) system.textContent = "";
   }
+}
+
+function getTimelineHours() {
+  const input = document.getElementById("timelineHours");
+  const value = Number(input?.value || 3);
+  if (!Number.isFinite(value)) return 3;
+  return Math.max(0.25, Math.min(72, value));
 }
 
 function fmtDurationText(seconds) {
@@ -1389,6 +1413,180 @@ function fmtDurationText(seconds) {
   const mins = Math.floor(seconds / 60);
   const secs = Math.round(seconds % 60);
   return `${mins}m ${secs}s`;
+}
+
+function pushHistory(key, value, max = 30) {
+  const arr = appState.systemHistory[key];
+  if (!arr) return [];
+  arr.push(Number(value || 0));
+  while (arr.length > max) arr.shift();
+  return arr;
+}
+
+function renderSparkline(values, cls = "") {
+  const width = 220;
+  const height = 64;
+  const max = Math.max(1, ...values);
+  const points = values.map((value, idx) => {
+    const x = values.length <= 1 ? 0 : (idx / (values.length - 1)) * width;
+    const y = height - (Math.max(0, value) / max) * height;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  return `<svg class="spark ${cls}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
+    <polyline points="${points}" fill="none" vector-effect="non-scaling-stroke"></polyline>
+  </svg>`;
+}
+
+function renderUploadTimeline(timeline) {
+  const points = timeline?.points || [];
+  if (!points.length) return "<span class='hint'>No upload timeline data.</span>";
+  const width = 640;
+  const height = 150;
+  const pad = 18;
+  const innerHeight = height - pad * 2;
+  const max = Math.max(
+    1,
+    ...points.map(point =>
+      (point.uploaded_bytes || 0) + (point.error_bytes || 0) + (point.active_bytes || 0)
+    ),
+  );
+  const barGap = 3;
+  const barWidth = Math.max(2, (width - pad * 2) / points.length - barGap);
+  const bars = points.map((point, idx) => {
+    const total = (point.uploaded_bytes || 0) + (point.error_bytes || 0) + (point.active_bytes || 0);
+    const uploadedHeight = ((point.uploaded_bytes || 0) / max) * innerHeight;
+    const activeHeight = ((point.active_bytes || 0) / max) * innerHeight;
+    const errorHeight = ((point.error_bytes || 0) / max) * innerHeight;
+    const x = pad + idx * (barWidth + barGap);
+    let y = height - pad;
+    const title = `${fmtDateTime(point.start)}\nUploaded ${fmtBytes(point.uploaded_bytes || 0)}\nActive ${fmtBytes(point.active_bytes || 0)}\nErrored ${fmtBytes(point.error_bytes || 0)}\n${point.clip_count || 0} clip events`;
+    const segments = [];
+    if (uploadedHeight > 0) {
+      y -= uploadedHeight;
+      segments.push(`<rect class="timeline-uploaded" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${uploadedHeight.toFixed(1)}"></rect>`);
+    }
+    if (activeHeight > 0) {
+      y -= activeHeight;
+      segments.push(`<rect class="timeline-active" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${activeHeight.toFixed(1)}"></rect>`);
+    }
+    if (errorHeight > 0) {
+      y -= errorHeight;
+      segments.push(`<rect class="timeline-error" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${errorHeight.toFixed(1)}"></rect>`);
+    }
+    if (!segments.length) {
+      segments.push(`<rect class="timeline-empty" x="${x.toFixed(1)}" y="${(height - pad - 1).toFixed(1)}" width="${barWidth.toFixed(1)}" height="1"></rect>`);
+    }
+    return `<g><title>${esc(title)}</title>${segments.join("")}</g>`;
+  }).join("");
+  const first = points[0];
+  const last = points[points.length - 1];
+  return `
+    <div class="upload-timeline">
+      <div class="row spread">
+        <div>
+          <strong>Upload timeline</strong>
+          <div class="hint">Last ${timeline.hours || getTimelineHours()} hours · ${timeline.bucket_minutes || "?"} minute buckets</div>
+        </div>
+        <div class="timeline-totals">
+          <span><i class="legend-app"></i>${fmtBytes(timeline.total_uploaded_bytes || 0)} completed</span>
+          <span><i class="legend-active"></i>${fmtBytes(timeline.total_active_bytes || 0)} active</span>
+          <span><i class="legend-error"></i>${fmtBytes(timeline.total_error_bytes || 0)} errored</span>
+        </div>
+      </div>
+      <svg class="timeline-chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-label="Upload activity timeline">
+        <line x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}"></line>
+        ${bars}
+      </svg>
+      <div class="row spread timeline-axis">
+        <span>${esc(fmtDateTime(first?.start) || "")}</span>
+        <span>${esc(fmtDateTime(last?.end) || "")}</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderGauge(percent, label) {
+  const pct = percent == null ? 0 : Math.max(0, Math.min(100, Number(percent)));
+  const text = percent == null ? "n/a" : `${pct.toFixed(1)}%`;
+  return `<div class="system-gauge" style="--pct:${pct}">
+    <span>${esc(text)}</span>
+    <small>${esc(label)}</small>
+  </div>`;
+}
+
+function renderSystemStats(system) {
+  const el = document.getElementById("systemStats");
+  if (!el) return;
+  const cpu = system.cpu || {};
+  const network = system.network || {};
+  const timeline = network.upload_timeline || system.upload_timeline || {};
+  const filesystems = system.filesystems || [];
+  const cpuHistory = pushHistory("cpu", cpu.percent);
+  const rxHistory = pushHistory("rx", network.rx_bytes_per_s);
+  const txHistory = pushHistory("tx", network.tx_bytes_per_s);
+  el.innerHTML = `
+    <div class="system-grid">
+      <div class="system-card">
+        <div class="system-head">
+          <h3>CPU</h3>
+          <span class="hint">${esc(cpu.cpu_count || "n/a")} cores</span>
+        </div>
+        <div class="system-visual">
+          ${renderGauge(cpu.percent, "current")}
+          ${renderSparkline(cpuHistory, "cpu-line")}
+        </div>
+        <div class="metric-row">
+          <span>Load 1m <strong>${cpu.load_1m ?? "n/a"}</strong></span>
+          <span>5m <strong>${cpu.load_5m ?? "n/a"}</strong></span>
+          <span>15m <strong>${cpu.load_15m ?? "n/a"}</strong></span>
+        </div>
+      </div>
+      <div class="system-card">
+        <div class="system-head">
+          <h3>Network</h3>
+          <span class="hint">all non-loopback interfaces</span>
+        </div>
+        <div class="network-graphs">
+          <div>
+            <div class="metric-row"><span>Down <strong>${fmtBytes(network.rx_bytes_per_s || 0)}/s</strong></span></div>
+            ${renderSparkline(rxHistory, "rx-line")}
+          </div>
+          <div>
+            <div class="metric-row"><span>Up <strong>${fmtBytes(network.tx_bytes_per_s || 0)}/s</strong></span></div>
+            ${renderSparkline(txHistory, "tx-line")}
+          </div>
+        </div>
+        <div class="metric-row">
+          <span>Total down <strong>${fmtBytes(network.rx_bytes_total || 0)}</strong></span>
+          <span>Total up <strong>${fmtBytes(network.tx_bytes_total || 0)}</strong></span>
+        </div>
+        ${renderUploadTimeline(timeline)}
+      </div>
+    </div>
+    <div class="filesystem-grid">
+      ${filesystems.map(renderFilesystemBar).join("") || "<span class='hint'>No filesystem data available.</span>"}
+    </div>
+  `;
+}
+
+function renderFilesystemBar(fs) {
+  const pct = fs.used_percent == null ? 0 : Math.max(0, Math.min(100, Number(fs.used_percent)));
+  return `<div class="fs-card">
+    <div class="row spread">
+      <div>
+        <strong>${esc(fs.label || fs.path || "Filesystem")}</strong>
+        <div class="hint" title="${esc(fs.path || "")}">${esc(fs.path || "")}</div>
+      </div>
+      <strong>${fs.used_percent == null ? "n/a" : `${pct.toFixed(1)}%`}</strong>
+    </div>
+    <div class="fs-bar"><span style="width:${pct}%"></span></div>
+    <div class="metric-row">
+      <span>Used <strong>${fmtBytes(fs.used_bytes || 0)}</strong></span>
+      <span>Free <strong>${fmtBytes(fs.free_bytes || 0)}</strong></span>
+      <span>Total <strong>${fmtBytes(fs.total_bytes || 0)}</strong></span>
+    </div>
+    ${fs.error ? `<div class="hint">Usage unavailable: ${esc(fs.error)}</div>` : ""}
+  </div>`;
 }
 
 function renderStatsDestinations(rows) {

@@ -13,6 +13,21 @@
 </section>
 
 <section class="panel">
+  <div class="row spread">
+    <div>
+      <h2>System status</h2>
+      <p class="hint">Current CPU, network, and local filesystem usage from the host/container.</p>
+    </div>
+    <label class="timeline-control">
+      Last
+      <input id="timelineHours" type="number" min="0.25" max="72" step="0.25" value="3" onchange="loadStats()">
+      hours
+    </label>
+  </div>
+  <div id="systemStats">Loading…</div>
+</section>
+
+<section class="panel">
   <h2>Destination usage</h2>
   <div id="statsDestinations">Loading…</div>
 </section>
