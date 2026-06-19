@@ -42,9 +42,39 @@ def find_dcim(root: Path, max_depth: int = 2) -> Optional[Path]:
                 try:
                     if not child.is_dir():
                         continue
+                    if child.is_symlink() or child.name.startswith("."):
+                        continue
                     if child.name.lower() == "dcim":
                         return child
                     if depth < max_depth:
+                        queue.append((child, depth + 1))
+                except OSError:
+                    continue
+    except OSError:
+        return None
+    return None
+
+
+def find_media_root(root: Path, max_depth: int = 4) -> Optional[Path]:
+    """Locate a mounted folder containing media when no DCIM folder exists."""
+    root = root.resolve()
+    try:
+        if not root.exists() or root.is_symlink():
+            return None
+        queue: list[tuple[Path, int]] = [(root, 0)]
+        while queue:
+            current, depth = queue.pop(0)
+            try:
+                children = list(current.iterdir())
+            except OSError:
+                continue
+            if any(child.is_file() and classify(child) == "video" for child in children):
+                return current
+            if depth >= max_depth:
+                continue
+            for child in children:
+                try:
+                    if child.is_dir() and not child.is_symlink() and not child.name.startswith("."):
                         queue.append((child, depth + 1))
                 except OSError:
                     continue
@@ -57,13 +87,19 @@ def _candidate_mounts(base: Path) -> list[Path]:
     """Return likely mounted volumes below a configured mount base."""
     candidates = [base]
     try:
-        first_level = [p for p in base.iterdir() if p.is_dir()]
+        first_level = [
+            p for p in base.iterdir()
+            if p.is_dir() and not p.is_symlink() and not p.name.startswith(".")
+        ]
     except OSError:
         return candidates
     candidates.extend(first_level)
     for parent in first_level:
         try:
-            candidates.extend(p for p in parent.iterdir() if p.is_dir())
+            candidates.extend(
+                p for p in parent.iterdir()
+                if p.is_dir() and not p.is_symlink() and not p.name.startswith(".")
+            )
         except OSError:
             continue
     return candidates
@@ -87,25 +123,26 @@ def detect_devices() -> List[DeviceCandidate]:
     """Scan configured mount paths for removable media with photos/videos."""
     settings = get_settings()
     found: List[DeviceCandidate] = []
-    seen_dcim = set()
+    seen_roots = set()
     for base in settings.mount_path_list:
         if not base.exists():
             continue
         for mount in _candidate_mounts(base):
             dcim = find_dcim(mount)
-            if dcim is None:
+            media_root = dcim or find_media_root(mount)
+            if media_root is None:
                 continue
-            dcim_key = str(dcim.resolve())
-            if dcim_key in seen_dcim:
+            root_key = str(media_root.resolve())
+            if root_key in seen_roots:
                 continue
-            seen_dcim.add(dcim_key)
-            root = _device_root(mount, dcim)
+            seen_roots.add(root_key)
+            root = _device_root(mount, media_root)
             free, total = _disk_usage(root)
             found.append(
                 DeviceCandidate(
                     path=root,
-                    label=_device_label(mount, dcim),
-                    dcim_path=dcim,
+                    label=_device_label(mount, media_root),
+                    dcim_path=media_root,
                     free_bytes=free,
                     total_bytes=total,
                 )

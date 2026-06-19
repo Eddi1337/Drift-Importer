@@ -1,75 +1,27 @@
 {% extends "base.html" %}
 {% block title %} · Library{% endblock %}
 {% block content %}
-<section class="panel" id="devicePanel">
-  <h2>Camera</h2>
-  <div id="deviceDefaults" class="hint"></div>
-  <div id="devices" class="devices">Scanning…</div>
-  <button onclick="refreshDevices()">Rescan</button>
-</section>
-
-<section class="panel" id="cameraFilesPanel">
+<section class="panel" id="cameraPanel">
   <div class="row spread">
     <div>
-      <h2>Camera videos</h2>
-      <p class="hint">Browse video files directly on the attached Drift camera and queue only the clips you want.</p>
+      <h2>Camera</h2>
+      <div id="deviceDefaults" class="hint"></div>
     </div>
     <div class="row">
+      <button class="ghost" onclick="refreshDevices()">Rescan</button>
       <button class="ghost" onclick="toggleCameraSelection(true)">Select all</button>
       <button class="ghost" onclick="toggleCameraSelection(false)">Clear</button>
-      <button onclick="importSelectedCameraFiles(false)">Import selected</button>
       <button onclick="importSelectedCameraFiles(true)">Upload selected</button>
+      <button onclick="uploadAllCameraFiles()">Upload all</button>
     </div>
   </div>
-  <div id="cameraFileSummary" class="hint">Select a detected camera above to load its videos.</div>
-  <div id="cameraFiles" class="camera-file-list">No camera video list loaded.</div>
-</section>
-
-<section class="panel live-panel">
-  <h2>Live upload activity</h2>
-  <div id="liveActivity" class="live-grid">Waiting for jobs…</div>
-</section>
-
-<section class="toolbar">
-  <div class="filters">
-    <select id="monthFilter" onchange="loadMedia()"><option value="">All dates</option></select>
-    <select id="tagFilter" onchange="loadMedia()"><option value="">All tags</option></select>
-    <select id="statusFilter" onchange="loadMedia()">
-      <option value="">Any status</option>
-      <option value="error">Upload error</option>
-      <option value="uploading">Uploading</option>
-    </select>
+  <div id="devices" class="camera-status">Scanning…</div>
+  <div class="camera-live">
+    <h3>Live upload activity</h3>
+    <div id="liveActivity" class="live-grid">Waiting for jobs…</div>
   </div>
-  <div class="actions">
-    <span id="selCount">0 selected</span>
-    <button onclick="uploadSelected()">Upload…</button>
-    <button onclick="openTimestamp()">Fix time…</button>
-    <button onclick="mergeSelected()">Merge</button>
-    <button onclick="tagSelected()">Tag…</button>
-    <button onclick="addToAlbum()">Add to album…</button>
-    <button class="danger" onclick="deleteSelected()">Delete</button>
-  </div>
-</section>
-
-<section class="panel">
-  <div class="row spread">
-    <div>
-      <h2>Library videos</h2>
-      <p class="hint">Detailed clip list with capture date, import time, and stored location.</p>
-    </div>
-  </div>
-  <div id="grid" class="library-window">Loading…</div>
-</section>
-
-<section class="panel" id="uploadedPanel" hidden>
-  <div class="row spread">
-    <div>
-      <h2>Uploaded</h2>
-      <p class="hint">Recently confirmed uploads from the remote destination ledger.</p>
-    </div>
-    <span id="uploadedCount" class="hint"></span>
-  </div>
-  <div id="uploadedGrid" class="grid"></div>
+  <div id="cameraFileSummary" class="hint">No camera connected.</div>
+  <div id="cameraFiles" class="camera-file-list">No camera connected.</div>
 </section>
 
 <dialog id="playerDlg">

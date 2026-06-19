@@ -18,8 +18,8 @@ services:
       - drift-data:/data
       - drift-working:/working
       # Camera (auto-mounted under /media) and any mounted NAS.
-      - /media:/media
-      - /mnt:/mnt
+      - /media:/media:rslave
+      - /mnt:/mnt:rslave
     # Pi Zero 2 W has ~425 MB RAM total; keep the container well under that.
     mem_limit: 256m
 

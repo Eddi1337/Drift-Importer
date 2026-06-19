@@ -60,7 +60,8 @@ journalctl -u drift-import -f
 Raspberry Pi OS Desktop auto-mounts USB media under `/media/<user>/…`. On Lite,
 install `udisks2`/`usbmount` or add an `/etc/fstab` entry, then point
 `DRIFT_MOUNT_PATHS` at the mount base. The app looks for a `DCIM` folder under
-each mounted volume.
+each mounted volume, falling back to mounted folders that directly contain
+video files.
 
 ### Mounting your NAS (recommended for the "local" destination)
 
@@ -95,9 +96,9 @@ Destination credentials are encrypted at rest with a Fernet key stored in
 docker compose up -d --build      # http://<host>:8080
 ```
 
-The compose file mounts `/media` and `/mnt` from the host so the container can
-see the camera and any mounted NAS. State is kept in named volumes `drift-data`
-and `drift-working`.
+The compose file mounts `/media` and `/mnt` from the host with slave mount
+propagation so the container can see cameras mounted after it starts. State is
+kept in named volumes `drift-data` and `drift-working`.
 
 ### Build & push to Harbor (manual)
 

@@ -19,8 +19,8 @@ services:
       - drift-working:/working
       # Camera + NAS access. The container needs the host's mount points.
       # The camera (DCIM) is usually auto-mounted under /media on the host.
-      - /media:/media
-      - /mnt:/mnt
+      - /media:/media:rslave
+      - /mnt:/mnt:rslave
       # mem_limit mirrors the Pi Zero 2 W budget; raise on bigger hardware.
     mem_limit: 400m
 

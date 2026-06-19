@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     thumbnail_dir: Path = Path("./thumbnails")
 
     # Comma-separated list of base paths to scan for an attached camera.
-    mount_paths: str = "/media,/mnt"
+    mount_paths: str = "/media,/mnt,/run/media,/Volumes"
 
     host: str = "0.0.0.0"
     port: int = 8080

@@ -534,29 +534,35 @@ input:focus, select:focus {
 }
 
 .camera-file-list {
-  display: grid;
-  gap: 0.45rem;
   margin-top: 0.85rem;
   max-height: 24rem;
   overflow: auto;
   padding-right: 0.2rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
 }
 
-.camera-file-row {
-  display: grid;
-  grid-template-columns: auto minmax(12rem, 1fr) auto auto;
-  gap: 0.75rem;
-  align-items: center;
+.camera-status,
+.camera-live {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 12px;
-  padding: 0.7rem 0.8rem;
-  cursor: pointer;
+  padding: 0.8rem;
+  margin-top: 0.85rem;
 }
 
-.camera-file-row:hover {
-  background: var(--soft);
-  border-color: var(--acc);
+.camera-connected {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.camera-connected > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
 }
 
 .camera-file-name {
@@ -565,6 +571,17 @@ input:focus, select:focus {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 700;
+}
+
+.camera-table {
+  min-width: 760px;
+}
+
+.camera-table th {
+  position: sticky;
+  top: 0;
+  background: var(--panel-strong);
+  z-index: 1;
 }
 
 .album-folder,

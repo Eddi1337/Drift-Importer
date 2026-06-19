@@ -33,6 +33,7 @@ const appState = {
   lastDeviceSignature: "",
   lastMediaSignature: "",
   lastRecentUploadSignature: "",
+  lastLiveActivitySignature: "",
   jobPollStarted: false,
   galleryPollers: [],
   jobsPoller: null,
@@ -175,12 +176,25 @@ function renderLiveActivity() {
   const active = appState.jobs.filter(j => j.status === "queued" || j.status === "running");
   const uploads = active.filter(j => j.kind === "upload");
   const current = active[0];
-  el.innerHTML = `
-    <div class="live-card"><div class="hint">Active jobs</div><div class="value">${active.length}</div></div>
-    <div class="live-card"><div class="hint">Uploads moving</div><div class="value">${uploads.length}</div></div>
-    <div class="live-card"><div class="hint">Lead task</div><div class="value">${esc(current ? current.kind : "idle")}</div></div>
-    <div class="live-card"><div class="hint">Latest detail</div><div>${esc(current ? (current.detail || current.description) : "Waiting for camera activity")}</div></div>
-  `;
+  if (!el.querySelector("[data-live='active']")) {
+    el.innerHTML = `
+      <div class="live-card"><div class="hint">Active jobs</div><div class="value" data-live="active">0</div></div>
+      <div class="live-card"><div class="hint">Uploads moving</div><div class="value" data-live="uploads">0</div></div>
+      <div class="live-card"><div class="hint">Lead task</div><div class="value" data-live="lead">idle</div></div>
+      <div class="live-card"><div class="hint">Latest detail</div><div data-live="detail">Waiting for camera activity</div></div>
+    `;
+  }
+  setLiveText("active", active.length);
+  setLiveText("uploads", uploads.length);
+  setLiveText("lead", current ? current.kind : "idle");
+  setLiveText("detail", current ? (current.detail || current.description) : "Waiting for camera activity");
+}
+
+function setLiveText(key, value) {
+  const node = document.querySelector(`[data-live="${key}"]`);
+  if (!node) return;
+  const text = String(value ?? "");
+  if (node.textContent !== text) node.textContent = text;
 }
 
 function renderDeviceDefaults() {
@@ -199,16 +213,10 @@ function renderDeviceDefaults() {
 async function initGallery() {
   ensureGlobalJobPolling();
   await loadSettings();
-  await Promise.all([refreshDevices(), loadFilters(), loadMedia(), loadRecentUploads()]);
+  await refreshDevices();
   appState.galleryPollers.forEach(clearInterval);
   appState.galleryPollers = [
     setInterval(refreshDevices, 5000),
-    setInterval(() => {
-      if (!document.hidden) {
-        loadMedia();
-        loadRecentUploads();
-      }
-    }, 7000),
   ];
 }
 
@@ -228,48 +236,28 @@ async function refreshDevices() {
     if (signature === appState.lastDeviceSignature) return;
     appState.lastDeviceSignature = signature;
     if (!devs.length) {
-      el.innerHTML = "<span class='hint'>No camera detected. Plug in the Drift camera.</span>";
+      appState.currentDcimPath = "";
+      appState.cameraFiles = [];
+      appState.cameraFileSelection.clear();
+      el.innerHTML = "<span class='hint'>No camera connected.</span>";
+      const summary = document.getElementById("cameraFileSummary");
+      const list = document.getElementById("cameraFiles");
+      if (summary) summary.textContent = "No camera connected.";
+      if (list) list.textContent = "No camera connected.";
       return;
     }
-    el.innerHTML = "";
+    const primary = devs.find(d => d.dcim_path) || devs[0];
+    el.innerHTML = `
+      <div class="camera-connected">
+        <div>
+          <strong>${esc(primary.label)}</strong>
+          <span class="hint">${primary.file_count} media files · ${fmtBytes(primary.free_bytes)} free of ${fmtBytes(primary.total_bytes)}</span>
+        </div>
+      </div>
+    `;
     devs.forEach(d => {
       const isNew = !appState.seenDevices.has(d.path);
       appState.seenDevices.add(d.path);
-      const row = document.createElement("div");
-      row.className = "device";
-      row.innerHTML = `
-        <div class="device-main">
-          <b>${esc(d.label)}</b>
-          <span class="hint">${d.file_count} files · ${fmtBytes(d.free_bytes)} free of ${fmtBytes(d.total_bytes)}</span>
-        </div>
-      `;
-      if (d.dcim_path) {
-        const actions = document.createElement("div");
-        actions.className = "row";
-
-        const defaults = document.createElement("button");
-        defaults.textContent = "Use Defaults";
-        defaults.onclick = () => importDevice(d.dcim_path);
-
-        const view = document.createElement("button");
-        view.className = "ghost";
-        view.textContent = "View videos";
-        view.onclick = () => loadCameraFiles(d.dcim_path);
-
-        const imp = document.createElement("button");
-        imp.className = "ghost";
-        imp.textContent = "Import";
-        imp.onclick = () => importDevice(d.dcim_path, false);
-
-        const all = document.createElement("button");
-        all.textContent = "Upload Everything";
-        all.onclick = () => importDevice(d.dcim_path, true);
-
-        actions.append(view, defaults, imp, all);
-        row.append(actions);
-      }
-      el.append(row);
-
       if (
         isNew &&
         d.dcim_path &&
@@ -280,6 +268,9 @@ async function refreshDevices() {
         importDevice(d.dcim_path, undefined, true);
       }
     });
+    if (primary.dcim_path && primary.dcim_path !== appState.currentDcimPath) {
+      await loadCameraFiles(primary.dcim_path);
+    }
   } catch (e) {
     el.textContent = "Error scanning: " + e.message;
   }
@@ -307,9 +298,16 @@ async function loadCameraFiles(dcimPath) {
   appState.currentDcimPath = dcimPath;
   appState.cameraBrowserPath = "";
   appState.cameraFileSelection.clear();
-  list.textContent = "Loading camera folder…";
+  list.textContent = "Loading camera videos…";
   summary.textContent = "Scanning camera storage…";
-  await browseCameraFolder("");
+  try {
+    const data = await api.get(`/api/device-files?dcim_path=${encodeURIComponent(dcimPath)}`);
+    appState.cameraFiles = data.files || [];
+    renderCameraFiles();
+  } catch (e) {
+    list.textContent = "Unable to load camera videos: " + e.message;
+    summary.textContent = "";
+  }
 }
 
 async function browseCameraFolder(path = "") {
@@ -334,69 +332,50 @@ function renderCameraFiles() {
   const list = document.getElementById("cameraFiles");
   const summary = document.getElementById("cameraFileSummary");
   if (!list || !summary) return;
-  const files = appState.cameraFiles.filter(entry => entry.type === "file");
-  const folders = appState.cameraFiles.filter(entry => entry.type === "directory");
+  const files = appState.cameraFiles;
   const totalBytes = files.reduce((sum, file) => sum + (file.size_bytes || 0), 0);
-  summary.textContent = `${files.length} video file${files.length === 1 ? "" : "s"} in this folder · ${appState.cameraFileSelection.size} selected · ${fmtBytes(totalBytes)}`;
-  if (!appState.cameraFiles.length) {
-    list.innerHTML = renderCameraBreadcrumb() + "<span class='hint'>No video files or folders at this level.</span>";
+  summary.textContent = `${files.length} video file${files.length === 1 ? "" : "s"} on camera · ${appState.cameraFileSelection.size} selected · ${fmtBytes(totalBytes)}`;
+  if (!files.length) {
+    list.innerHTML = "<span class='hint'>No videos found on this camera.</span>";
     return;
   }
-  const folderHtml = folders.map(entry => `
-    <div class="camera-file-row folder-row">
-      <button class="folder-open" onclick="browseCameraFolder('${escJs(entry.path)}')">Open</button>
-      <span class="camera-file-name">${esc(entry.name)}</span>
-      <span class="hint">Folder</span>
-    </div>
-  `).join("");
-  const fileHtml = renderCameraDateGroups(files);
-  list.innerHTML = renderCameraBreadcrumb() + folderHtml + fileHtml;
+  list.innerHTML = renderCameraTable(files);
 }
 
-function renderCameraDateGroups(files) {
-  if (!files.length) return "<span class='hint'>No video files in this folder.</span>";
+function renderCameraTable(files) {
   const sorted = [...files].sort((a, b) => {
     const at = new Date(a.modified_at || 0).getTime() || 0;
     const bt = new Date(b.modified_at || 0).getTime() || 0;
     if (at !== bt) return bt - at;
-    return String(a.name || a.path).localeCompare(String(b.name || b.path), undefined, { numeric: true });
+    return String(a.filename || a.path).localeCompare(String(b.filename || b.path), undefined, { numeric: true });
   });
-  const groups = new Map();
-  sorted.forEach(file => {
-    const date = new Date(file.modified_at || "");
-    const key = Number.isNaN(date.getTime())
-      ? "Undated"
-      : `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(file);
-  });
-  return [...groups.entries()].map(([key, groupFiles]) => {
-    const paths = groupFiles.map(file => file.full_path || file.path);
-    const selectedInGroup = paths.filter(path => appState.cameraFileSelection.has(path)).length;
-    return `
-      <div class="camera-date-group">
-        <div class="row spread camera-date-head">
-          <strong>${esc(key.replaceAll("/", " / "))}</strong>
-          <div class="row">
-            <span class="hint">${selectedInGroup}/${groupFiles.length} selected</span>
-            <button class="ghost" onclick="toggleCameraGroup('${escJs(key)}', true)">Select day</button>
-            <button class="ghost" onclick="toggleCameraGroup('${escJs(key)}', false)">Clear day</button>
-          </div>
-        </div>
-        ${groupFiles.map(entry => {
+  return `
+    <table class="camera-table">
+      <thead>
+        <tr>
+          <th></th>
+          <th>Video</th>
+          <th>Date on camera</th>
+          <th>Size</th>
+          <th>Path</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${sorted.map(entry => {
           const filePath = entry.full_path || entry.path;
           return `
-            <label class="camera-file-row">
-              <input type="checkbox" value="${esc(filePath)}" ${appState.cameraFileSelection.has(filePath) ? "checked" : ""} onchange="toggleCameraFile('${escJs(filePath)}', this.checked)">
-              <span class="camera-file-name">${esc(entry.path || entry.name)}</span>
-              <span class="hint">${esc(fmtBytes(entry.size_bytes))}</span>
-              <span class="hint">${esc((entry.modified_at || "").slice(0, 16).replace("T", " "))}</span>
-            </label>
+            <tr>
+              <td><input type="checkbox" value="${esc(filePath)}" ${appState.cameraFileSelection.has(filePath) ? "checked" : ""} onchange="toggleCameraFile('${escJs(filePath)}', this.checked)"></td>
+              <td><strong>${esc(entry.filename || entry.name)}</strong></td>
+              <td>${esc(fmtDateTime(entry.modified_at) || "Unknown")}</td>
+              <td>${esc(fmtBytes(entry.size_bytes))}</td>
+              <td><span class="path-text" title="${esc(entry.relative_path || entry.path)}">${esc(entry.relative_path || entry.path)}</span></td>
+            </tr>
           `;
         }).join("")}
-      </div>
-    `;
-  }).join("");
+      </tbody>
+    </table>
+  `;
 }
 
 function toggleCameraGroup(key, checked) {
@@ -441,9 +420,7 @@ function toggleCameraFile(path, checked) {
 
 function toggleCameraSelection(checked) {
   if (checked) {
-    appState.cameraFiles
-      .filter(file => file.type === "file")
-      .forEach(file => appState.cameraFileSelection.add(file.full_path || file.path));
+    appState.cameraFiles.forEach(file => appState.cameraFileSelection.add(file.full_path || file.path));
   }
   else appState.cameraFileSelection.clear();
   renderCameraFiles();
@@ -459,6 +436,15 @@ async function importSelectedCameraFiles(autoUpload) {
     if (destinationIds === false) return;
   }
   await importDevice(appState.currentDcimPath, autoUpload, false, paths, destinationIds);
+}
+
+async function uploadAllCameraFiles() {
+  if (!appState.currentDcimPath) return toast("No camera connected");
+  if (!appState.cameraFiles.length) return toast("No camera videos found");
+  const destinationIds = await chooseDestinationIds();
+  if (destinationIds === false) return;
+  const paths = appState.cameraFiles.map(file => file.full_path || file.path);
+  await importDevice(appState.currentDcimPath, true, false, paths, destinationIds);
 }
 
 async function loadFilters() {
