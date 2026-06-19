@@ -23,6 +23,8 @@ const api = {
 const appState = {
   settings: null,
   jobs: [],
+  expandedJobs: new Set(),
+  jobLogs: {},
   seenDevices: new Set(),
   autoImportTriggered: new Set(),
   folderBrowsers: {},
@@ -159,6 +161,7 @@ async function refreshGlobalJobs() {
     renderJobBadge();
     renderLiveActivity();
     renderJobsPage();
+    refreshExpandedJobLogs();
   } catch (_e) {
     // Ignore transient failures.
   }
@@ -1345,9 +1348,60 @@ function renderJobsPage() {
     const cancel = (j.status === "queued" || j.status === "running")
       ? `<button class="ghost" onclick="cancelJob(${j.id})">Cancel</button>` : "";
     const dismiss = `<button class="ghost" onclick="dismissJob(${j.id})">Dismiss</button>`;
-    html += `<tr><td>${j.id}</td><td>${esc(j.kind)}</td><td>${esc(j.description)}<br><span class="hint">${detail}</span></td><td>${renderJobState(j.status)}</td><td><div class="prog"><span style="width:${pct}%"></span></div>${pct}%</td><td><div class="row">${cancel}${dismiss}</div></td></tr>`;
+    const expanded = appState.expandedJobs.has(j.id);
+    const logs = appState.jobLogs[j.id] || [];
+    html += `<tr class="job-row ${expanded ? "expanded" : ""}">
+      <td>${j.id}</td>
+      <td>${esc(j.kind)}</td>
+      <td><button class="job-title" onclick="toggleJobLogs(${j.id})">${expanded ? "Hide" : "Show"} logs</button> ${esc(j.description)}<br><span class="hint">${detail}</span></td>
+      <td>${renderJobState(j.status)}</td>
+      <td><div class="prog"><span style="width:${pct}%"></span></div>${pct}%</td>
+      <td><div class="row">${cancel}${dismiss}</div></td>
+    </tr>`;
+    if (expanded) {
+      html += `<tr class="job-log-row"><td colspan="6">${renderJobLogPanel(j.id, logs)}</td></tr>`;
+    }
   });
   el.innerHTML = html + "</table>";
+}
+
+function renderJobLogPanel(jobId, logs) {
+  if (!logs.length) {
+    return `<div class="job-log-window" id="jobLog-${jobId}"><span class="hint">Loading job logs…</span></div>`;
+  }
+  return `<div class="job-log-window" id="jobLog-${jobId}">${
+    logs.map(row => {
+      const level = String(row.level || "INFO").toLowerCase();
+      const pct = row.progress == null ? "" : `<span class="hint">${Math.round(row.progress * 100)}%</span>`;
+      return `<div class="log-line log-${esc(level)}"><span>${esc(row.level || "INFO")}</span><code>${esc(fmtDateTime(row.created_at))} ${pct} ${esc(row.message || "")}</code></div>`;
+    }).join("")
+  }</div>`;
+}
+
+async function toggleJobLogs(id) {
+  if (appState.expandedJobs.has(id)) {
+    appState.expandedJobs.delete(id);
+    renderJobsPage();
+    return;
+  }
+  appState.expandedJobs.add(id);
+  renderJobsPage();
+  await loadJobLogs(id);
+  renderJobsPage();
+}
+
+async function loadJobLogs(id) {
+  try {
+    appState.jobLogs[id] = await api.get(`/api/jobs/${id}/logs?limit=400`);
+  } catch (e) {
+    appState.jobLogs[id] = [{ level: "ERROR", message: "Unable to load job logs: " + e.message }];
+  }
+}
+
+function refreshExpandedJobLogs() {
+  appState.expandedJobs.forEach(id => {
+    loadJobLogs(id).then(renderJobsPage);
+  });
 }
 
 async function cancelJob(id) {

@@ -29,6 +29,7 @@ from ..models import (
     AppSettings,
     Destination,
     Job,
+    JobLog,
     MediaItem,
     Tag,
     UploadedClip,
@@ -1210,6 +1211,17 @@ def job_dict(j: Job) -> dict:
     }
 
 
+def job_log_dict(row: JobLog) -> dict:
+    return {
+        "id": row.id,
+        "job_id": row.job_id,
+        "level": row.level,
+        "message": row.message,
+        "progress": row.progress,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
 @router.get("/jobs")
 def list_jobs(
     limit: int = 50,
@@ -1221,6 +1233,21 @@ def list_jobs(
         q = q.filter(Job.dismissed_at.is_(None))
     jobs = q.order_by(Job.created_at.desc()).limit(limit).all()
     return [job_dict(j) for j in jobs]
+
+
+@router.get("/jobs/{job_id}/logs")
+def list_job_logs(job_id: int, limit: int = 300, session: Session = Depends(get_session)):
+    if not session.get(Job, job_id):
+        raise HTTPException(404, "Job not found")
+    rows = (
+        session.query(JobLog)
+        .filter(JobLog.job_id == job_id)
+        .order_by(JobLog.created_at.desc(), JobLog.id.desc())
+        .limit(max(1, min(limit, 1000)))
+        .all()
+    )
+    rows.reverse()
+    return [job_log_dict(row) for row in rows]
 
 
 @router.post("/jobs/{job_id}/cancel")

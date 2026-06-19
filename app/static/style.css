@@ -939,6 +939,39 @@ tr:has(.job-state.running) .prog {
 .job-state.error .status-dot { color: var(--danger); }
 .job-state.cancelled .status-dot { color: var(--mut); }
 
+.job-title {
+  background: var(--surface);
+  color: var(--acc);
+  border: 1px solid var(--line);
+  box-shadow: none;
+  border-radius: 8px;
+  padding: 0.22rem 0.45rem;
+  margin-right: 0.35rem;
+  font-size: 0.74rem;
+}
+
+.job-row.expanded {
+  background: var(--soft);
+}
+
+.job-log-row td {
+  padding: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.job-log-window {
+  max-height: 19rem;
+  overflow: auto;
+  margin: 0.4rem;
+  background: #101510;
+  color: #e9f3df;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.6rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.77rem;
+}
+
 .live-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

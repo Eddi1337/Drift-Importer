@@ -17,7 +17,7 @@ from typing import Callable, Dict, Optional
 
 from .config import get_settings
 from .database import session_scope
-from .models import Job, utcnow
+from .models import Job, JobLog, utcnow
 
 log = logging.getLogger("drift.jobs")
 
@@ -43,6 +43,7 @@ class JobContext:
     def __init__(self, manager: "JobManager", job_id: int):
         self.manager = manager
         self.job_id = job_id
+        self._last_detail: Optional[str] = None
 
     def set_progress(self, value: float, detail: Optional[str] = None) -> None:
         value = max(0.0, min(1.0, value))
@@ -52,8 +53,29 @@ class JobContext:
                 job.progress = value
                 if detail is not None:
                     job.detail = detail
+                    if detail != self._last_detail:
+                        s.add(
+                            JobLog(
+                                job_id=self.job_id,
+                                level="INFO",
+                                message=detail,
+                                progress=value,
+                            )
+                        )
+                        self._last_detail = detail
         if self.is_cancelled():
             raise JobCancelled()
+
+    def log(self, message: str, level: str = "INFO", progress: Optional[float] = None) -> None:
+        with session_scope() as s:
+            s.add(
+                JobLog(
+                    job_id=self.job_id,
+                    level=level.upper(),
+                    message=message,
+                    progress=progress,
+                )
+            )
 
     def is_cancelled(self) -> bool:
         with session_scope() as s:
@@ -156,6 +178,7 @@ class JobManager:
         try:
             if handler_fn is None:
                 raise RuntimeError(f"No handler for job kind '{kind}'")
+            ctx.log(f"Started {kind} job")
             handler_fn(job_id, payload, ctx)
             with session_scope() as s:
                 job = s.get(Job, job_id)
@@ -163,7 +186,9 @@ class JobManager:
                     job.status = "done"
                     job.progress = 1.0
                     job.finished_at = utcnow()
+            ctx.log(f"Finished {kind} job", progress=1.0)
         except JobCancelled:
+            ctx.log("Job cancelled", level="WARNING")
             with session_scope() as s:
                 job = s.get(Job, job_id)
                 if job:
@@ -172,6 +197,7 @@ class JobManager:
             log.info("Job %s cancelled", job_id)
         except Exception as exc:  # noqa: BLE001
             log.exception("Job %s failed", job_id)
+            ctx.log(f"Job failed: {exc}", level="ERROR")
             with session_scope() as s:
                 job = s.get(Job, job_id)
                 if job:

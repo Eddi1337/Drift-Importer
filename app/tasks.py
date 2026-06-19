@@ -163,10 +163,11 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
     paths: List[str] = list(dict.fromkeys(payload.get("paths", [])))
     total = len(paths) or 1
     new_ids: List[int] = []
+    ctx.log(f"Preparing to import {len(paths)} media files")
     for i, p in enumerate(paths):
         path = Path(p)
         if not path.exists():
-            ctx.set_progress((i + 1) / total)
+            ctx.set_progress((i + 1) / total, f"Skipped missing file {path.name}")
             continue
         # Each file imports in its own transaction. A single failure (e.g. a
         # concurrent import job inserting the same path first, which trips the
@@ -192,6 +193,7 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
     new_ids = list(dict.fromkeys(new_ids))
     # Thumbnails as a follow-up so import returns fast.
     get_manager_enqueue("thumbnail", {"media_ids": new_ids})
+    ctx.log(f"Queued thumbnails for {len(new_ids)} imported files", progress=1.0)
     # Optionally queue uploads (the "Upload Everything" flow).
     if payload.get("auto_upload"):
         dest_ids = payload.get("destination_ids")
@@ -207,14 +209,17 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
 def handle_thumbnail(job_id: int, payload: dict, ctx: JobContext) -> None:
     media_ids: List[int] = payload.get("media_ids", [])
     total = len(media_ids) or 1
+    ctx.log(f"Preparing thumbnails for {len(media_ids)} media items")
     for i, mid in enumerate(media_ids):
         with session_scope() as s:
             item = s.get(MediaItem, mid)
             if not item or not Path(item.path).exists():
+                ctx.set_progress((i + 1) / total, f"Skipped thumbnail for missing media {mid}")
                 continue
             path = Path(item.path)
             kind = item.kind
         out = _thumb_path_for(mid)
+        ctx.set_progress(i / total, f"Generating thumbnail for {path.name}")
         with ctx.ffmpeg_semaphore:
             ok = make_thumbnail(path, kind, out)
         if ok:
@@ -222,7 +227,9 @@ def handle_thumbnail(job_id: int, payload: dict, ctx: JobContext) -> None:
                 item = s.get(MediaItem, mid)
                 if item:
                     item.thumbnail = str(out)
-        ctx.set_progress((i + 1) / total)
+            ctx.set_progress((i + 1) / total, f"Generated thumbnail for {path.name}")
+        else:
+            ctx.set_progress((i + 1) / total, f"Thumbnail failed for {path.name}")
 
 
 # --- timestamp --------------------------------------------------------------
@@ -303,6 +310,7 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
     """
     media_ids: List[int] = payload.get("media_ids", [])
     dest_ids = payload.get("destination_ids")
+    ctx.log(f"Preparing upload batch for {len(media_ids)} media items")
 
     with session_scope() as s:
         prefs = get_app_settings(s)
@@ -339,7 +347,7 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
             dest = s.get(Destination, did)
             if not item or not dest or not Path(item.path).exists():
                 done += 1
-                ctx.set_progress(done / total)
+                ctx.set_progress(done / total, f"Skipped missing media {mid} for destination {did}")
                 continue
             local_path_obj = Path(item.path)
             _refresh_metadata_from_file(item, local_path_obj)
@@ -391,6 +399,7 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
             dest_name = dest.name
             clip_id = clip.id
             remote_hint = join_remote(dest.base_path or "/", remote_dir, filename)
+        ctx.log(f"Resolved {filename} to {remote_hint}", progress=done / total)
 
         # 2) Perform the upload with no DB transaction held open.
         if ledger_done:
@@ -464,6 +473,10 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                         clip.updated_at = utcnow()
 
         start_offset = backend.get_resume_offset(remote_dir, filename, local_size)
+        if start_offset:
+            ctx.log(f"Resuming {filename} at {start_offset} of {local_size} bytes")
+        else:
+            ctx.log(f"Starting {filename} upload at 0 of {local_size} bytes")
         _mark_upload_progress(mid, did, clip_id, start_offset, local_size)
         last_persist = 0.0
         upload_started_at = time.monotonic()
@@ -518,6 +531,7 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
             except Exception as exc:  # noqa: BLE001
                 result_status = "error"
                 result_error = str(exc)[:2000]
+                ctx.log(f"Upload failed for {filename}: {result_error}", level="ERROR")
                 log.exception("Upload failed for media %s -> dest %s", mid, did)
         if result_status == "done":
             duration_s = max(0.0, time.monotonic() - upload_started_at)
@@ -528,6 +542,7 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                 if not backend.remote_file_matches(remote_dir, filename, local_size, checksum_value):
                     result_status = "error"
                     result_error = "Remote verification failed after upload"
+                    ctx.log(f"Verification failed for {filename}", level="ERROR")
                     log.error(
                         "Remote verification failed after upload media=%s destination=%s remote=%s",
                         mid,
@@ -535,6 +550,7 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                         result_remote,
                     )
                 else:
+                    ctx.log(f"Verified {filename} at {result_remote}")
                     log.info(
                         "Verified uploaded file media=%s destination=%s remote=%s",
                         mid,
@@ -544,6 +560,7 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
             except Exception as exc:  # noqa: BLE001
                 result_status = "error"
                 result_error = f"Remote verification failed after upload: {exc}"[:2000]
+                ctx.log(f"Verification errored for {filename}: {exc}", level="ERROR")
                 log.exception(
                     "Remote verification errored after upload media=%s destination=%s",
                     mid,

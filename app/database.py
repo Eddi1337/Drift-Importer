@@ -108,6 +108,23 @@ def _run_migrations() -> None:
             if "dismissed_at" not in cols:
                 conn.execute("ALTER TABLE jobs ADD COLUMN dismissed_at DATETIME")
 
+        if "job_logs" not in tables:
+            conn.execute(
+                """
+                CREATE TABLE job_logs (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    job_id INTEGER NOT NULL,
+                    level VARCHAR(16) DEFAULT 'INFO' NOT NULL,
+                    message TEXT NOT NULL,
+                    progress FLOAT,
+                    created_at DATETIME,
+                    FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute("CREATE INDEX ix_job_logs_job_id ON job_logs (job_id)")
+            conn.execute("CREATE INDEX ix_job_logs_created_at ON job_logs (created_at)")
+
         if "app_settings" in tables:
             cols = _column_names(conn, "app_settings")
             if "auto_import_on_connect" not in cols:

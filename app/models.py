@@ -218,3 +218,23 @@ class Job(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
     started_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+
+    logs: Mapped[List["JobLog"]] = relationship(
+        back_populates="job",
+        cascade="all, delete-orphan",
+        order_by="JobLog.created_at",
+        lazy="selectin",
+    )
+
+
+class JobLog(Base):
+    __tablename__ = "job_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    level: Mapped[str] = mapped_column(String(16), default="INFO")
+    message: Mapped[str] = mapped_column(Text)
+    progress: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+    job: Mapped[Job] = relationship(back_populates="logs")
