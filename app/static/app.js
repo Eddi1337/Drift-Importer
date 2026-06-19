@@ -39,6 +39,7 @@ const appState = {
   jobPollStarted: false,
   galleryPollers: [],
   jobsPoller: null,
+  jobTimer: null,
   statsPoller: null,
   settingsPoller: null,
   systemHistory: {
@@ -93,6 +94,20 @@ function fmtDateTime(value) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function fmtElapsed(start, end = null) {
+  if (!start) return "Not started";
+  const startDate = new Date(start);
+  const endDate = end ? new Date(end) : new Date();
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return "Unknown";
+  const total = Math.max(0, Math.floor((endDate.getTime() - startDate.getTime()) / 1000));
+  const hours = Math.floor(total / 3600);
+  const mins = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours) return `${hours}h ${String(mins).padStart(2, "0")}m`;
+  if (mins) return `${mins}m ${String(secs).padStart(2, "0")}s`;
+  return `${secs}s`;
 }
 
 function humanTemplate(template) {
@@ -1321,6 +1336,10 @@ async function moveAlbumItem(album, idx, dir) {
 function initJobs() {
   ensureGlobalJobPolling();
   refreshGlobalJobs();
+  clearInterval(appState.jobTimer);
+  appState.jobTimer = setInterval(() => {
+    if (!document.hidden) renderJobsPage();
+  }, 1000);
 }
 
 function renderJobsPage() {
@@ -1341,10 +1360,12 @@ function renderJobsPage() {
     el.innerHTML = "<span class='hint'>No jobs yet.</span>";
     return;
   }
-  let html = "<table><tr><th>ID</th><th>Kind</th><th>Description</th><th>Status</th><th>Progress</th><th></th></tr>";
+  let html = "<table class='jobs-table'><tr><th>ID</th><th>Kind</th><th>Description</th><th>Status</th><th>Timing</th><th class='progress-col'>Progress</th><th></th></tr>";
   jobs.forEach(j => {
     const pct = Math.round(j.progress * 100);
     const detail = j.error ? `<span style="color:#ffaea2">${esc(j.error)}</span>` : esc(j.detail || "");
+    const elapsed = fmtElapsed(j.started_at || j.created_at, j.finished_at);
+    const started = j.started_at ? fmtDateTime(j.started_at) : "Queued";
     const cancel = (j.status === "queued" || j.status === "running")
       ? `<button class="ghost" onclick="cancelJob(${j.id})">Cancel</button>` : "";
     const dismiss = `<button class="ghost" onclick="dismissJob(${j.id})">Dismiss</button>`;
@@ -1355,11 +1376,12 @@ function renderJobsPage() {
       <td>${esc(j.kind)}</td>
       <td><button class="job-title" onclick="toggleJobLogs(${j.id})">${expanded ? "Hide" : "Show"} logs</button> ${esc(j.description)}<br><span class="hint">${detail}</span></td>
       <td>${renderJobState(j.status)}</td>
-      <td><div class="prog"><span style="width:${pct}%"></span></div>${pct}%</td>
+      <td><div class="job-time"><strong>${esc(elapsed)}</strong><span class="hint">Started ${esc(started)}</span></div></td>
+      <td class="progress-cell"><div class="prog job-progress"><span style="width:${pct}%"></span></div><div class="progress-label">${pct}%</div></td>
       <td><div class="row">${cancel}${dismiss}</div></td>
     </tr>`;
     if (expanded) {
-      html += `<tr class="job-log-row"><td colspan="6">${renderJobLogPanel(j.id, logs)}</td></tr>`;
+      html += `<tr class="job-log-row"><td colspan="7">${renderJobLogPanel(j.id, logs)}</td></tr>`;
     }
   });
   el.innerHTML = html + "</table>";
