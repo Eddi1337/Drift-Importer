@@ -584,6 +584,20 @@ input:focus, select:focus {
   z-index: 1;
 }
 
+.camera-thumb {
+  width: 3.2rem;
+  height: 2rem;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  display: block;
+}
+
+.camera-thumb.thumb-missing {
+  display: none;
+}
+
 .album-folder,
 .usage-card {
   background: var(--surface);
@@ -994,6 +1008,41 @@ dialog {
 .check-row { display: flex; gap: 0.8rem; align-items: center; padding: 0.85rem 0.95rem; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
 
 code { color: var(--acc); }
+
+.log-window {
+  max-height: 28rem;
+  overflow: auto;
+  background: #101510;
+  color: #e9f3df;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.7rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+}
+
+.log-line {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr);
+  gap: 0.6rem;
+  padding: 0.18rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.log-line span {
+  font-weight: 800;
+}
+
+.log-line code {
+  color: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.log-info span { color: #8fbd72; }
+.log-warning span { color: #facc15; }
+.log-error span,
+.log-critical span { color: #f87171; }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }

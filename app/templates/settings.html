@@ -51,5 +51,23 @@
   <p class="hint">Every upload is tracked by clip hash so retries can skip duplicates and resume interrupted transfers.</p>
   <div id="uploadLedger">Loading…</div>
 </section>
+
+<section class="panel">
+  <div class="row spread">
+    <div>
+      <h2>Application logs</h2>
+      <p class="hint">Recent INFO, WARNING, ERROR, and CRITICAL lines from the Drift-Import log.</p>
+    </div>
+    <div class="row">
+      <select id="logLevel" onchange="loadAppLogs()">
+        <option value="INFO">Info+</option>
+        <option value="WARNING">Warning+</option>
+        <option value="ERROR">Error+</option>
+      </select>
+      <button class="ghost" onclick="loadAppLogs()">Refresh</button>
+    </div>
+  </div>
+  <div id="appLogs" class="log-window">Loading…</div>
+</section>
 {% endblock %}
 {% block scripts %}<script>initSettings();</script>{% endblock %}

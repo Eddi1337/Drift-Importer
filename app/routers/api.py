@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import os
 import re
 import shutil
@@ -20,7 +21,7 @@ from ..config import get_settings
 from ..database import get_session
 from ..destinations import get_backend
 from ..devices import detect_devices, scan_media_files
-from ..media import classify
+from ..media import classify, make_thumbnail
 from ..jobs import get_manager
 from ..models import (
     Album,
@@ -393,6 +394,61 @@ def _safe_child_path(root: Path, path: str = "") -> Path:
     return child
 
 
+def _safe_device_media_path(path: str) -> Path:
+    media_path = Path(path)
+    try:
+        resolved = media_path.resolve()
+    except OSError as exc:
+        raise HTTPException(400, "Camera file path is not accessible") from exc
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(404, "Camera file not found")
+    if classify(resolved) is None:
+        raise HTTPException(400, "Path is not a supported media file")
+    for device in detect_devices():
+        if not device.dcim_path:
+            continue
+        try:
+            resolved.relative_to(device.dcim_path.resolve())
+            return resolved
+        except (OSError, ValueError):
+            continue
+    raise HTTPException(400, "Path is outside a detected camera mount")
+
+
+def _log_level(line: str) -> str | None:
+    match = re.search(r"\b(DEBUG|INFO|WARNING|ERROR|CRITICAL)\b", line)
+    return match.group(1) if match else None
+
+
+def _read_log_lines(limit: int = 500, min_level: str = "INFO") -> dict:
+    settings = get_settings()
+    levels = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
+    min_value = levels.get(min_level.upper(), 20)
+    limit = max(1, min(limit, 2000))
+    log_paths = [
+        settings.log_dir / "drift.log.3",
+        settings.log_dir / "drift.log.2",
+        settings.log_dir / "drift.log.1",
+        settings.log_dir / "drift.log",
+    ]
+    lines = []
+    for path in log_paths:
+        if not path.exists():
+            continue
+        try:
+            for line in path.read_text(errors="replace").splitlines():
+                level = _log_level(line)
+                if level is None or levels.get(level, 0) >= min_value:
+                    lines.append({"level": level or "INFO", "message": line})
+        except OSError as exc:
+            lines.append({"level": "ERROR", "message": f"Unable to read {path}: {exc}"})
+    return {
+        "log_file": str(settings.log_dir / "drift.log"),
+        "min_level": min_level.upper(),
+        "lines": lines[-limit:],
+    }
+
+
 # --- devices ----------------------------------------------------------------
 
 @router.get("/devices")
@@ -443,6 +499,24 @@ def list_device_files(dcim_path: str):
             }
         )
     return {"dcim_path": str(root), "files": files}
+
+
+@router.get("/device-file-thumb")
+def device_file_thumb(path: str):
+    media_path = _safe_device_media_path(path)
+    try:
+        stat = media_path.stat()
+    except OSError as exc:
+        raise HTTPException(404, "Camera file not found") from exc
+    key = hashlib.sha256(
+        f"{media_path}:{stat.st_size}:{stat.st_mtime_ns}".encode()
+    ).hexdigest()
+    out = get_settings().thumbnail_dir / "device" / f"{key}.jpg"
+    if not out.exists():
+        ok = make_thumbnail(media_path, classify(media_path) or "video", out)
+        if not ok:
+            raise HTTPException(404, "No thumbnail")
+    return FileResponse(out, media_type="image/jpeg")
 
 
 @router.get("/device-entries")
@@ -967,6 +1041,11 @@ class AppSettingsReq(BaseModel):
 def read_settings(session: Session = Depends(get_session)):
     settings = get_app_settings(session)
     return app_settings_dict(settings)
+
+
+@router.get("/logs")
+def read_logs(limit: int = 500, min_level: str = "INFO"):
+    return _read_log_lines(limit=limit, min_level=min_level)
 
 
 @router.put("/settings")

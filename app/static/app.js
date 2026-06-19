@@ -364,6 +364,7 @@ function renderCameraTable(files) {
       <thead>
         <tr>
           <th></th>
+          <th></th>
           <th>Video</th>
           <th>Date on camera</th>
           <th>Size</th>
@@ -376,6 +377,7 @@ function renderCameraTable(files) {
           return `
             <tr>
               <td><input type="checkbox" value="${esc(filePath)}" ${appState.cameraFileSelection.has(filePath) ? "checked" : ""} onchange="toggleCameraFile('${escJs(filePath)}', this.checked)"></td>
+              <td><img class="camera-thumb" src="/api/device-file-thumb?path=${encodeURIComponent(filePath)}" alt="" loading="lazy" onerror="this.classList.add('thumb-missing')"></td>
               <td><strong>${esc(entry.filename || entry.name)}</strong></td>
               <td>${esc(fmtDateTime(entry.modified_at) || "Unknown")}</td>
               <td>${esc(fmtBytes(entry.size_bytes))}</td>
@@ -1650,7 +1652,10 @@ function initSettings() {
   ensureGlobalJobPolling();
   loadSettingsPage();
   clearInterval(appState.settingsPoller);
-  appState.settingsPoller = setInterval(loadUploadLedger, 4000);
+  appState.settingsPoller = setInterval(() => {
+    loadUploadLedger();
+    loadAppLogs(false);
+  }, 4000);
 }
 
 async function loadSettingsPage() {
@@ -1662,6 +1667,7 @@ async function loadSettingsPage() {
   document.getElementById("sHaToken").value = settings.ha_token || "";
   renderSettingsDestinations(dests, settings.default_destination_ids || []);
   loadUploadLedger();
+  loadAppLogs();
 }
 
 function renderSettingsDestinations(dests, selectedIds) {
@@ -1720,4 +1726,26 @@ async function loadUploadLedger() {
     </tr>`;
   });
   el.innerHTML = html + "</table>";
+}
+
+async function loadAppLogs(showLoading = true) {
+  const el = document.getElementById("appLogs");
+  if (!el) return;
+  const level = document.getElementById("logLevel")?.value || "INFO";
+  if (showLoading) el.textContent = "Loading logs…";
+  try {
+    const data = await api.get(`/api/logs?limit=700&min_level=${encodeURIComponent(level)}`);
+    const rows = data.lines || [];
+    if (!rows.length) {
+      el.innerHTML = "<span class='hint'>No log lines at this level.</span>";
+      return;
+    }
+    el.innerHTML = rows.map(row => {
+      const levelClass = `log-${String(row.level || "INFO").toLowerCase()}`;
+      return `<div class="log-line ${levelClass}"><span>${esc(row.level || "INFO")}</span><code>${esc(row.message || "")}</code></div>`;
+    }).join("");
+    el.scrollTop = el.scrollHeight;
+  } catch (e) {
+    el.textContent = "Unable to load logs: " + e.message;
+  }
 }
