@@ -5,7 +5,7 @@ import datetime as dt
 import logging
 import time
 from pathlib import Path
-from typing import List
+from typing import Iterable, List, NamedTuple
 
 from sqlalchemy.exc import IntegrityError
 
@@ -195,7 +195,10 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
     # Optionally queue uploads (the "Upload Everything" flow).
     if payload.get("auto_upload"):
         dest_ids = payload.get("destination_ids")
-        enqueue_upload_jobs(new_ids, dest_ids, description_prefix="Auto-upload")
+        if payload.get("group_uploads_by_month"):
+            enqueue_upload_jobs_by_month(new_ids, dest_ids, description_prefix="Auto-upload")
+        else:
+            enqueue_upload_jobs(new_ids, dest_ids, description_prefix="Auto-upload")
 
 
 # --- thumbnail --------------------------------------------------------------
@@ -611,6 +614,43 @@ def get_manager_enqueue(kind: str, payload: dict, description: str = "") -> int:
     return get_manager().enqueue(kind, description=description or kind, payload=payload)
 
 
+class UploadPlanRow(NamedTuple):
+    media_id: int
+    filename: str
+    capture_time: dt.datetime | None
+
+
+def _month_label(capture_time: dt.datetime | None) -> str:
+    if capture_time is None:
+        return "Undated"
+    return capture_time.strftime("%B %Y")
+
+
+def _month_sort_key(row: UploadPlanRow) -> tuple[int, int, dt.datetime, str]:
+    if row.capture_time is None:
+        return (9999, 13, dt.datetime.max, row.filename.lower())
+    return (
+        row.capture_time.year,
+        row.capture_time.month,
+        row.capture_time,
+        row.filename.lower(),
+    )
+
+
+def _month_upload_plan(rows: Iterable[UploadPlanRow]) -> list[UploadPlanRow]:
+    return sorted(rows, key=_month_sort_key)
+
+
+def _month_upload_groups(rows: Iterable[UploadPlanRow]) -> list[tuple[str, list[UploadPlanRow]]]:
+    groups: list[tuple[str, list[UploadPlanRow]]] = []
+    for row in _month_upload_plan(rows):
+        label = _month_label(row.capture_time)
+        if not groups or groups[-1][0] != label:
+            groups.append((label, []))
+        groups[-1][1].append(row)
+    return groups
+
+
 def enqueue_upload_jobs(
     media_ids: list[int],
     destination_ids: list[int] | None = None,
@@ -634,6 +674,38 @@ def enqueue_upload_jobs(
                 "upload",
                 {"media_ids": [mid], "destination_ids": destination_ids},
                 description=f"{description_prefix} {filename}",
+            )
+        )
+    return job_ids
+
+
+def enqueue_upload_jobs_by_month(
+    media_ids: list[int],
+    destination_ids: list[int] | None = None,
+    description_prefix: str = "Upload",
+) -> list[int]:
+    media_ids = list(dict.fromkeys(media_ids))
+    if not media_ids:
+        return []
+    with session_scope() as s:
+        rows = [
+            UploadPlanRow(mid, filename, capture_time)
+            for mid, filename, capture_time in (
+                s.query(MediaItem.id, MediaItem.filename, MediaItem.capture_time)
+                .filter(MediaItem.id.in_(media_ids))
+                .all()
+            )
+        ]
+    job_ids = []
+    for month, month_rows in _month_upload_groups(rows):
+        media_ids_for_month = [row.media_id for row in month_rows]
+        count = len(month_rows)
+        noun = "video" if count == 1 else "videos"
+        job_ids.append(
+            get_manager_enqueue(
+                "upload",
+                {"media_ids": media_ids_for_month, "destination_ids": destination_ids},
+                description=f"{description_prefix} {month} ({count} {noun})",
             )
         )
     return job_ids

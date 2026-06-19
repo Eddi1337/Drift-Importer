@@ -195,6 +195,7 @@ class ImportDeviceReq(BaseModel):
     auto_upload: Optional[bool] = None
     destination_ids: Optional[List[int]] = None
     paths: Optional[List[str]] = None
+    group_uploads_by_month: bool = False
 
 
 @router.get("/device-files")
@@ -282,6 +283,7 @@ def import_device(req: ImportDeviceReq, session: Session = Depends(get_session))
             "source": "device",
             "auto_upload": auto_upload,
             "destination_ids": destination_ids,
+            "group_uploads_by_month": req.group_uploads_by_month,
         },
     )
     return {
@@ -289,6 +291,7 @@ def import_device(req: ImportDeviceReq, session: Session = Depends(get_session))
         "file_count": len(paths),
         "auto_upload": auto_upload,
         "destination_ids": destination_ids,
+        "group_uploads_by_month": req.group_uploads_by_month,
     }
 
 

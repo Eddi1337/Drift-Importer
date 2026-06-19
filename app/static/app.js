@@ -276,15 +276,19 @@ async function refreshDevices() {
   }
 }
 
-async function importDevice(dcim, autoUpload, quiet = false, paths = null, destinationIds = null) {
+async function importDevice(dcim, autoUpload, quiet = false, paths = null, destinationIds = null, opts = {}) {
   try {
     const body = { dcim_path: dcim };
     if (typeof autoUpload === "boolean") body.auto_upload = autoUpload;
     if (paths?.length) body.paths = paths;
     if (destinationIds?.length) body.destination_ids = destinationIds;
+    if (opts.groupUploadsByMonth) body.group_uploads_by_month = true;
     const r = await api.post("/api/import-device", body);
     if (!quiet) {
-      toast(`Queued import of ${r.file_count} files${r.auto_upload ? " + upload" : ""}`);
+      const uploadText = r.auto_upload
+        ? (r.group_uploads_by_month ? " + monthly upload batches" : " + upload")
+        : "";
+      toast(`Queued import of ${r.file_count} files${uploadText}`);
     }
   } catch (e) {
     toast("Import failed: " + e.message);
@@ -444,7 +448,14 @@ async function uploadAllCameraFiles() {
   const destinationIds = await chooseDestinationIds();
   if (destinationIds === false) return;
   const paths = appState.cameraFiles.map(file => file.full_path || file.path);
-  await importDevice(appState.currentDcimPath, true, false, paths, destinationIds);
+  await importDevice(
+    appState.currentDcimPath,
+    true,
+    false,
+    paths,
+    destinationIds,
+    { groupUploadsByMonth: true },
+  );
 }
 
 async function loadFilters() {
