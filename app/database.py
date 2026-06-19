@@ -103,6 +103,11 @@ def _run_migrations() -> None:
                     """
                 )
 
+        if "jobs" in tables:
+            cols = _column_names(conn, "jobs")
+            if "dismissed_at" not in cols:
+                conn.execute("ALTER TABLE jobs ADD COLUMN dismissed_at DATETIME")
+
         if "app_settings" in tables:
             cols = _column_names(conn, "app_settings")
             if "auto_import_on_connect" not in cols:

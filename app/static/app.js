@@ -148,7 +148,7 @@ function ensureGlobalJobPolling() {
 
 async function refreshGlobalJobs() {
   try {
-    appState.jobs = await api.get("/api/jobs?limit=20");
+    appState.jobs = await api.get("/api/jobs?limit=100");
     renderJobBadge();
     renderLiveActivity();
     renderJobsPage();
@@ -533,13 +533,82 @@ async function loadMedia() {
   if (!library.length) {
     grid.innerHTML = "<span class='hint'>No clips awaiting upload. Import from the camera above.</span>";
   } else {
-    library.forEach(m => grid.append(renderCard(m)));
+    renderLibraryList(grid, library);
   }
   updateSelCount();
 }
 
 function isVerifiedUploaded(m) {
   return (m.uploads || []).some(u => u.status === "done");
+}
+
+function renderLibraryList(target, items) {
+  const table = document.createElement("table");
+  table.className = "library-table";
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th></th>
+        <th>Video</th>
+        <th>Date of video</th>
+        <th>Time imported</th>
+        <th>Location</th>
+        <th>Upload progress</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  `;
+  const tbody = table.querySelector("tbody");
+  items.forEach(m => tbody.append(renderLibraryRow(m)));
+  target.append(table);
+}
+
+function renderLibraryRow(m) {
+  const row = document.createElement("tr");
+  row.className = selected.has(m.id) ? "selected-row" : "";
+  const thumb = m.has_thumb ? `/api/media/${m.id}/thumb` : "";
+  const location = renderMediaLocation(m);
+  const uploadText = renderMediaUploadProgress(m);
+  row.innerHTML = `
+    <td><input type="checkbox" class="pick" ${selected.has(m.id) ? "checked" : ""}></td>
+    <td>
+      <div class="library-video-cell">
+        ${thumb ? `<img class="mini-thumb" src="${thumb}" alt="" loading="lazy">` : `<button class="mini-thumb placeholder-thumb">Play</button>`}
+        <div>
+          <div class="fn" title="${esc(m.filename)}">${esc(m.filename)}</div>
+          <div class="hint">${esc(fmtDur(m.duration_s))} · ${esc(fmtBytes(m.size_bytes))}</div>
+        </div>
+      </div>
+    </td>
+    <td>${esc(fmtDateTime(m.capture_time) || "No date")}</td>
+    <td>${esc(fmtDateTime(m.created_at) || "Unknown")}</td>
+    <td><span class="path-text" title="${esc(location)}">${esc(location)}</span></td>
+    <td>${uploadText}</td>
+  `;
+  row.querySelector(".pick").onchange = e => {
+    e.target.checked ? selected.add(m.id) : selected.delete(m.id);
+    row.classList.toggle("selected-row", e.target.checked);
+    updateSelCount();
+  };
+  const thumbEl = row.querySelector(".mini-thumb");
+  thumbEl.onclick = () => m.kind === "video" ? playVideo(m.id) : window.open(`/api/media/${m.id}/stream`);
+  return row;
+}
+
+function renderMediaLocation(m) {
+  const done = (m.uploads || []).filter(u => u.status === "done" && u.remote_path);
+  if (done.length) return done.map(u => u.remote_path).join(" · ");
+  return m.path || "Local library";
+}
+
+function renderMediaUploadProgress(m) {
+  const uploads = m.uploads || [];
+  if (!uploads.length) return "<span class='hint'>Not uploaded</span>";
+  return uploads.map(u => {
+    const pct = u.total_bytes ? Math.round((u.bytes_uploaded / u.total_bytes) * 100) : Math.round((u.progress || 0) * 100);
+    const text = u.status === "done" ? "Uploaded" : `${esc(u.status)} ${pct}%`;
+    return `<span class="pill up-${esc(u.status)}" title="${esc(u.error || u.remote_path || "")}">${renderProgressRing((u.progress || pct / 100))} ${text}</span>`;
+  }).join(" ");
 }
 
 async function loadRecentUploads() {
@@ -1135,16 +1204,24 @@ async function createAlbum() {
 async function loadAlbums() {
   const el = document.getElementById("albumList");
   if (!el) return;
-  const [albums, media] = await Promise.all([api.get("/api/albums"), api.get("/api/media")]);
+  const [albums, media, recentUploads] = await Promise.all([
+    api.get("/api/albums"),
+    api.get("/api/media"),
+    api.get("/api/recent-uploads?limit=100&days=30"),
+  ]);
   const byId = Object.fromEntries(media.map(m => [m.id, m]));
+  el.innerHTML = "";
+  el.append(renderRecentUploadsAlbum(recentUploads));
   if (!albums.length) {
-    el.innerHTML = "<span class='hint'>No albums yet.</span>";
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "No custom albums yet.";
+    el.append(empty);
     return;
   }
-  el.innerHTML = "";
   albums.forEach(a => {
     const box = document.createElement("div");
-    box.className = "panel";
+    box.className = "album-folder";
     box.innerHTML = `<h2>${esc(a.name)} <span class="hint">(${a.item_ids.length} clips)</span></h2>`;
     const list = document.createElement("div");
     a.item_ids.forEach((mid, idx) => {
@@ -1194,6 +1271,34 @@ async function loadAlbums() {
   });
 }
 
+function renderRecentUploadsAlbum(rows) {
+  const box = document.createElement("div");
+  box.className = "album-folder";
+  const count = rows.length;
+  box.innerHTML = `
+    <div class="row spread">
+      <div>
+        <h2>Recent uploads <span class="hint">(${count} videos)</span></h2>
+        <p class="hint">Default album populated from clips recently uploaded to the destination.</p>
+      </div>
+      <button class="ghost">Open</button>
+    </div>
+    <div class="grid recent-album-grid" hidden></div>
+  `;
+  const grid = box.querySelector(".recent-album-grid");
+  const button = box.querySelector("button");
+  if (!rows.length) {
+    grid.innerHTML = "<span class='hint'>No recent uploads recorded yet.</span>";
+  } else {
+    rows.forEach(row => grid.append(renderRecentUploadCard(row)));
+  }
+  button.onclick = () => {
+    grid.hidden = !grid.hidden;
+    button.textContent = grid.hidden ? "Open" : "Close";
+  };
+  return box;
+}
+
 async function moveAlbumItem(album, idx, dir) {
   const ids = [...album.item_ids];
   const j = idx + dir;
@@ -1234,13 +1339,19 @@ function renderJobsPage() {
     const detail = j.error ? `<span style="color:#ffaea2">${esc(j.error)}</span>` : esc(j.detail || "");
     const cancel = (j.status === "queued" || j.status === "running")
       ? `<button class="ghost" onclick="cancelJob(${j.id})">Cancel</button>` : "";
-    html += `<tr><td>${j.id}</td><td>${esc(j.kind)}</td><td>${esc(j.description)}<br><span class="hint">${detail}</span></td><td>${renderJobState(j.status)}</td><td><div class="prog"><span style="width:${pct}%"></span></div>${pct}%</td><td>${cancel}</td></tr>`;
+    const dismiss = `<button class="ghost" onclick="dismissJob(${j.id})">Dismiss</button>`;
+    html += `<tr><td>${j.id}</td><td>${esc(j.kind)}</td><td>${esc(j.description)}<br><span class="hint">${detail}</span></td><td>${renderJobState(j.status)}</td><td><div class="prog"><span style="width:${pct}%"></span></div>${pct}%</td><td><div class="row">${cancel}${dismiss}</div></td></tr>`;
   });
   el.innerHTML = html + "</table>";
 }
 
 async function cancelJob(id) {
   await api.post(`/api/jobs/${id}/cancel`);
+  refreshGlobalJobs();
+}
+
+async function dismissJob(id) {
+  await api.post(`/api/jobs/${id}/dismiss`);
   refreshGlobalJobs();
 }
 
@@ -1290,20 +1401,52 @@ function renderStatsDestinations(rows) {
     el.innerHTML = "<span class='hint'>No destinations configured.</span>";
     return;
   }
-  let html = "<table><tr><th>Destination</th><th>Uploads</th><th>Errors</th><th>Pending / active</th><th>App storage</th><th>Destination storage</th><th>Average</th></tr>";
-  rows.forEach(row => {
+  el.innerHTML = rows.map(row => {
     const storage = row.storage || {};
-    html += `<tr>
-      <td><b>${esc(row.name)}</b><br><span class="hint">${esc(row.type)}</span></td>
-      <td>${row.uploaded_clip_count || 0}</td>
-      <td>${row.error_clip_count || 0}</td>
-      <td>${(row.pending_clip_count || 0) + (row.uploading_clip_count || 0)}</td>
-      <td>${fmtBytes(row.uploaded_bytes || 0)}</td>
-      <td>${renderDestinationStorageText({ storage })}</td>
-      <td>${fmtDurationText(row.average_upload_duration_s)} · ${fmtBytes(row.average_throughput_bps || 0)}/s</td>
-    </tr>`;
-  });
-  el.innerHTML = html + "</table>";
+    return `<div class="usage-card">
+      <div class="usage-head">
+        <div>
+          <h3>${esc(row.name)}</h3>
+          <div class="hint">${esc(row.type)} · ${esc(row.base_path || "")}</div>
+        </div>
+        <div class="hint">${row.uploaded_clip_count || 0} uploaded · ${row.error_clip_count || 0} errors · ${(row.pending_clip_count || 0) + (row.uploading_clip_count || 0)} pending/active</div>
+      </div>
+      <div class="usage-body">
+        ${renderStoragePie(storage)}
+        <div class="usage-facts">
+          <div><span class="hint">App footage</span><strong>${fmtBytes(storage.bytes_uploaded_by_app || row.uploaded_bytes || 0)}</strong></div>
+          <div><span class="hint">NAS used</span><strong>${storage.used_bytes == null ? "Unknown" : fmtBytes(storage.used_bytes)}</strong></div>
+          <div><span class="hint">NAS free</span><strong>${storage.free_bytes == null ? "Unknown" : fmtBytes(storage.free_bytes)}</strong></div>
+          <div><span class="hint">NAS total</span><strong>${storage.total_bytes == null ? "Unknown" : fmtBytes(storage.total_bytes)}</strong></div>
+          <div><span class="hint">Average</span><strong>${fmtDurationText(row.average_upload_duration_s)} · ${fmtBytes(row.average_throughput_bps || 0)}/s</strong></div>
+        </div>
+      </div>
+      ${storage.error ? `<div class="hint">Storage check failed: ${esc(storage.error)}</div>` : ""}
+    </div>`;
+  }).join("");
+}
+
+function renderStoragePie(storage) {
+  const total = Number(storage.total_bytes || 0);
+  const used = Math.max(0, Number(storage.used_bytes || 0));
+  const appBytes = Math.max(0, Number(storage.bytes_uploaded_by_app || 0));
+  if (!total) {
+    return `<div class="usage-pie unknown"><span>?</span></div>`;
+  }
+  const appPct = Math.min(100, (appBytes / total) * 100);
+  const usedPct = Math.min(100, Math.max(appPct, (used / total) * 100));
+  const appLabel = appPct < 0.1 && appBytes > 0 ? "<0.1" : appPct.toFixed(1);
+  return `
+    <div class="usage-pie-wrap">
+      <div class="usage-pie" style="background:conic-gradient(var(--acc) 0 ${appPct}%, var(--gold) ${appPct}% ${usedPct}%, var(--surface-2) ${usedPct}% 100%)">
+        <span>${appLabel}%</span>
+      </div>
+      <div class="pie-legend">
+        <span><i class="legend-app"></i>Uploaded footage</span>
+        <span><i class="legend-other"></i>Other used</span>
+        <span><i class="legend-free"></i>Free</span>
+      </div>
+    </div>`;
 }
 
 // ============================ SETTINGS ======================================

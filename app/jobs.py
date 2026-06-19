@@ -114,6 +114,12 @@ class JobManager:
                     job.status = "cancelled"
                     job.finished_at = utcnow()
 
+    def dismiss(self, job_id: int) -> None:
+        with session_scope() as s:
+            job = s.get(Job, job_id)
+            if job:
+                job.dismissed_at = utcnow()
+
     def _claim_next(self) -> Optional[int]:
         with session_scope() as s:
             job = (

@@ -54,25 +54,63 @@ def probe(path: Path) -> Dict:
             info["duration_s"] = float(fmt["duration"])
         except (TypeError, ValueError):
             pass
-    # creation_time from container tags, if the camera wrote one.
-    tags = fmt.get("tags", {}) or {}
-    ct = tags.get("creation_time")
-    if ct:
-        info["capture_time"] = _parse_time(ct)
+    # Creation/capture time from container tags, if the camera wrote one.
+    info["capture_time"] = _capture_time_from_tags(fmt.get("tags", {}) or {})
     for stream in data.get("streams", []):
         if stream.get("codec_type") == "video":
             info["codec"] = stream.get("codec_name")
             info["width"] = stream.get("width")
             info["height"] = stream.get("height")
             stags = stream.get("tags", {}) or {}
-            if info["capture_time"] is None and stags.get("creation_time"):
-                info["capture_time"] = _parse_time(stags["creation_time"])
+            if info["capture_time"] is None:
+                info["capture_time"] = _capture_time_from_tags(stags)
             break
     return info
 
 
+def _capture_time_from_tags(tags: Dict) -> Optional[dt.datetime]:
+    preferred = (
+        "creation_time",
+        "com.apple.quicktime.creationdate",
+        "date",
+        "creationdate",
+        "media_create_date",
+        "track_create_date",
+    )
+    normalized = {str(k).lower(): v for k, v in tags.items() if v}
+    for key in preferred:
+        value = normalized.get(key)
+        if value:
+            parsed = _parse_time(str(value))
+            if parsed:
+                return parsed
+    for value in normalized.values():
+        parsed = _parse_time(str(value))
+        if parsed:
+            return parsed
+    return None
+
+
 def _parse_time(value: str) -> Optional[dt.datetime]:
+    value = value.strip()
+    if not value:
+        return None
+    iso_value = value.replace("Z", "+00:00")
+    if len(iso_value) >= 5 and iso_value[-5] in ("+", "-") and iso_value[-3] != ":":
+        iso_value = iso_value[:-2] + ":" + iso_value[-2:]
+    try:
+        parsed = dt.datetime.fromisoformat(iso_value)
+        if parsed.tzinfo:
+            return parsed.astimezone(dt.timezone.utc).replace(tzinfo=None)
+        return parsed
+    except ValueError:
+        pass
     for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return dt.datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
         try:
             return dt.datetime.strptime(value, fmt)
         except ValueError:

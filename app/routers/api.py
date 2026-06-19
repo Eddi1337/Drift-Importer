@@ -113,6 +113,7 @@ def build_upload_stats(session: Session) -> dict:
 def media_dict(m: MediaItem) -> dict:
     return {
         "id": m.id,
+        "path": m.path,
         "filename": m.filename,
         "kind": m.kind,
         "size_bytes": m.size_bytes,
@@ -127,6 +128,7 @@ def media_dict(m: MediaItem) -> dict:
         "derived": m.derived,
         "checksum": m.checksum,
         "has_thumb": bool(m.thumbnail),
+        "created_at": m.created_at.isoformat() if m.created_at else None,
         "tags": [t.name for t in m.tags],
         "uploads": [
             {
@@ -799,15 +801,26 @@ class UploadReq(BaseModel):
 
 
 @router.post("/upload")
-def start_upload(req: UploadReq):
+def start_upload(req: UploadReq, session: Session = Depends(get_session)):
     if not req.media_ids:
         raise HTTPException(400, "No media selected")
-    job_id = get_manager().enqueue(
-        "upload",
-        description=f"Upload {len(req.media_ids)} item(s)",
-        payload={"media_ids": req.media_ids, "destination_ids": req.destination_ids},
+    rows = (
+        session.query(MediaItem.id, MediaItem.filename)
+        .filter(MediaItem.id.in_(req.media_ids))
+        .all()
     )
-    return {"job_id": job_id}
+    names = {mid: filename for mid, filename in rows}
+    job_ids = []
+    for mid in list(dict.fromkeys(req.media_ids)):
+        filename = names.get(mid, f"item {mid}")
+        job_ids.append(
+            get_manager().enqueue(
+                "upload",
+                description=f"Upload {filename}",
+                payload={"media_ids": [mid], "destination_ids": req.destination_ids},
+            )
+        )
+    return {"job_ids": job_ids, "job_id": job_ids[0] if job_ids else None}
 
 
 class TimestampReq(BaseModel):
@@ -884,12 +897,20 @@ def job_dict(j: Job) -> dict:
         "error": j.error,
         "created_at": j.created_at.isoformat() if j.created_at else None,
         "finished_at": j.finished_at.isoformat() if j.finished_at else None,
+        "dismissed_at": j.dismissed_at.isoformat() if j.dismissed_at else None,
     }
 
 
 @router.get("/jobs")
-def list_jobs(limit: int = 50, session: Session = Depends(get_session)):
-    jobs = session.query(Job).order_by(Job.created_at.desc()).limit(limit).all()
+def list_jobs(
+    limit: int = 50,
+    include_dismissed: bool = False,
+    session: Session = Depends(get_session),
+):
+    q = session.query(Job)
+    if not include_dismissed:
+        q = q.filter(Job.dismissed_at.is_(None))
+    jobs = q.order_by(Job.created_at.desc()).limit(limit).all()
     return [job_dict(j) for j in jobs]
 
 
@@ -897,3 +918,9 @@ def list_jobs(limit: int = 50, session: Session = Depends(get_session)):
 def cancel_job(job_id: int):
     get_manager().request_cancel(job_id)
     return {"cancelled": job_id}
+
+
+@router.post("/jobs/{job_id}/dismiss")
+def dismiss_job(job_id: int):
+    get_manager().dismiss(job_id)
+    return {"dismissed": job_id}

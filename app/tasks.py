@@ -40,12 +40,14 @@ def import_one(session, path: Path, source: str, derived: bool = False) -> Media
     path_str = str(path)
     existing = session.query(MediaItem).filter(MediaItem.path == path_str).first()
     if existing:
+        _refresh_metadata_from_file(existing, path)
         return existing
     kind = classify(path) or "video"
     info = probe(path)
     cs = checksum(path)
     existing = session.query(MediaItem).filter(MediaItem.checksum == cs).first()
     if existing:
+        _refresh_metadata_from_file(existing, path)
         return existing
     item = MediaItem(
         path=path_str,
@@ -75,6 +77,34 @@ def import_one(session, path: Path, source: str, derived: bool = False) -> Media
             return existing
         raise
     return item
+
+
+def _refresh_metadata_from_file(item: MediaItem, path: Path) -> None:
+    """Refresh capture metadata from the file without replacing user-only fields."""
+    if not path.exists():
+        return
+    info = probe(path)
+    try:
+        mtime = dt.datetime.fromtimestamp(path.stat().st_mtime)
+    except OSError:
+        mtime = None
+    metadata_time = info.get("capture_time")
+    is_mtime_fallback = (
+        item.capture_time is not None
+        and mtime is not None
+        and abs((item.capture_time - mtime).total_seconds()) < 2
+    )
+    if metadata_time and (item.capture_time is None or is_mtime_fallback):
+        item.capture_time = metadata_time
+    item.duration_s = item.duration_s if item.duration_s is not None else info["duration_s"]
+    item.codec = item.codec or info["codec"]
+    item.width = item.width or info["width"]
+    item.height = item.height or info["height"]
+    if mtime is not None:
+        try:
+            item.size_bytes = path.stat().st_size
+        except OSError:
+            pass
 
 
 def _mark_upload_progress(
@@ -165,11 +195,7 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
     # Optionally queue uploads (the "Upload Everything" flow).
     if payload.get("auto_upload"):
         dest_ids = payload.get("destination_ids")
-        get_manager_enqueue(
-            "upload",
-            {"media_ids": new_ids, "destination_ids": dest_ids},
-            description="Auto-upload imported clips",
-        )
+        enqueue_upload_jobs(new_ids, dest_ids, description_prefix="Auto-upload")
 
 
 # --- thumbnail --------------------------------------------------------------
@@ -312,9 +338,11 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                 done += 1
                 ctx.set_progress(done / total)
                 continue
-            local_size = item.size_bytes or Path(item.path).stat().st_size
+            local_path_obj = Path(item.path)
+            _refresh_metadata_from_file(item, local_path_obj)
+            local_size = item.size_bytes or local_path_obj.stat().st_size
             if not item.checksum:
-                item.checksum = checksum(Path(item.path))
+                item.checksum = checksum(local_path_obj)
             state = (
                 s.query(UploadState)
                 .filter(UploadState.media_id == mid, UploadState.destination_id == did)
@@ -581,3 +609,31 @@ def get_manager_enqueue(kind: str, payload: dict, description: str = "") -> int:
     from .jobs import get_manager
 
     return get_manager().enqueue(kind, description=description or kind, payload=payload)
+
+
+def enqueue_upload_jobs(
+    media_ids: list[int],
+    destination_ids: list[int] | None = None,
+    description_prefix: str = "Upload",
+) -> list[int]:
+    media_ids = list(dict.fromkeys(media_ids))
+    if not media_ids:
+        return []
+    with session_scope() as s:
+        rows = (
+            s.query(MediaItem.id, MediaItem.filename)
+            .filter(MediaItem.id.in_(media_ids))
+            .all()
+        )
+        names = {mid: filename for mid, filename in rows}
+    job_ids = []
+    for mid in media_ids:
+        filename = names.get(mid, f"item {mid}")
+        job_ids.append(
+            get_manager_enqueue(
+                "upload",
+                {"media_ids": [mid], "destination_ids": destination_ids},
+                description=f"{description_prefix} {filename}",
+            )
+        )
+    return job_ids
