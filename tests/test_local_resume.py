@@ -2,6 +2,7 @@ from pathlib import Path
 import hashlib
 
 from app.destinations.local import LocalBackend
+from app.media import checksum as sampled_checksum
 from app.models import Destination
 
 
@@ -46,7 +47,7 @@ def test_local_backend_resumes_partial_upload(tmp_path, monkeypatch):
 def test_local_backend_verifies_remote_hash(tmp_path):
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"same-size-content")
-    checksum = hashlib.sha256(source.read_bytes()).hexdigest()
+    checksum = sampled_checksum(source)
 
     root = tmp_path / "remote"
     remote_dir = root / "2026" / "06"
@@ -57,6 +58,12 @@ def test_local_backend_verifies_remote_hash(tmp_path):
     backend = LocalBackend(Destination(name="NAS", type="local", base_path=str(root)))
 
     assert backend.remote_file_matches("2026/06", "clip.mp4", source.stat().st_size, checksum)
+    assert not backend.remote_file_matches(
+        "2026/06",
+        "clip.mp4",
+        source.stat().st_size,
+        hashlib.sha256(source.read_bytes()).hexdigest(),
+    )
 
     remote.write_bytes(b"different-content")
 

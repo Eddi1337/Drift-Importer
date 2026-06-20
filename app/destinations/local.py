@@ -9,19 +9,11 @@ from __future__ import annotations
 import os
 import shutil
 import datetime as dt
-import hashlib
 from pathlib import Path
 
 from ..config import get_settings
+from ..media import checksum as sampled_checksum
 from .base import ProgressCb, RemoteEntry, UploadBackend, join_remote
-
-
-def _file_sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 class LocalBackend(UploadBackend):
@@ -96,7 +88,7 @@ class LocalBackend(UploadBackend):
             return False
         if target.stat().st_size != size_bytes:
             return False
-        return _file_sha256(target) == checksum
+        return sampled_checksum(target) == checksum
 
     def upload(
         self,
