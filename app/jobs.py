@@ -99,6 +99,7 @@ class JobManager:
         self.ffmpeg_sem = threading.Semaphore(settings.max_concurrent_ffmpeg)
         self._stop = threading.Event()
         self._threads = []
+        self._claim_lock = threading.Lock()
 
     def start(self) -> None:
         # Requeue jobs left "running" by a previous crash/restart.
@@ -143,22 +144,23 @@ class JobManager:
                 job.dismissed_at = utcnow()
 
     def _claim_next(self) -> Optional[int]:
-        with session_scope() as s:
-            job = (
-                s.query(Job)
-                .filter(Job.status == "queued")
-                .order_by(Job.created_at)
-                .first()
-            )
-            if not job:
-                return None
-            if job.cancel_requested:
-                job.status = "cancelled"
-                job.finished_at = utcnow()
-                return None
-            job.status = "running"
-            job.started_at = utcnow()
-            return job.id
+        with self._claim_lock:
+            with session_scope() as s:
+                job = (
+                    s.query(Job)
+                    .filter(Job.status == "queued")
+                    .order_by(Job.created_at)
+                    .first()
+                )
+                if not job:
+                    return None
+                if job.cancel_requested:
+                    job.status = "cancelled"
+                    job.finished_at = utcnow()
+                    return None
+                job.status = "running"
+                job.started_at = utcnow()
+                return job.id
 
     def _worker(self) -> None:
         while not self._stop.is_set():

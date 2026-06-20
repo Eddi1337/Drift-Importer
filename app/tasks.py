@@ -472,6 +472,71 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                         clip.last_error = f"Pre-upload verification failed: {exc}"
                         clip.updated_at = utcnow()
 
+        if not ledger_done:
+            ctx.set_progress(done / total, f"Checking existing {filename} on {dest_name}")
+            try:
+                if backend.remote_file_matches(remote_dir, filename, local_size, checksum_value):
+                    log.info(
+                        "Found existing verified upload for media=%s destination=%s remote=%s",
+                        mid,
+                        did,
+                        remote_hint,
+                    )
+                    with session_scope() as s:
+                        state = (
+                            s.query(UploadState)
+                            .filter(
+                                UploadState.media_id == mid,
+                                UploadState.destination_id == did,
+                            )
+                            .first()
+                        )
+                        clip = s.get(UploadedClip, clip_id)
+                        now = utcnow()
+                        if state:
+                            state.status = "done"
+                            state.remote_path = remote_hint
+                            state.error = None
+                            state.bytes_uploaded = local_size
+                            state.total_bytes = local_size
+                            state.uploaded_at = state.uploaded_at or now
+                            state.updated_at = now
+                        if clip:
+                            clip.remote_path = remote_hint
+                            clip.temp_remote_path = f"{remote_hint}.part"
+                            clip.status = "done"
+                            clip.size_bytes = local_size
+                            clip.bytes_uploaded = local_size
+                            clip.upload_duration_s = clip.upload_duration_s or 0.0
+                            clip.upload_throughput_bps = clip.upload_throughput_bps or 0.0
+                            clip.uploaded_at = clip.uploaded_at or now
+                            clip.last_error = None
+                            clip.updated_at = now
+                    done += 1
+                    ctx.set_progress(done / total, f"Verified existing {filename}")
+                    _publish_upload_status(
+                        prefs,
+                        job_id,
+                        "running",
+                        {
+                            "job_id": job_id,
+                            "current_file": filename,
+                            "current_destination": dest_name,
+                            "completed_items": done,
+                            "total_items": total,
+                            "progress_pct": round((done / total) * 100, 1),
+                            "mode": "verified-existing",
+                        },
+                    )
+                    continue
+            except Exception as exc:  # noqa: BLE001
+                ctx.log(f"Existing-file check failed for {filename}: {exc}", level="WARNING")
+                log.exception(
+                    "Existing remote verification errored before upload media=%s destination=%s",
+                    mid,
+                    did,
+                )
+
         start_offset = backend.get_resume_offset(remote_dir, filename, local_size)
         if start_offset:
             ctx.log(f"Resuming {filename} at {start_offset} of {local_size} bytes")
@@ -566,6 +631,9 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                     mid,
                     did,
                 )
+
+        if result_status == "done" and result_remote is None:
+            result_remote = remote_hint
 
         # 3) Record the outcome in another short transaction.
         with session_scope() as s:
