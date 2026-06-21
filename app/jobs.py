@@ -98,6 +98,7 @@ class JobManager:
         self.upload_sem = threading.Semaphore(settings.max_concurrent_uploads)
         self.ffmpeg_sem = threading.Semaphore(settings.max_concurrent_ffmpeg)
         self._stop = threading.Event()
+        self._paused = threading.Event()
         self._threads = []
         self._claim_lock = threading.Lock()
 
@@ -128,14 +129,66 @@ class JobManager:
             s.flush()
             return job.id
 
+    def retry(self, job_id: int) -> Optional[int]:
+        with session_scope() as s:
+            original = s.get(Job, job_id)
+            if not original:
+                return None
+            job = Job(
+                kind=original.kind,
+                description=f"Retry {original.description or original.kind}",
+                status="queued",
+                payload=original.payload,
+            )
+            s.add(job)
+            s.flush()
+            return job.id
+
     def request_cancel(self, job_id: int) -> None:
         with session_scope() as s:
             job = s.get(Job, job_id)
-            if job and job.status in ("queued", "running"):
+            if job and job.status in ("queued", "running", "paused"):
                 job.cancel_requested = True
-                if job.status == "queued":
+                if job.status in ("queued", "paused"):
                     job.status = "cancelled"
                     job.finished_at = utcnow()
+
+    def pause_all(self) -> dict:
+        self._paused.set()
+        with session_scope() as s:
+            queued = s.query(Job).filter(Job.status == "queued").all()
+            for job in queued:
+                job.status = "paused"
+            running_count = s.query(Job).filter(Job.status == "running").count()
+            return {"paused": len(queued), "running": running_count}
+
+    def resume_all(self) -> dict:
+        self._paused.clear()
+        with session_scope() as s:
+            paused = s.query(Job).filter(Job.status == "paused").all()
+            for job in paused:
+                job.status = "queued"
+            return {"resumed": len(paused)}
+
+    def stop_all(self) -> dict:
+        self._paused.clear()
+        with session_scope() as s:
+            jobs = (
+                s.query(Job)
+                .filter(Job.status.in_(("queued", "running", "paused")))
+                .all()
+            )
+            cancelled_now = 0
+            running = 0
+            for job in jobs:
+                job.cancel_requested = True
+                if job.status == "running":
+                    running += 1
+                else:
+                    job.status = "cancelled"
+                    job.finished_at = utcnow()
+                    cancelled_now += 1
+            return {"cancel_requested": len(jobs), "cancelled": cancelled_now, "running": running}
 
     def dismiss(self, job_id: int) -> None:
         with session_scope() as s:
@@ -144,6 +197,8 @@ class JobManager:
                 job.dismissed_at = utcnow()
 
     def _claim_next(self) -> Optional[int]:
+        if self._paused.is_set():
+            return None
         with self._claim_lock:
             with session_scope() as s:
                 job = (

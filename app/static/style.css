@@ -165,6 +165,13 @@ button {
 
 button:hover { filter: brightness(1.05); transform: translateY(-2px); box-shadow: 0 12px 22px rgba(71, 122, 59, 0.18); }
 button:active { transform: translateY(0); }
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  filter: none;
+  transform: none;
+  box-shadow: none;
+}
 button.danger { background: linear-gradient(135deg, #b91c1c, var(--danger)); color: #fff7f7; }
 button.ghost { background: var(--surface); color: var(--fg); border: 1px solid var(--line); box-shadow: none; }
 
@@ -703,6 +710,108 @@ input:focus, select:focus {
 .spark.tx-line polyline { stroke: var(--gold); }
 .spark.cpu-line polyline { stroke: var(--warn); }
 
+.time-chart-wrap {
+  display: grid;
+  gap: 0.4rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.time-chart-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.time-chart-head strong {
+  font-size: 0.88rem;
+}
+
+.time-chart {
+  width: 100%;
+  height: 8rem;
+  background:
+    linear-gradient(180deg, rgba(71, 122, 59, 0.08), transparent),
+    var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.time-chart .chart-grid line,
+.time-chart .chart-axis {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.time-chart .chart-grid text {
+  fill: var(--mut);
+  font-size: 0.62rem;
+}
+
+.time-chart .chart-line {
+  fill: none;
+  stroke: var(--acc);
+  stroke-width: 2.3;
+  vector-effect: non-scaling-stroke;
+}
+
+.time-chart .chart-area {
+  fill: var(--acc);
+  opacity: 0.13;
+}
+
+.time-chart .rx-line .chart-line,
+.time-chart .uploaded-line .chart-line { stroke: var(--acc); }
+.time-chart .rx-line .chart-area,
+.time-chart .uploaded-line .chart-area { fill: var(--acc); }
+
+.time-chart .tx-line .chart-line,
+.time-chart .active-line .chart-line { stroke: var(--gold); }
+.time-chart .tx-line .chart-area,
+.time-chart .active-line .chart-area { fill: var(--gold); }
+
+.time-chart .cpu-line .chart-line,
+.time-chart .fs-line .chart-line { stroke: var(--warn); }
+.time-chart .cpu-line .chart-area,
+.time-chart .fs-line .chart-area { fill: var(--warn); }
+
+.time-chart .error-line .chart-line { stroke: var(--danger); }
+.time-chart .error-line .chart-area { fill: var(--danger); }
+
+.time-chart-legend {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  color: var(--mut);
+  font-size: 0.78rem;
+}
+
+.time-chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.time-chart-legend i {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  background: var(--acc);
+  display: inline-block;
+}
+
+.time-chart-legend .tx-line i,
+.time-chart-legend .active-line i { background: var(--gold); }
+.time-chart-legend .cpu-line i,
+.time-chart-legend .fs-line i { background: var(--warn); }
+.time-chart-legend .error-line i { background: var(--danger); }
+
+.destination-timeline {
+  margin-top: 0.35rem;
+}
+
 .network-graphs {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -911,6 +1020,14 @@ th, td { text-align: left; padding: 0.52rem 0.35rem; border-bottom: 1px solid va
   table-layout: auto;
 }
 
+.job-bulk-actions {
+  justify-content: flex-end;
+}
+
+.job-row-actions {
+  flex-wrap: nowrap;
+}
+
 .jobs-table .progress-col,
 .jobs-table .progress-cell {
   min-width: 15rem;
@@ -981,6 +1098,7 @@ tr:has(.job-state.running) .job-progress > span {
 
 .job-state.running .status-dot { color: var(--warn); animation: pulse 1.3s infinite; }
 .job-state.queued .status-dot { color: var(--mut); }
+.job-state.paused .status-dot { color: var(--gold); }
 .job-state.done .status-dot { color: var(--ok); }
 .job-state.error .status-dot { color: var(--danger); }
 .job-state.cancelled .status-dot { color: var(--mut); }

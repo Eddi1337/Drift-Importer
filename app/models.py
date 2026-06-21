@@ -208,7 +208,7 @@ class Job(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     kind: Mapped[str] = mapped_column(String(32))  # import|thumbnail|merge|timestamp|upload
     description: Mapped[str] = mapped_column(String(512), default="")
-    status: Mapped[str] = mapped_column(String(16), default="queued")  # queued|running|done|error|cancelled
+    status: Mapped[str] = mapped_column(String(16), default="queued")  # queued|paused|running|done|error|cancelled
     progress: Mapped[float] = mapped_column(Float, default=0.0)  # 0..1
     detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

@@ -73,34 +73,36 @@ def test_build_upload_stats_aggregates_persistent_metrics(monkeypatch):
         "average_upload_duration_s": 4.5,
         "average_throughput_bps": 32.5,
     }
-    assert stats["destinations"] == [
-        {
-            "id": destination.id,
-            "name": "Archive",
-            "type": "local",
-            "host": None,
-            "port": None,
-            "username": None,
-            "base_path": "/tmp/archive",
-            "path_template": "{year}/{month:02d}",
-            "is_default": False,
-            "enabled": True,
-            "has_secret": False,
-            "uploaded_clip_count": 2,
-            "error_clip_count": 1,
-            "uploading_clip_count": 0,
-            "pending_clip_count": 0,
-            "uploaded_bytes": 300,
-            "average_upload_duration_s": 4.5,
-            "average_throughput_bps": 32.5,
-            "storage": {
-                "free_bytes": 700,
-                "total_bytes": 1000,
-                "used_bytes": 300,
-                "bytes_uploaded_by_app": 300,
-            },
-        }
-    ]
+    assert len(stats["destinations"]) == 1
+    destination_stats = stats["destinations"][0]
+    upload_timeline = destination_stats.pop("upload_timeline")
+    assert destination_stats == {
+        "id": destination.id,
+        "name": "Archive",
+        "type": "local",
+        "host": None,
+        "port": None,
+        "username": None,
+        "base_path": "/tmp/archive",
+        "path_template": "{year}/{month:02d}",
+        "is_default": False,
+        "enabled": True,
+        "has_secret": False,
+        "uploaded_clip_count": 2,
+        "error_clip_count": 1,
+        "uploading_clip_count": 0,
+        "pending_clip_count": 0,
+        "uploaded_bytes": 300,
+        "average_upload_duration_s": 4.5,
+        "average_throughput_bps": 32.5,
+        "storage": {
+            "free_bytes": 700,
+            "total_bytes": 1000,
+            "used_bytes": 300,
+            "bytes_uploaded_by_app": 300,
+        },
+    }
+    assert {"hours", "bucket_minutes", "points"} <= set(upload_timeline)
 
 
 def test_local_backend_reports_storage_info(tmp_path):

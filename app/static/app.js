@@ -46,6 +46,7 @@ const appState = {
     cpu: [],
     rx: [],
     tx: [],
+    filesystems: {},
   },
 };
 
@@ -153,6 +154,10 @@ function renderJobState(status) {
   return `<span class="job-state ${esc(status)}"><span class="status-dot"></span>${esc(status)}</span>`;
 }
 
+function isActiveJob(job) {
+  return job.status === "queued" || job.status === "running";
+}
+
 async function loadSettings() {
   try {
     appState.settings = await api.get("/api/settings");
@@ -185,7 +190,7 @@ async function refreshGlobalJobs() {
 function renderJobBadge() {
   const b = document.getElementById("jobBadge");
   if (!b) return;
-  const active = appState.jobs.filter(j => j.status === "queued" || j.status === "running");
+  const active = appState.jobs.filter(isActiveJob);
   if (!active.length) {
     b.textContent = "";
     return;
@@ -197,7 +202,7 @@ function renderJobBadge() {
 function renderLiveActivity() {
   const el = document.getElementById("liveActivity");
   if (!el) return;
-  const active = appState.jobs.filter(j => j.status === "queued" || j.status === "running");
+  const active = appState.jobs.filter(isActiveJob);
   const uploads = active.filter(j => j.kind === "upload");
   const current = active[0];
   if (!el.querySelector("[data-live='active']")) {
@@ -1345,13 +1350,23 @@ function initJobs() {
 function renderJobsPage() {
   const summary = document.getElementById("jobSummary");
   const el = document.getElementById("jobsTable");
+  const controls = document.getElementById("jobBulkActions");
   if (!summary || !el) return;
   const jobs = appState.jobs;
-  const active = jobs.filter(j => j.status === "queued" || j.status === "running");
+  const active = jobs.filter(isActiveJob);
+  const paused = jobs.filter(j => j.status === "paused");
   const failed = jobs.filter(j => j.status === "error");
   const completed = jobs.filter(j => j.status === "done");
+  if (controls) {
+    controls.innerHTML = `
+      <button class="ghost" onclick="pauseAllJobs()" ${active.length ? "" : "disabled"}>Pause all</button>
+      <button class="ghost" onclick="resumeAllJobs()" ${paused.length ? "" : "disabled"}>Resume all</button>
+      <button class="danger" onclick="stopAllJobs()" ${(active.length || paused.length) ? "" : "disabled"}>Stop all</button>
+    `;
+  }
   summary.innerHTML = `
     <div class="live-card"><div class="hint">Queued / running</div><div class="value">${active.length}</div></div>
+    <div class="live-card"><div class="hint">Paused</div><div class="value">${paused.length}</div></div>
     <div class="live-card"><div class="hint">Completed</div><div class="value">${completed.length}</div></div>
     <div class="live-card"><div class="hint">Errors</div><div class="value">${failed.length}</div></div>
     <div class="live-card"><div class="hint">Latest</div><div>${esc(jobs[0] ? jobs[0].description : "No jobs yet")}</div></div>
@@ -1360,14 +1375,17 @@ function renderJobsPage() {
     el.innerHTML = "<span class='hint'>No jobs yet.</span>";
     return;
   }
+  const logScroll = captureJobLogScroll();
   let html = "<table class='jobs-table'><tr><th>ID</th><th>Kind</th><th>Description</th><th>Status</th><th>Timing</th><th class='progress-col'>Progress</th><th></th></tr>";
   jobs.forEach(j => {
     const pct = Math.round(j.progress * 100);
     const detail = j.error ? `<span style="color:#ffaea2">${esc(j.error)}</span>` : esc(j.detail || "");
     const elapsed = fmtElapsed(j.started_at || j.created_at, j.finished_at);
     const started = j.started_at ? fmtDateTime(j.started_at) : "Queued";
-    const cancel = (j.status === "queued" || j.status === "running")
+    const cancel = (isActiveJob(j) || j.status === "paused")
       ? `<button class="ghost" onclick="cancelJob(${j.id})">Cancel</button>` : "";
+    const retry = (j.kind === "upload" && !isActiveJob(j) && j.status !== "paused")
+      ? `<button class="ghost" onclick="retryJob(${j.id})">Retry</button>` : "";
     const dismiss = `<button class="ghost" onclick="dismissJob(${j.id})">Dismiss</button>`;
     const expanded = appState.expandedJobs.has(j.id);
     const logs = appState.jobLogs[j.id] || [];
@@ -1378,13 +1396,29 @@ function renderJobsPage() {
       <td>${renderJobState(j.status)}</td>
       <td><div class="job-time"><strong>${esc(elapsed)}</strong><span class="hint">Started ${esc(started)}</span></div></td>
       <td class="progress-cell"><div class="prog job-progress"><span style="width:${pct}%"></span></div><div class="progress-label">${pct}%</div></td>
-      <td><div class="row">${cancel}${dismiss}</div></td>
+      <td><div class="row job-row-actions">${cancel}${retry}${dismiss}</div></td>
     </tr>`;
     if (expanded) {
       html += `<tr class="job-log-row"><td colspan="7">${renderJobLogPanel(j.id, logs)}</td></tr>`;
     }
   });
   el.innerHTML = html + "</table>";
+  restoreJobLogScroll(logScroll);
+}
+
+function captureJobLogScroll() {
+  const scroll = {};
+  document.querySelectorAll(".job-log-window[id^='jobLog-']").forEach(node => {
+    scroll[node.id] = node.scrollTop;
+  });
+  return scroll;
+}
+
+function restoreJobLogScroll(scroll) {
+  Object.entries(scroll).forEach(([id, top]) => {
+    const node = document.getElementById(id);
+    if (node) node.scrollTop = top;
+  });
 }
 
 function renderJobLogPanel(jobId, logs) {
@@ -1409,7 +1443,7 @@ async function toggleJobLogs(id) {
   appState.expandedJobs.add(id);
   renderJobsPage();
   await loadJobLogs(id);
-  renderJobsPage();
+  updateJobLogPanel(id);
 }
 
 async function loadJobLogs(id) {
@@ -1422,12 +1456,47 @@ async function loadJobLogs(id) {
 
 function refreshExpandedJobLogs() {
   appState.expandedJobs.forEach(id => {
-    loadJobLogs(id).then(renderJobsPage);
+    loadJobLogs(id).then(() => updateJobLogPanel(id));
   });
+}
+
+function updateJobLogPanel(id) {
+  const panel = document.getElementById(`jobLog-${id}`);
+  if (!panel) {
+    renderJobsPage();
+    return;
+  }
+  const top = panel.scrollTop;
+  const replacement = document.createElement("div");
+  replacement.innerHTML = renderJobLogPanel(id, appState.jobLogs[id] || []);
+  const nextPanel = replacement.firstElementChild;
+  panel.replaceWith(nextPanel);
+  nextPanel.scrollTop = top;
 }
 
 async function cancelJob(id) {
   await api.post(`/api/jobs/${id}/cancel`);
+  refreshGlobalJobs();
+}
+
+async function pauseAllJobs() {
+  await api.post("/api/jobs/pause_all");
+  refreshGlobalJobs();
+}
+
+async function resumeAllJobs() {
+  await api.post("/api/jobs/resume_all");
+  refreshGlobalJobs();
+}
+
+async function stopAllJobs() {
+  await api.post("/api/jobs/stop_all");
+  refreshGlobalJobs();
+}
+
+async function retryJob(id) {
+  await api.post(`/api/jobs/${id}/retry`);
+  toast("Upload job queued");
   refreshGlobalJobs();
 }
 
@@ -1493,7 +1562,7 @@ function fmtDurationText(seconds) {
   return `${mins}m ${secs}s`;
 }
 
-function pushHistory(key, value, max = 30) {
+function pushHistory(key, value, max = 60) {
   const arr = appState.systemHistory[key];
   if (!arr) return [];
   arr.push(Number(value || 0));
@@ -1501,63 +1570,98 @@ function pushHistory(key, value, max = 30) {
   return arr;
 }
 
-function renderSparkline(values, cls = "") {
-  const width = 220;
-  const height = 64;
-  const max = Math.max(1, ...values);
-  const points = values.map((value, idx) => {
-    const x = values.length <= 1 ? 0 : (idx / (values.length - 1)) * width;
-    const y = height - (Math.max(0, value) / max) * height;
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(" ");
-  return `<svg class="spark ${cls}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
-    <polyline points="${points}" fill="none" vector-effect="non-scaling-stroke"></polyline>
-  </svg>`;
+function pushNamedHistory(group, name, value, max = 60) {
+  const store = appState.systemHistory[group] || {};
+  appState.systemHistory[group] = store;
+  if (!store[name]) store[name] = [];
+  store[name].push(Number(value || 0));
+  while (store[name].length > max) store[name].shift();
+  return store[name];
+}
+
+function renderTimeSeriesChart(series, opts = {}) {
+  const width = opts.width || 360;
+  const height = opts.height || 140;
+  const pad = { top: 14, right: 16, bottom: 24, left: 42 };
+  const rows = series.filter(row => row.values?.length);
+  if (!rows.length) return "<span class='hint'>No time-series data yet.</span>";
+  const points = Math.max(...rows.map(row => row.values.length));
+  const values = rows.flatMap(row => row.values.map(Number)).filter(Number.isFinite);
+  const minValue = opts.min ?? Math.min(0, ...values);
+  const maxValue = opts.max ?? Math.max(1, ...values);
+  const span = Math.max(1, maxValue - minValue);
+  const innerWidth = width - pad.left - pad.right;
+  const innerHeight = height - pad.top - pad.bottom;
+  const xAt = idx => pad.left + (points <= 1 ? 0 : (idx / (points - 1)) * innerWidth);
+  const yAt = value => pad.top + innerHeight - ((Number(value || 0) - minValue) / span) * innerHeight;
+  const grid = [0, 0.5, 1].map(t => {
+    const y = pad.top + innerHeight - t * innerHeight;
+    const value = minValue + t * span;
+    return `<g class="chart-grid"><line x1="${pad.left}" y1="${y.toFixed(1)}" x2="${width - pad.right}" y2="${y.toFixed(1)}"></line><text x="4" y="${(y + 4).toFixed(1)}">${esc(opts.format ? opts.format(value) : value.toFixed(0))}</text></g>`;
+  }).join("");
+  const paths = rows.map((row, idx) => {
+    const coords = row.values.map((value, pointIdx) => `${xAt(pointIdx).toFixed(1)},${yAt(value).toFixed(1)}`);
+    const line = coords.length ? `M ${coords.join(" L ")}` : "";
+    const linePoints = coords.join(" L ");
+    const area = coords.length
+      ? `M ${linePoints} L ${xAt(row.values.length - 1).toFixed(1)},${(pad.top + innerHeight).toFixed(1)} L ${pad.left},${(pad.top + innerHeight).toFixed(1)} Z`
+      : "";
+    const latest = row.values[row.values.length - 1] || 0;
+    return `<g class="chart-series ${esc(row.cls || `series-${idx + 1}`)}">
+      <title>${esc(row.label || "Series")}: ${esc(opts.format ? opts.format(latest) : latest)}</title>
+      ${opts.area === false ? "" : `<path class="chart-area" d="${area}"></path>`}
+      <path class="chart-line" d="${line}"></path>
+    </g>`;
+  }).join("");
+  const legend = rows.map(row => {
+    const latest = row.values[row.values.length - 1] || 0;
+    return `<span class="${esc(row.cls || "")}"><i></i>${esc(row.label || "Series")} <strong>${esc(opts.format ? opts.format(latest) : latest)}</strong></span>`;
+  }).join("");
+  const minLabel = opts.format ? opts.format(Math.min(...values)) : Math.min(...values).toFixed(0);
+  const maxLabel = opts.format ? opts.format(Math.max(...values)) : Math.max(...values).toFixed(0);
+  return `<div class="time-chart-wrap">
+    ${opts.title ? `<div class="time-chart-head"><strong>${esc(opts.title)}</strong><span class="hint">min ${esc(minLabel)} · max ${esc(maxLabel)}</span></div>` : ""}
+    <svg class="time-chart ${esc(opts.cls || "")}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${esc(opts.title || "Time-series chart")}">
+      ${grid}
+      <line class="chart-axis" x1="${pad.left}" y1="${pad.top + innerHeight}" x2="${width - pad.right}" y2="${pad.top + innerHeight}"></line>
+      ${paths}
+    </svg>
+    <div class="time-chart-legend">${legend}</div>
+  </div>`;
+}
+
+function renderSparkline(values, cls = "", opts = {}) {
+  return renderTimeSeriesChart(
+    [{ label: opts.label || "Current", values, cls }],
+    {
+      cls,
+      title: opts.title,
+      height: opts.height || 116,
+      max: opts.max,
+      min: opts.min,
+      format: opts.format,
+    },
+  );
 }
 
 function renderUploadTimeline(timeline) {
   const points = timeline?.points || [];
   if (!points.length) return "<span class='hint'>No upload timeline data.</span>";
-  const width = 640;
-  const height = 150;
-  const pad = 18;
-  const innerHeight = height - pad * 2;
-  const max = Math.max(
-    1,
-    ...points.map(point =>
-      (point.uploaded_bytes || 0) + (point.error_bytes || 0) + (point.active_bytes || 0)
-    ),
-  );
-  const barGap = 3;
-  const barWidth = Math.max(2, (width - pad * 2) / points.length - barGap);
-  const bars = points.map((point, idx) => {
-    const total = (point.uploaded_bytes || 0) + (point.error_bytes || 0) + (point.active_bytes || 0);
-    const uploadedHeight = ((point.uploaded_bytes || 0) / max) * innerHeight;
-    const activeHeight = ((point.active_bytes || 0) / max) * innerHeight;
-    const errorHeight = ((point.error_bytes || 0) / max) * innerHeight;
-    const x = pad + idx * (barWidth + barGap);
-    let y = height - pad;
-    const title = `${fmtDateTime(point.start)}\nUploaded ${fmtBytes(point.uploaded_bytes || 0)}\nActive ${fmtBytes(point.active_bytes || 0)}\nErrored ${fmtBytes(point.error_bytes || 0)}\n${point.clip_count || 0} clip events`;
-    const segments = [];
-    if (uploadedHeight > 0) {
-      y -= uploadedHeight;
-      segments.push(`<rect class="timeline-uploaded" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${uploadedHeight.toFixed(1)}"></rect>`);
-    }
-    if (activeHeight > 0) {
-      y -= activeHeight;
-      segments.push(`<rect class="timeline-active" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${activeHeight.toFixed(1)}"></rect>`);
-    }
-    if (errorHeight > 0) {
-      y -= errorHeight;
-      segments.push(`<rect class="timeline-error" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${errorHeight.toFixed(1)}"></rect>`);
-    }
-    if (!segments.length) {
-      segments.push(`<rect class="timeline-empty" x="${x.toFixed(1)}" y="${(height - pad - 1).toFixed(1)}" width="${barWidth.toFixed(1)}" height="1"></rect>`);
-    }
-    return `<g><title>${esc(title)}</title>${segments.join("")}</g>`;
-  }).join("");
   const first = points[0];
   const last = points[points.length - 1];
+  const chart = renderTimeSeriesChart(
+    [
+      { label: "Completed", values: points.map(point => point.uploaded_bytes || 0), cls: "uploaded-line" },
+      { label: "Active", values: points.map(point => point.active_bytes || 0), cls: "active-line" },
+      { label: "Errored", values: points.map(point => point.error_bytes || 0), cls: "error-line" },
+    ],
+    {
+      title: "Upload throughput by bucket",
+      cls: "upload-series",
+      height: 170,
+      format: fmtBytes,
+    },
+  );
   return `
     <div class="upload-timeline">
       <div class="row spread">
@@ -1571,10 +1675,7 @@ function renderUploadTimeline(timeline) {
           <span><i class="legend-error"></i>${fmtBytes(timeline.total_error_bytes || 0)} errored</span>
         </div>
       </div>
-      <svg class="timeline-chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-label="Upload activity timeline">
-        <line x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}"></line>
-        ${bars}
-      </svg>
+      ${chart}
       <div class="row spread timeline-axis">
         <span>${esc(fmtDateTime(first?.start) || "")}</span>
         <span>${esc(fmtDateTime(last?.end) || "")}</span>
@@ -1611,7 +1712,11 @@ function renderSystemStats(system) {
         </div>
         <div class="system-visual">
           ${renderGauge(cpu.percent, "current")}
-          ${renderSparkline(cpuHistory, "cpu-line")}
+          ${renderSparkline(cpuHistory, "cpu-line", {
+            title: "CPU trend",
+            max: 100,
+            format: value => `${Math.round(value)}%`,
+          })}
         </div>
         <div class="metric-row">
           <span>Load 1m <strong>${cpu.load_1m ?? "n/a"}</strong></span>
@@ -1627,11 +1732,17 @@ function renderSystemStats(system) {
         <div class="network-graphs">
           <div>
             <div class="metric-row"><span>Down <strong>${fmtBytes(network.rx_bytes_per_s || 0)}/s</strong></span></div>
-            ${renderSparkline(rxHistory, "rx-line")}
+            ${renderSparkline(rxHistory, "rx-line", {
+              title: "Download trend",
+              format: value => `${fmtBytes(value)}/s`,
+            })}
           </div>
           <div>
             <div class="metric-row"><span>Up <strong>${fmtBytes(network.tx_bytes_per_s || 0)}/s</strong></span></div>
-            ${renderSparkline(txHistory, "tx-line")}
+            ${renderSparkline(txHistory, "tx-line", {
+              title: "Upload trend",
+              format: value => `${fmtBytes(value)}/s`,
+            })}
           </div>
         </div>
         <div class="metric-row">
@@ -1649,6 +1760,8 @@ function renderSystemStats(system) {
 
 function renderFilesystemBar(fs) {
   const pct = fs.used_percent == null ? 0 : Math.max(0, Math.min(100, Number(fs.used_percent)));
+  const historyKey = fs.path || fs.label || "filesystem";
+  const history = pushNamedHistory("filesystems", historyKey, pct);
   return `<div class="fs-card">
     <div class="row spread">
       <div>
@@ -1663,6 +1776,13 @@ function renderFilesystemBar(fs) {
       <span>Free <strong>${fmtBytes(fs.free_bytes || 0)}</strong></span>
       <span>Total <strong>${fmtBytes(fs.total_bytes || 0)}</strong></span>
     </div>
+    ${renderSparkline(history, "fs-line", {
+      title: "Used space trend",
+      min: 0,
+      max: 100,
+      format: value => `${Math.round(value)}%`,
+      height: 98,
+    })}
     ${fs.error ? `<div class="hint">Usage unavailable: ${esc(fs.error)}</div>` : ""}
   </div>`;
 }
@@ -1694,9 +1814,30 @@ function renderStatsDestinations(rows) {
           <div><span class="hint">Average</span><strong>${fmtDurationText(row.average_upload_duration_s)} · ${fmtBytes(row.average_throughput_bps || 0)}/s</strong></div>
         </div>
       </div>
+      ${renderDestinationTimeline(row.upload_timeline)}
       ${storage.error ? `<div class="hint">Storage check failed: ${esc(storage.error)}</div>` : ""}
     </div>`;
   }).join("");
+}
+
+function renderDestinationTimeline(timeline) {
+  const points = timeline?.points || [];
+  if (!points.length) return "<span class='hint'>No destination upload timeline data.</span>";
+  return `<div class="destination-timeline">
+    ${renderTimeSeriesChart(
+      [
+        { label: "Completed", values: points.map(point => point.uploaded_bytes || 0), cls: "uploaded-line" },
+        { label: "Active", values: points.map(point => point.active_bytes || 0), cls: "active-line" },
+        { label: "Errored", values: points.map(point => point.error_bytes || 0), cls: "error-line" },
+      ],
+      {
+        title: `Destination timeline · ${timeline.bucket_minutes || "?"} minute buckets`,
+        cls: "destination-series",
+        height: 130,
+        format: fmtBytes,
+      },
+    )}
+  </div>`;
 }
 
 function renderStoragePie(storage) {

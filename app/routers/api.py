@@ -328,6 +328,10 @@ def build_upload_stats(session: Session, timeline_hours: float = 3) -> dict:
                     destination,
                     rows_by_destination.get(destination.id, []),
                 ),
+                "upload_timeline": build_upload_timeline(
+                    rows_by_destination.get(destination.id, []),
+                    timeline_hours,
+                ),
             }
             for destination in destinations
         ],
@@ -1206,6 +1210,7 @@ def job_dict(j: Job) -> dict:
         "detail": j.detail,
         "error": j.error,
         "created_at": j.created_at.isoformat() if j.created_at else None,
+        "started_at": j.started_at.isoformat() if j.started_at else None,
         "finished_at": j.finished_at.isoformat() if j.finished_at else None,
         "dismissed_at": j.dismissed_at.isoformat() if j.dismissed_at else None,
     }
@@ -1246,8 +1251,30 @@ def list_job_logs(job_id: int, limit: int = 300, session: Session = Depends(get_
         .limit(max(1, min(limit, 1000)))
         .all()
     )
-    rows.reverse()
     return [job_log_dict(row) for row in rows]
+
+
+@router.post("/jobs/pause_all")
+def pause_all_jobs():
+    return get_manager().pause_all()
+
+
+@router.post("/jobs/resume_all")
+def resume_all_jobs():
+    return get_manager().resume_all()
+
+
+@router.post("/jobs/stop_all")
+def stop_all_jobs():
+    return get_manager().stop_all()
+
+
+@router.post("/jobs/{job_id}/retry")
+def retry_job(job_id: int):
+    new_job_id = get_manager().retry(job_id)
+    if new_job_id is None:
+        raise HTTPException(404, "Job not found")
+    return {"job_id": new_job_id}
 
 
 @router.post("/jobs/{job_id}/cancel")

@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import Base
 from app.models import Job, JobLog
-from app.routers.api import job_log_dict
+from app.routers.api import job_log_dict, list_job_logs
 
 
 def test_job_logs_are_related_and_serialized():
@@ -36,3 +36,33 @@ def test_job_logs_are_related_and_serialized():
         "progress": 0.5,
         "created_at": "2026-06-19T12:00:00",
     }
+
+
+def test_list_job_logs_returns_newest_first():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False, future=True)()
+    job = Job(kind="upload", description="Upload January")
+    session.add(job)
+    session.flush()
+    session.add_all(
+        [
+            JobLog(
+                job_id=job.id,
+                level="INFO",
+                message="Older",
+                created_at=dt.datetime(2026, 6, 19, 12, 0, 0),
+            ),
+            JobLog(
+                job_id=job.id,
+                level="INFO",
+                message="Newer",
+                created_at=dt.datetime(2026, 6, 19, 12, 1, 0),
+            ),
+        ]
+    )
+    session.commit()
+
+    rows = list_job_logs(job.id, session=session)
+
+    assert [row["message"] for row in rows] == ["Newer", "Older"]
