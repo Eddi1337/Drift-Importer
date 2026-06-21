@@ -14,7 +14,7 @@ from pathlib import Path
 
 from ..config import get_settings
 from ..media import checksum as sampled_checksum
-from .base import ProgressCb, RemoteEntry, UploadBackend, join_remote
+from .base import ProgressCb, RemoteEntry, UploadBackend, join_remote, make_probe
 
 # Leave a little headroom so we never fill the destination filesystem to 100%.
 _FREE_SPACE_MARGIN_BYTES = 64 * 1024 * 1024
@@ -92,6 +92,20 @@ class LocalBackend(UploadBackend):
 
     def test_connection(self) -> None:
         self._require_root()
+
+    def verify_round_trip(self) -> None:
+        root = self._require_root()
+        name, payload = make_probe()
+        probe = root / name
+        try:
+            probe.write_bytes(payload)
+            if probe.read_bytes() != payload:
+                raise RuntimeError(f"Read-back mismatch at {root}")
+        finally:
+            try:
+                probe.unlink()
+            except OSError:
+                pass
 
     def storage_info(self) -> dict[str, int | None]:
         usage = shutil.disk_usage(self._root())

@@ -1187,6 +1187,29 @@ dialog {
   padding: 1rem;
 }
 
+.dest-dialog {
+  width: min(560px, 94vw);
+  max-height: 88vh;
+  overflow: auto;
+}
+.dest-dialog::backdrop { background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(3px); }
+.dest-dialog-form { display: grid; gap: 0.9rem; }
+.dest-dialog-form h2 { margin: 0; }
+.dest-dialog-actions { margin-top: 0.2rem; }
+.ghost.icon { padding: 0.2rem 0.55rem; line-height: 1; }
+
+.dest-rank {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  min-width: 2.6rem;
+}
+.dest-rank-num { font-size: 0.75rem; color: var(--mut); font-weight: 800; }
+.dest-rank .icon { padding: 0.1rem 0.5rem; }
+.dest-rank .icon:disabled { opacity: 0.3; cursor: default; }
+
 .field-host,
 .field-port,
 .field-user,

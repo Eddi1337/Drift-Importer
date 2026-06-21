@@ -804,10 +804,11 @@ class DestinationReq(BaseModel):
     port: Optional[int] = None
     username: Optional[str] = None
     secret: Optional[str] = None  # plaintext in; stored encrypted
-    base_path: str = "/mnt/nas"
+    base_path: str = "/mnt/NAS"
     path_template: str = "{year}/{month:02d}"
     is_default: bool = False
     enabled: bool = True
+    rank: Optional[int] = None
 
 
 def _validate_destination_type(dest_type: str) -> None:
@@ -825,7 +826,7 @@ def ensure_default_nas_destination(session: Session) -> None:
         return
     existing_nas = (
         session.query(Destination)
-        .filter(Destination.type == "local", Destination.base_path == "/mnt/nas")
+        .filter(Destination.type == "local", Destination.base_path.in_(("/mnt/NAS", "/mnt/nas")))
         .first()
     )
     if existing_nas:
@@ -837,13 +838,19 @@ def ensure_default_nas_destination(session: Session) -> None:
         Destination(
             name="Mounted NAS",
             type="local",
-            base_path="/mnt/nas",
+            base_path="/mnt/NAS",
             path_template="{year}/{month:02d}",
             is_default=True,
             enabled=True,
+            rank=0,
         )
     )
     session.commit()
+
+
+def _next_destination_rank(session: Session) -> int:
+    highest = session.query(func.max(Destination.rank)).scalar()
+    return (highest + 1) if highest is not None else 0
 
 
 def _destination_from_req(req: DestinationReq) -> Destination:
@@ -859,6 +866,7 @@ def _destination_from_req(req: DestinationReq) -> Destination:
         path_template=req.path_template,
         is_default=req.is_default,
         enabled=req.enabled,
+        rank=req.rank if req.rank is not None else 100,
     )
 
 
@@ -874,6 +882,7 @@ def dest_dict(d: Destination) -> dict:
         "path_template": d.path_template,
         "is_default": d.is_default,
         "enabled": d.enabled,
+        "rank": d.rank,
         "has_secret": bool(d.secret_enc),
     }
 
@@ -922,13 +931,17 @@ def list_destinations(session: Session = Depends(get_session)):
                 rows_by_destination.get(destination.id, []),
             ),
         }
-        for destination in session.query(Destination).order_by(Destination.name).all()
+        for destination in session.query(Destination)
+        .order_by(Destination.rank, Destination.id)
+        .all()
     ]
 
 
 @router.post("/destinations")
 def create_destination(req: DestinationReq, session: Session = Depends(get_session)):
     d = _destination_from_req(req)
+    if req.rank is None:
+        d.rank = _next_destination_rank(session)
     session.add(d)
     session.commit()
     return dest_dict(d)
@@ -951,8 +964,25 @@ def update_destination(dest_id: int, req: DestinationReq, session: Session = Dep
     d.path_template = req.path_template
     d.is_default = req.is_default
     d.enabled = req.enabled
+    if req.rank is not None:
+        d.rank = req.rank
     session.commit()
     return dest_dict(d)
+
+
+class ReorderReq(BaseModel):
+    ordered_ids: List[int]
+
+
+@router.post("/destinations/reorder")
+def reorder_destinations(req: ReorderReq, session: Session = Depends(get_session)):
+    """Set upload priority from an ordered list of destination ids (first = top)."""
+    for position, dest_id in enumerate(req.ordered_ids):
+        d = session.get(Destination, dest_id)
+        if d:
+            d.rank = position
+    session.commit()
+    return {"ok": True, "order": req.ordered_ids}
 
 
 @router.delete("/destinations/{dest_id}")
@@ -965,26 +995,34 @@ def delete_destination(dest_id: int, session: Session = Depends(get_session)):
     return {"deleted": dest_id}
 
 
+def _run_destination_test(destination: Destination) -> dict:
+    """Verify a destination end-to-end: connect, then upload+download a probe."""
+    result = {"ok": False, "connection": False, "round_trip": False, "error": None}
+    backend = get_backend(destination)
+    try:
+        backend.test_connection()
+        result["connection"] = True
+        backend.verify_round_trip()
+        result["round_trip"] = True
+        result["ok"] = True
+    except Exception as exc:  # noqa: BLE001
+        result["error"] = str(exc)
+    return result
+
+
+# Declared before the "/{dest_id}/test" route so the static "preview" path is
+# matched first (otherwise it parses as dest_id="preview" -> 422).
+@router.post("/destinations/preview/test")
+def test_destination_preview(req: DestinationReq):
+    return _run_destination_test(_destination_from_req(req))
+
+
 @router.post("/destinations/{dest_id}/test")
 def test_destination(dest_id: int, session: Session = Depends(get_session)):
     d = session.get(Destination, dest_id)
     if not d:
         raise HTTPException(404, "Not found")
-    try:
-        get_backend(d).test_connection()
-        return {"ok": True}
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc)}
-
-
-@router.post("/destinations/preview/test")
-def test_destination_preview(req: DestinationReq):
-    d = _destination_from_req(req)
-    try:
-        get_backend(d).test_connection()
-        return {"ok": True}
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc)}
+    return _run_destination_test(d)
 
 
 @router.post("/destinations/preview/folders")

@@ -10,11 +10,12 @@ import os
 import re
 import shlex
 import subprocess
+import tempfile
 import datetime as dt
 from pathlib import Path
 
 from ..config import get_settings
-from .base import ProgressCb, RemoteEntry, UploadBackend, join_remote
+from .base import ProgressCb, RemoteEntry, UploadBackend, join_remote, make_probe
 
 
 def _ensure_known_hosts_dir() -> None:
@@ -91,6 +92,41 @@ class RsyncBackend(UploadBackend):
 
     def test_connection(self) -> None:
         self._run_ssh(f"test -d {shlex.quote(self._remote_base())}")
+
+    def verify_round_trip(self) -> None:
+        name, payload = make_probe()
+        remote_path = join_remote(self._remote_base(), name)
+        with tempfile.NamedTemporaryFile("wb", delete=False) as tmp:
+            tmp.write(payload)
+            local_tmp = tmp.name
+        try:
+            ssh_transport = " ".join(shlex.quote(part) for part in self._ssh_cmd())
+            cmd = [
+                "rsync",
+                "-a",
+                "-e",
+                ssh_transport,
+                local_tmp,
+                f"{self._target()}:{remote_path}",
+            ]
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            except FileNotFoundError as exc:
+                raise RuntimeError("rsync is not installed on the server") from exc
+            if result.returncode != 0:
+                raise RuntimeError(self._friendly_error(result.stderr or result.stdout))
+            got = self._run_ssh(f"cat {shlex.quote(remote_path)}")
+            if got != payload.decode("utf-8") and got.rstrip("\n") != payload.decode("utf-8"):
+                raise RuntimeError("Read-back mismatch on rsync destination")
+        finally:
+            try:
+                os.remove(local_tmp)
+            except OSError:
+                pass
+            try:
+                self._run_ssh(f"rm -f {shlex.quote(remote_path)}")
+            except Exception:  # noqa: BLE001
+                pass
 
     def list_directories(self, path: str = "") -> list[str]:
         root = join_remote(self._remote_base(), path)

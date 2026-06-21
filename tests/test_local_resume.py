@@ -90,6 +90,25 @@ def test_local_backend_refuses_missing_root(tmp_path):
     assert not root.exists()
 
 
+def test_local_backend_round_trip_ok(tmp_path):
+    root = tmp_path / "remote"
+    root.mkdir()
+    backend = LocalBackend(Destination(name="NAS", type="local", base_path=str(root)))
+
+    backend.verify_round_trip()  # must not raise
+
+    # The probe file is cleaned up afterwards.
+    assert list(root.iterdir()) == []
+
+
+def test_local_backend_round_trip_missing_root(tmp_path):
+    root = tmp_path / "absent"
+    backend = LocalBackend(Destination(name="NAS", type="local", base_path=str(root)))
+
+    with pytest.raises(FileNotFoundError):
+        backend.verify_round_trip()
+
+
 def test_local_backend_refuses_when_disk_full(tmp_path, monkeypatch):
     """Preflight space check fails fast instead of filling the disk."""
     source = tmp_path / "clip.mp4"

@@ -2,12 +2,19 @@
 from __future__ import annotations
 
 import datetime as dt
+import uuid
 from pathlib import PurePosixPath
 from typing import Callable, Optional, TypedDict
 
 from ..models import Destination
 
 ProgressCb = Optional[Callable[[int, int], None]]
+
+
+def make_probe() -> tuple[str, bytes]:
+    """A tiny, uniquely-named test file used to verify read+write end-to-end."""
+    token = uuid.uuid4().hex
+    return f".drift-selftest-{token}.tmp", f"drift-selftest:{token}".encode("utf-8")
 
 
 class RemoteEntry(TypedDict):
@@ -49,6 +56,14 @@ class UploadBackend:
 
     def test_connection(self) -> None:
         """Raise an exception if the destination is unreachable/misconfigured."""
+        raise NotImplementedError
+
+    def verify_round_trip(self) -> None:
+        """Write a small probe file, read it back, verify it, and delete it.
+
+        Proves the destination is genuinely writable *and* readable
+        end-to-end, not merely reachable. Raises on any mismatch or failure.
+        """
         raise NotImplementedError
 
     def list_directories(self, path: str = "") -> list[str]:

@@ -10,7 +10,7 @@ import paramiko
 
 from ..config import get_settings
 from ..crypto import decrypt
-from .base import ProgressCb, RemoteEntry, UploadBackend, join_remote
+from .base import ProgressCb, RemoteEntry, UploadBackend, join_remote, make_probe
 
 
 class SFTPBackend(UploadBackend):
@@ -34,6 +34,28 @@ class SFTPBackend(UploadBackend):
             sftp = client.open_sftp()
             sftp.listdir(self.destination.base_path or ".")
             sftp.close()
+        finally:
+            client.close()
+
+    def verify_round_trip(self) -> None:
+        name, payload = make_probe()
+        remote_path = join_remote(self.destination.base_path or "/", name)
+        client = self._connect()
+        try:
+            sftp = client.open_sftp()
+            try:
+                with sftp.open(remote_path, "wb") as dst:
+                    dst.write(payload)
+                with sftp.open(remote_path, "rb") as src:
+                    data = src.read()
+                if data != payload:
+                    raise RuntimeError("Read-back mismatch on SFTP destination")
+            finally:
+                try:
+                    sftp.remove(remote_path)
+                except IOError:
+                    pass
+                sftp.close()
         finally:
             client.close()
 

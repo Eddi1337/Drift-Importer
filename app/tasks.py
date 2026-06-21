@@ -315,13 +315,20 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
     with session_scope() as s:
         prefs = get_app_settings(s)
         if dest_ids:
-            dests = s.query(Destination).filter(Destination.id.in_(dest_ids)).all()
+            dests = (
+                s.query(Destination)
+                .filter(Destination.id.in_(dest_ids))
+                .order_by(Destination.rank, Destination.id)
+                .all()
+            )
         else:
             dests = (
                 s.query(Destination)
                 .filter(Destination.is_default == True, Destination.enabled == True)  # noqa: E712
+                .order_by(Destination.rank, Destination.id)
                 .all()
             )
+        # Highest-priority (lowest rank) destination first for each clip.
         dest_meta = [(d.id, d.name) for d in dests]
 
     if not dest_meta:

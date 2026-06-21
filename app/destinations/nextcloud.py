@@ -16,7 +16,7 @@ import httpx
 
 from ..config import get_settings
 from ..crypto import decrypt
-from .base import ProgressCb, RemoteEntry, UploadBackend, join_remote
+from .base import ProgressCb, RemoteEntry, UploadBackend, join_remote, make_probe
 
 
 class NextcloudBackend(UploadBackend):
@@ -35,6 +35,22 @@ class NextcloudBackend(UploadBackend):
             resp = client.request("PROPFIND", self._base_url(), headers={"Depth": "0"})
             if resp.status_code >= 400:
                 raise RuntimeError(f"WebDAV PROPFIND failed: HTTP {resp.status_code}")
+
+    def verify_round_trip(self) -> None:
+        name, payload = make_probe()
+        url = self._base_url() + "/" + name
+        with httpx.Client(timeout=30, auth=self._auth()) as client:
+            put = client.put(url, content=payload)
+            if put.status_code not in (200, 201, 204):
+                raise RuntimeError(f"WebDAV PUT failed: HTTP {put.status_code}")
+            try:
+                got = client.get(url)
+                if got.status_code >= 400:
+                    raise RuntimeError(f"WebDAV GET failed: HTTP {got.status_code}")
+                if got.content != payload:
+                    raise RuntimeError("Read-back mismatch on Nextcloud destination")
+            finally:
+                client.request("DELETE", url)
 
     def list_directories(self, path: str = "") -> list[str]:
         target = self._base_url() + join_remote("/", path)

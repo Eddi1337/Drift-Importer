@@ -108,6 +108,13 @@ def _run_migrations() -> None:
             if "dismissed_at" not in cols:
                 conn.execute("ALTER TABLE jobs ADD COLUMN dismissed_at DATETIME")
 
+        if "destinations" in tables:
+            cols = _column_names(conn, "destinations")
+            if "rank" not in cols:
+                conn.execute("ALTER TABLE destinations ADD COLUMN rank INTEGER DEFAULT 100")
+                # Seed a stable, distinct initial order from existing ids.
+                conn.execute("UPDATE destinations SET rank = id")
+
         if "job_logs" not in tables:
             conn.execute(
                 """

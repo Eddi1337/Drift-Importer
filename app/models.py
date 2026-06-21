@@ -122,6 +122,8 @@ class Destination(Base):
     type: Mapped[str] = mapped_column(String(32))  # local|nfs|smb|nextcloud|sftp|rsync
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Upload priority: lower rank = higher priority (clips go here first).
+    rank: Mapped[int] = mapped_column(Integer, default=100)
 
     # Connection config. Secrets are stored encrypted (see crypto.py).
     host: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
@@ -129,7 +131,7 @@ class Destination(Base):
     username: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     secret_enc: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Base URL for nextcloud webdav, or remote/local base directory otherwise.
-    base_path: Mapped[str] = mapped_column(String(1024), default="/mnt/nas")
+    base_path: Mapped[str] = mapped_column(String(1024), default="/mnt/NAS")
     # Template applied per upload, e.g. "{year}/{month:02d}".
     path_template: Mapped[str] = mapped_column(String(512), default="{year}/{month:02d}")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)

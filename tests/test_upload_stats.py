@@ -87,6 +87,7 @@ def test_build_upload_stats_aggregates_persistent_metrics(monkeypatch):
         "path_template": "{year}/{month:02d}",
         "is_default": False,
         "enabled": True,
+        "rank": 100,
         "has_secret": False,
         "uploaded_clip_count": 2,
         "error_clip_count": 1,

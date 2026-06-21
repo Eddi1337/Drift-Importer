@@ -4,75 +4,81 @@
 <section class="panel">
   <h2>Upload destinations</h2>
   <p class="hint">Configure where clips are uploaded. A local/NAS destination is simplest
-  if your NAS is mounted on the Pi (e.g. <code>/mnt/nas/camera</code>).</p>
+  if your NAS is mounted on the Pi (e.g. <code>/mnt/NAS</code>). Drag-rank with the
+  ▲▼ controls — clips upload to the top destination first.</p>
   <div id="destList">Loading…</div>
   <div class="row">
-    <button id="addDestBtn" onclick="showDestForm()">+ Add new destination</button>
+    <button id="addDestBtn" onclick="showDestForm()">+ Add destination</button>
   </div>
 </section>
 
-<section class="panel form-panel" id="destFormPanel" hidden>
-  <h2 id="formTitle">Add destination</h2>
-  <p class="hint">Pick a connection method, enter the base location, then test it and browse folders before saving.</p>
-  <input type="hidden" id="dId">
-  <div class="form-grid form-grid-wide">
-    <label>Name <input id="dName"></label>
-    <label>Connection
-      <select id="dType" onchange="onTypeChange(true)">
-        <option value="local">Local / mounted path</option>
-        <option value="nfs">NFS mounted share</option>
-        <option value="smb">SMB / CIFS mounted share</option>
-        <option value="nextcloud">Nextcloud via WebDAV</option>
-        <option value="sftp">SFTP with username + password</option>
-        <option value="rsync">Rsync over SSH path</option>
-      </select>
-    </label>
-    <div id="dMethodHint" class="hint field-note span-2"></div>
-    <label class="field-host">Host / server <input id="dHost" placeholder="server or host"></label>
-    <label class="field-port">Port <input id="dPort" type="number"></label>
-    <label class="field-user">Username <input id="dUser"></label>
-    <label class="field-secret">Secret / password <input id="dSecret" type="password" placeholder="leave blank to keep existing"></label>
-    <label class="span-2">Base path
-      <input id="dBase" placeholder="/mnt/nas/camera  or  https://cloud/remote.php/dav/files/USER" oninput="updateBaseStatus()">
-      <span id="dBaseStatus" class="base-status hint span-2"></span>
-    </label>
-    <label class="span-2">Upload folder pattern
-      <input id="dTemplate" value="{year}/{month:02d}" placeholder="Year / Month">
-      <span class="hint">Shown as Year / Month. You can also use {day:02d} or {hour:02d} for deeper folders.</span>
-    </label>
-    <label class="inline choice-card">
-      <input type="checkbox" id="dDefault">
-      <span>
-        <strong>Use as default destination</strong>
-        <small>Included when Upload Everything or auto-upload uses defaults.</small>
-      </span>
-    </label>
-    <label class="inline choice-card">
-      <input type="checkbox" id="dEnabled" checked>
-      <span>
-        <strong>Destination enabled</strong>
-        <small>Keep it selectable for imports and background uploads.</small>
-      </span>
-    </label>
-  </div>
-  <div class="panel inset">
+<dialog id="destDialog" class="dest-dialog">
+  <form method="dialog" class="dest-dialog-form" onsubmit="return false">
     <div class="row spread">
-      <div>
+      <h2 id="formTitle">Add destination</h2>
+      <button type="button" class="ghost icon" onclick="hideDestForm()" aria-label="Close">✕</button>
+    </div>
+    <p class="hint">Pick a connection method, set the base location, then test it and browse folders before saving.</p>
+    <input type="hidden" id="dId">
+    <div class="form-grid">
+      <label>Name <input id="dName"></label>
+      <label>Connection
+        <select id="dType" onchange="onTypeChange(true)">
+          <option value="local">Local / mounted path</option>
+          <option value="nfs">NFS mounted share</option>
+          <option value="smb">SMB / CIFS mounted share</option>
+          <option value="nextcloud">Nextcloud via WebDAV</option>
+          <option value="sftp">SFTP with username + password</option>
+          <option value="rsync">Rsync over SSH path</option>
+        </select>
+      </label>
+      <div id="dMethodHint" class="hint field-note span-2"></div>
+      <label class="field-host">Host / server <input id="dHost" placeholder="server or host"></label>
+      <label class="field-port">Port <input id="dPort" type="number"></label>
+      <label class="field-user">Username <input id="dUser"></label>
+      <label class="field-secret">Secret / password <input id="dSecret" type="password" placeholder="leave blank to keep existing"></label>
+      <label class="span-2">Base path
+        <input id="dBase" placeholder="/mnt/NAS  or  https://cloud/remote.php/dav/files/USER" oninput="updateBaseStatus()">
+        <span id="dBaseStatus" class="base-status hint"></span>
+      </label>
+      <label class="span-2">Upload folder pattern
+        <input id="dTemplate" value="{year}/{month:02d}" placeholder="Year / Month">
+        <span class="hint">Shown as Year / Month. You can also use {day:02d} or {hour:02d} for deeper folders.</span>
+      </label>
+      <label class="inline choice-card span-2">
+        <input type="checkbox" id="dDefault">
+        <span>
+          <strong>Use as default destination</strong>
+          <small>Included when Upload Everything or auto-upload uses defaults.</small>
+        </span>
+      </label>
+      <label class="inline choice-card span-2">
+        <input type="checkbox" id="dEnabled" checked>
+        <span>
+          <strong>Destination enabled</strong>
+          <small>Keep it selectable for imports and background uploads.</small>
+        </span>
+      </label>
+    </div>
+    <div class="panel inset">
+      <div class="row spread">
         <h3>Available folders</h3>
-        <p class="hint">Use this after a connection test. Open folders to navigate, then select a folder to use it as the base path.</p>
+        <div class="row">
+          <button type="button" class="ghost" onclick="testAndBrowseDestination()">Test &amp; browse</button>
+          <button type="button" class="ghost" onclick="clearFolderBrowser('folderBrowser')">Clear</button>
+        </div>
       </div>
+      <p class="hint">Test runs a connection check plus an upload/download probe. Open folders to navigate, then select one to use as the base path.</p>
+      <div id="folderBrowser" class="folder-window">No folder listing loaded yet.</div>
+    </div>
+    <div class="row spread dest-dialog-actions">
+      <button type="button" onclick="saveDestination()">Save</button>
       <div class="row">
-        <button class="ghost" onclick="testAndBrowseDestination()">Test and browse</button>
-        <button class="ghost" onclick="clearFolderBrowser('folderBrowser')">Clear folders</button>
+        <button type="button" class="ghost" onclick="resetDestForm()">Clear</button>
+        <button type="button" class="ghost" onclick="hideDestForm()">Cancel</button>
       </div>
     </div>
-    <div id="folderBrowser" class="folder-window">No folder listing loaded yet.</div>
-  </div>
-  <div class="row">
-    <button onclick="saveDestination()">Save</button>
-    <button class="ghost" onclick="resetDestForm()">Clear</button>
-    <button class="ghost" onclick="hideDestForm()">Cancel</button>
-  </div>
-</section>
+  </form>
+</dialog>
 {% endblock %}
 {% block scripts %}<script>initDestinations();</script>{% endblock %}

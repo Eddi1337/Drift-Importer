@@ -856,7 +856,7 @@ const destinationTypeMap = {
     host: false,
     user: false,
     secret: false,
-    basePlaceholder: "/mnt/nas",
+    basePlaceholder: "/mnt/NAS",
     hint: "Use a directory already mounted on the Pi or Docker host.",
   },
   nfs: {
@@ -864,7 +864,7 @@ const destinationTypeMap = {
     host: false,
     user: false,
     secret: false,
-    basePlaceholder: "/mnt/nas",
+    basePlaceholder: "/mnt/NAS",
     hint: "Use an NFS share that is already mounted on the Pi or Docker host. This app does not mount NFS shares itself.",
   },
   smb: {
@@ -910,19 +910,18 @@ function initDestinations() {
 }
 
 function showDestForm() {
-  const panel = document.getElementById("destFormPanel");
-  if (!panel) return;
+  const dlg = document.getElementById("destDialog");
+  if (!dlg) return;
   if (!document.getElementById("dId").value && !document.getElementById("dBase").value.trim()) {
-    document.getElementById("dBase").value = "/mnt/nas";
+    document.getElementById("dBase").value = "/mnt/NAS";
   }
-  panel.hidden = false;
   updateBaseStatus();
-  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (!dlg.open) dlg.showModal();
 }
 
 function hideDestForm() {
-  const panel = document.getElementById("destFormPanel");
-  if (panel) panel.hidden = true;
+  const dlg = document.getElementById("destDialog");
+  if (dlg && dlg.open) dlg.close();
 }
 
 function onTypeChange(applyDefaultPort = false) {
@@ -939,36 +938,68 @@ function onTypeChange(applyDefaultPort = false) {
   document.querySelector(".field-secret").classList.toggle("show", cfg.secret);
 }
 
+let destCache = [];
+
 async function loadDestinations() {
   const el = document.getElementById("destList");
   if (!el) return;
   const dests = await api.get("/api/destinations");
+  destCache = dests;
   if (!dests.length) {
     el.innerHTML = "<span class='hint'>No destinations yet.</span>";
     return;
   }
   el.innerHTML = "";
-  dests.forEach(d => {
+  dests.forEach((d, idx) => {
     const row = document.createElement("div");
     row.className = "dest-row";
-    row.innerHTML = `
-      <div class="dest-body">
-        <div><b>${esc(d.name)}</b> <span class="hint">[${esc(d.type)}]${d.is_default ? " default" : ""}${d.enabled ? "" : " (disabled)"}</span></div>
-        <span class="hint">${esc(d.base_path)} → ${esc(humanTemplate(d.path_template))}</span>
-        <span class="hint">${renderDestinationStorageText(d)}</span>
-        <div class="folder-window compact" id="destFolders-${d.id}">Browse to see available folders.</div>
-      </div>
+
+    const ranker = document.createElement("div");
+    ranker.className = "dest-rank";
+    const up = document.createElement("button");
+    up.className = "ghost icon";
+    up.textContent = "▲";
+    up.title = "Higher upload priority";
+    up.disabled = idx === 0;
+    up.onclick = () => moveDestination(idx, -1);
+    const pos = document.createElement("span");
+    pos.className = "dest-rank-num";
+    pos.textContent = `#${idx + 1}`;
+    const down = document.createElement("button");
+    down.className = "ghost icon";
+    down.textContent = "▼";
+    down.title = "Lower upload priority";
+    down.disabled = idx === dests.length - 1;
+    down.onclick = () => moveDestination(idx, 1);
+    ranker.append(up, pos, down);
+
+    const body = document.createElement("div");
+    body.className = "dest-body";
+    body.innerHTML = `
+      <div><b>${esc(d.name)}</b> <span class="hint">[${esc(d.type)}]${d.is_default ? " · default" : ""}${d.enabled ? "" : " · disabled"}</span></div>
+      <span class="hint">${esc(d.base_path)} → ${esc(humanTemplate(d.path_template))}</span>
+      <span class="hint">${renderDestinationStorageText(d)}</span>
+      <div class="folder-window compact" id="destFolders-${d.id}">Browse to see available folders.</div>
     `;
+
     const actions = document.createElement("div");
     actions.className = "row";
     const test = document.createElement("button");
     test.className = "ghost";
     test.textContent = "Test";
     test.onclick = async () => {
-      test.textContent = "…";
-      const r = await api.post(`/api/destinations/${d.id}/test`);
-      toast(r.ok ? "Connection OK" : "Failed: " + r.error);
+      test.textContent = "Testing…";
+      test.disabled = true;
+      try {
+        const r = await api.post(`/api/destinations/${d.id}/test`);
+        if (r.ok) toast("✓ Connection + upload/download OK");
+        else if (r.connection) toast("Connected, but upload/download failed: " + r.error);
+        else toast("Connection failed: " + r.error);
+      } catch (e) {
+        toast("Test failed: " + e.message);
+      }
       test.textContent = "Test";
+      test.disabled = false;
     };
     const browse = document.createElement("button");
     browse.className = "ghost";
@@ -988,9 +1019,23 @@ async function loadDestinations() {
       }
     };
     actions.append(test, browse, edit, del);
-    row.append(actions);
+
+    row.append(ranker, body, actions);
     el.append(row);
   });
+}
+
+async function moveDestination(idx, delta) {
+  const target = idx + delta;
+  if (target < 0 || target >= destCache.length) return;
+  const ids = destCache.map(d => d.id);
+  [ids[idx], ids[target]] = [ids[target], ids[idx]];
+  try {
+    await api.post("/api/destinations/reorder", { ordered_ids: ids });
+    loadDestinations();
+  } catch (e) {
+    toast("Reorder failed: " + e.message);
+  }
 }
 
 function renderDestinationStorageText(d) {
@@ -1058,7 +1103,7 @@ function editDestination(d) {
 
 function resetDestForm() {
   ["dId", "dName", "dHost", "dPort", "dUser", "dSecret", "dBase"].forEach(i => { document.getElementById(i).value = ""; });
-  document.getElementById("dBase").value = "/mnt/nas";
+  document.getElementById("dBase").value = "/mnt/NAS";
   document.getElementById("dTemplate").value = "{year}/{month:02d}";
   document.getElementById("dType").value = "local";
   document.getElementById("dDefault").checked = false;
