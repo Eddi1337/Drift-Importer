@@ -6,6 +6,7 @@ mount point (e.g. /mnt/nas/camera).
 """
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import datetime as dt
@@ -15,10 +16,46 @@ from ..config import get_settings
 from ..media import checksum as sampled_checksum
 from .base import ProgressCb, RemoteEntry, UploadBackend, join_remote
 
+# Leave a little headroom so we never fill the destination filesystem to 100%.
+_FREE_SPACE_MARGIN_BYTES = 64 * 1024 * 1024
+
 
 class LocalBackend(UploadBackend):
     def _root(self) -> Path:
         return Path(self.destination.base_path or "/")
+
+    def _require_root(self) -> Path:
+        """Return the destination root, refusing to use it if it's missing.
+
+        For a NAS-style local destination, base_path is a mount point. If the
+        mount isn't present the path is either gone or an empty stand-in
+        directory on the underlying disk (e.g. the Pi's SD card). Creating it
+        and streaming into it would silently fill that disk until writes fail
+        mid-transfer with ENOSPC, leaving truncated files behind — so we fail
+        fast instead of auto-creating the root.
+        """
+        root = self._root()
+        if not root.exists():
+            raise FileNotFoundError(
+                f"Destination root {root} does not exist — is the mount present? "
+                "Refusing to create it (that would write to the underlying disk "
+                "instead of the intended destination)."
+            )
+        if not root.is_dir():
+            raise NotADirectoryError(f"Destination root is not a directory: {root}")
+        if not os.access(root, os.W_OK):
+            raise PermissionError(f"Destination root is not writable: {root}")
+        return root
+
+    def _check_free_space(self, root: Path, required_bytes: int) -> None:
+        free = int(shutil.disk_usage(root).free)
+        needed = required_bytes + _FREE_SPACE_MARGIN_BYTES
+        if free < needed:
+            raise OSError(
+                errno.ENOSPC,
+                f"Not enough space at {root}: need {needed} bytes "
+                f"(file {required_bytes} + margin), have {free} free",
+            )
 
     def list_directories(self, path: str = "") -> list[str]:
         root = self._root() / path.strip("/")
@@ -54,11 +91,7 @@ class LocalBackend(UploadBackend):
         return rows
 
     def test_connection(self) -> None:
-        root = self._root()
-        if not root.exists():
-            raise FileNotFoundError(f"Path does not exist: {root}")
-        if not os.access(root, os.W_OK):
-            raise PermissionError(f"Path is not writable: {root}")
+        self._require_root()
 
     def storage_info(self) -> dict[str, int | None]:
         usage = shutil.disk_usage(self._root())
@@ -100,11 +133,16 @@ class LocalBackend(UploadBackend):
     ) -> str:
         settings = get_settings()
         local_path = Path(local_path)
-        dest_dir = Path(join_remote(str(self._root()), remote_dir))
+        root = self._require_root()
+        total = local_path.stat().st_size
+        # Fail fast if the destination can't hold what's left to send, rather
+        # than writing chunks until the filesystem fills and the transfer dies
+        # mid-stream.
+        self._check_free_space(root, max(0, total - start_offset))
+        dest_dir = Path(join_remote(str(root), remote_dir))
         dest_dir.mkdir(parents=True, exist_ok=True)
         target = dest_dir / filename
         tmp = target.with_suffix(target.suffix + ".part")
-        total = local_path.stat().st_size
         written = start_offset
         chunk = settings.upload_chunk_bytes
         if start_offset >= total and target.exists():
