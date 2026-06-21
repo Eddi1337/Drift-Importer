@@ -20,9 +20,9 @@ on:
 env:
   # Image coordinates. The registry host itself comes from the runner .env.
   IMAGE_PATH: drift-import/drift-import
-  # Architectures to build. The Pi Zero 2 W is 32-bit (arm/v7); arm64 covers
-  # 64-bit Pi OS too.
-  PLATFORMS: linux/arm64,linux/arm/v7
+  # Deploy target architecture. The Pi Zero 2 W is running 32-bit Raspberry Pi OS
+  # (armv7l), so building arm64 too just burns runner time.
+  PLATFORM: linux/arm/v7
 
 jobs:
   build-deploy:
@@ -31,8 +31,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Register QEMU for cross-arch (arm/arm64) builds
-        run: docker run --privileged --rm tonistiigi/binfmt --install arm64,arm
+      - name: Register QEMU for ARM builds
+        run: docker run --privileged --rm tonistiigi/binfmt --install arm
 
       - name: Create buildx builder (allows pushing to the HTTP Harbor registry)
         run: |
@@ -50,13 +50,15 @@ jobs:
       - name: Log in to Harbor
         run: echo "$HARBOR_ROBOT_TOKEN" | docker login "$HARBOR_REGISTRY" -u "$HARBOR_ROBOT_USER" --password-stdin
 
-      - name: Build and push multi-arch image
+      - name: Build and push ARM image
         run: |
           IMAGE="${HARBOR_REGISTRY}/${IMAGE_PATH}"
           docker buildx build --builder driftci \
-            --platform "${PLATFORMS}" \
+            --platform "${PLATFORM}" \
             -t "${IMAGE}:latest" \
             -t "${IMAGE}:${GITHUB_SHA::12}" \
+            --cache-from "type=registry,ref=${IMAGE}:buildcache" \
+            --cache-to "type=registry,ref=${IMAGE}:buildcache,mode=max" \
             --push .
 
       - name: Deploy to Pi

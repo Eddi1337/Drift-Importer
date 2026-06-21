@@ -1,5 +1,5 @@
 # Drift-Import container image.
-# Multi-arch: builds for linux/arm64 (Pi Zero 2 W / Pi 3+ 64-bit OS) and amd64.
+# CI builds linux/arm/v7 for the deployed 32-bit Raspberry Pi OS target.
 FROM python:3.11-slim
 
 # ffmpeg/ffprobe are required for probing, thumbnails, timestamps and merging.

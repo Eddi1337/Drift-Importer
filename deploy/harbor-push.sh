@@ -12,8 +12,8 @@ set -euo pipefail
 REGISTRY="${1:-192.168.10.155}"
 PROJECT="${2:-drift-import}"
 TAG="${3:-latest}"
-# Pi Zero 2 W: linux/arm64 for 64-bit Raspberry Pi OS, linux/arm/v7 for 32-bit.
-PLATFORM="${4:-linux/arm64}"
+# Pi Zero 2 W running 32-bit Raspberry Pi OS uses linux/arm/v7.
+PLATFORM="${4:-linux/arm/v7}"
 IMAGE="${REGISTRY}/${PROJECT}/drift-import:${TAG}"
 
 # Harbor runs over HTTP here; use http:// for the API.

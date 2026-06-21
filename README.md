@@ -103,10 +103,10 @@ kept in named volumes `drift-data` and `drift-working`.
 ### Build & push to Harbor (manual)
 
 ```bash
-# Build for the Pi (32-bit arm/v7 + 64-bit arm64) and push to Harbor.
+# Build for the Pi (32-bit arm/v7) and push to Harbor.
 # Harbor here is HTTP-only, so the builder needs an insecure-registry config.
 docker login 192.168.10.155
-docker buildx build --platform linux/arm64,linux/arm/v7 \
+docker buildx build --platform linux/arm/v7 \
   -t 192.168.10.155/drift-import/drift-import:latest --push .
 ```
 
@@ -123,10 +123,11 @@ Then on the Pi: `docker compose pull && docker compose up -d`.
 `.github/workflows/build-deploy.yml` runs on a **self-hosted runner** and, on
 every push to `main`:
 
-1. registers QEMU and a `buildx` builder (configured for the HTTP Harbor
+1. registers ARM QEMU and a `buildx` builder (configured for the HTTP Harbor
    registry),
-2. logs in to Harbor and builds + pushes the multi-arch image
-   (`linux/arm64,linux/arm/v7`),
+2. logs in to Harbor and builds + pushes the 32-bit ARM image
+   (`linux/arm/v7`), using the Harbor `buildcache` tag to reuse layers between
+   runner builds,
 3. deploys to the Pi over SSH (`deploy/deploy-to-pi.sh`): ships
    `deploy/docker-compose.pi.yml`, logs the Pi into Harbor, `docker compose pull`
    + `up -d`.
