@@ -1,11 +1,16 @@
 name: Build and Deploy
 
-# Runs on the self-hosted runner (label "drift") on 192.168.10.180.
-# Credentials and deploy target come from the runner's .env file (not GitHub
-# secrets), so they are available to run steps as plain environment variables:
+# Runs on the self-hosted runner(s) labelled "drift". Credentials and the deploy
+# target come from the runner's .env file (not GitHub secrets), so they are
+# available to run steps as plain environment variables:
 #   HARBOR_REGISTRY, HARBOR_ROBOT_USER, HARBOR_ROBOT_TOKEN, DEPLOY_HOST,
 #   DEPLOY_SSH_KEY
 # See README "CI/CD" for how those are provisioned.
+#
+# The arm/v7 (Pi) and amd64 (x86) images build in parallel as separate matrix
+# jobs; a final `deploy` job ships the arm image to the Pi once both succeed.
+# NOTE: the two builds only run *simultaneously* if at least two runners carry
+# the "drift" label — with a single runner they queue and run back-to-back.
 
 on:
   push:
@@ -20,49 +25,76 @@ on:
 env:
   # Image coordinates. The registry host itself comes from the runner .env.
   IMAGE_PATH: drift-import/drift-import
-  # Deploy target architecture. The Pi Zero 2 W is running 32-bit Raspberry Pi OS
-  # (armv7l), so building arm64 too just burns runner time.
-  PLATFORM: linux/arm/v7
 
 jobs:
-  build-deploy:
+  build:
+    name: build (${{ matrix.platform }})
     runs-on: [self-hosted, drift]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # arm/v7 is the Pi Zero 2 W deploy target and also owns the bare
+          # :latest / :<sha> tags that the Pi and dev compose files pull.
+          - platform: linux/arm/v7
+            slug: armv7
+          - platform: linux/amd64
+            slug: amd64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Register QEMU for ARM builds
+      - name: Register QEMU (for cross-arch builds)
         run: docker run --privileged --rm tonistiigi/binfmt --install arm
 
       - name: Create buildx builder (allows pushing to the HTTP Harbor registry)
         run: |
-          cat > /tmp/buildkitd-drift.toml <<EOF
+          cat > /tmp/buildkitd-${{ matrix.slug }}.toml <<EOF
           [registry."${HARBOR_REGISTRY}"]
             http = true
             insecure = true
           EOF
-          docker buildx rm driftci >/dev/null 2>&1 || true
-          docker buildx create --name driftci --driver docker-container \
+          # Per-arch builder name so the two matrix jobs never collide.
+          docker buildx rm "drift-${{ matrix.slug }}" >/dev/null 2>&1 || true
+          docker buildx create --name "drift-${{ matrix.slug }}" --driver docker-container \
             --driver-opt network=host \
-            --config /tmp/buildkitd-drift.toml --use
-          docker buildx inspect --bootstrap
+            --config /tmp/buildkitd-${{ matrix.slug }}.toml
+          docker buildx inspect --bootstrap "drift-${{ matrix.slug }}"
 
       - name: Log in to Harbor
         run: echo "$HARBOR_ROBOT_TOKEN" | docker login "$HARBOR_REGISTRY" -u "$HARBOR_ROBOT_USER" --password-stdin
 
-      - name: Build and push ARM image
+      - name: Build and push ${{ matrix.platform }} image
         run: |
           IMAGE="${HARBOR_REGISTRY}/${IMAGE_PATH}"
-          docker buildx build --builder driftci \
-            --platform "${PLATFORM}" \
-            -t "${IMAGE}:latest" \
-            -t "${IMAGE}:${GITHUB_SHA::12}" \
-            --cache-from "type=registry,ref=${IMAGE}:buildcache" \
-            --cache-to "type=registry,ref=${IMAGE}:buildcache,mode=max" \
+          SHA="${GITHUB_SHA::12}"
+          # Every build publishes arch-qualified tags (:armv7, :amd64 + sha);
+          # arm/v7 additionally publishes the bare :latest / :<sha> the Pi pulls.
+          TAGS=( -t "${IMAGE}:${{ matrix.slug }}" -t "${IMAGE}:${{ matrix.slug }}-${SHA}" )
+          if [ "${{ matrix.slug }}" = "armv7" ]; then
+            TAGS+=( -t "${IMAGE}:latest" -t "${IMAGE}:${SHA}" )
+          fi
+          docker buildx build --builder "drift-${{ matrix.slug }}" \
+            --platform "${{ matrix.platform }}" \
+            "${TAGS[@]}" \
+            --cache-from "type=registry,ref=${IMAGE}:buildcache-${{ matrix.slug }}" \
+            --cache-to "type=registry,ref=${IMAGE}:buildcache-${{ matrix.slug }},mode=max" \
             --push .
 
+      - name: Remove buildx builder
+        if: always()
+        run: docker buildx rm "drift-${{ matrix.slug }}" >/dev/null 2>&1 || true
+
+  deploy:
+    name: deploy to Pi
+    needs: build
+    runs-on: [self-hosted, drift]
+    if: ${{ github.event_name == 'push' || inputs.deploy }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Deploy to Pi
-        if: ${{ github.event_name == 'push' || inputs.deploy }}
         run: ./deploy/deploy-to-pi.sh
         env:
           IMAGE_TAG: latest
