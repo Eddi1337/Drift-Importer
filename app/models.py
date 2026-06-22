@@ -240,3 +240,21 @@ class JobLog(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
     job: Mapped[Job] = relationship(back_populates="logs")
+
+
+class SystemSample(Base):
+    """A periodic snapshot of host CPU and network rates.
+
+    A background sampler writes one row per tick so the stats page can show a
+    real history window (e.g. the last 30 minutes) the instant it loads, instead
+    of the browser having to accumulate samples live after each page load.
+    """
+
+    __tablename__ = "system_samples"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    cpu_percent: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    rx_bytes_per_s: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    tx_bytes_per_s: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    load_1m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

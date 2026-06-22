@@ -44,9 +44,15 @@ async def lifespan(app: FastAPI):
     with session_scope() as session:
         ensure_default_nas_destination(session)
     get_manager().start()
+    from .sysmon import get_monitor
+
+    get_monitor().start()
     logging.getLogger("drift").info("Drift-Import %s started", __version__)
     yield
     get_manager().stop()
+    from .sysmon import get_monitor as _get_monitor
+
+    _get_monitor().stop()
 
 
 app = FastAPI(title="Drift-Import", version=__version__, lifespan=lifespan)

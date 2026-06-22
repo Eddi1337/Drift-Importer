@@ -1572,7 +1572,7 @@ async function loadStats(showLoading = true) {
     if (system) system.textContent = "Loading…";
   }
   try {
-    const hours = getTimelineHours();
+    const hours = getTimelineMinutes() / 60;
     const stats = await api.get(`/api/stats?timeline_hours=${encodeURIComponent(hours)}`);
     const data = stats.overview || {};
     overview.innerHTML = `
@@ -1592,11 +1592,11 @@ async function loadStats(showLoading = true) {
   }
 }
 
-function getTimelineHours() {
-  const input = document.getElementById("timelineHours");
-  const value = Number(input?.value || 3);
-  if (!Number.isFinite(value)) return 3;
-  return Math.max(0.25, Math.min(72, value));
+function getTimelineMinutes() {
+  const input = document.getElementById("timelineMinutes");
+  const value = Number(input?.value || 30);
+  if (!Number.isFinite(value)) return 30;
+  return Math.max(5, Math.min(1440, value));
 }
 
 function fmtDurationText(seconds) {
@@ -1605,14 +1605,6 @@ function fmtDurationText(seconds) {
   const mins = Math.floor(seconds / 60);
   const secs = Math.round(seconds % 60);
   return `${mins}m ${secs}s`;
-}
-
-function pushHistory(key, value, max = 60) {
-  const arr = appState.systemHistory[key];
-  if (!arr) return [];
-  arr.push(Number(value || 0));
-  while (arr.length > max) arr.shift();
-  return arr;
 }
 
 function pushNamedHistory(group, name, value, max = 60) {
@@ -1737,7 +1729,7 @@ function renderUploadTimeline(timeline) {
       <div class="row spread">
         <div>
           <strong>Upload timeline</strong>
-          <div class="hint">Last ${timeline.hours || getTimelineHours()} hours · ${timeline.bucket_minutes || "?"} minute buckets</div>
+          <div class="hint">Last ${Math.round((timeline.hours || getTimelineMinutes() / 60) * 60)} minutes · ${timeline.bucket_minutes || "?"} minute buckets</div>
         </div>
         <div class="timeline-totals">
           <span><i class="legend-app"></i>${fmtBytes(timeline.total_uploaded_bytes || 0)} completed</span>
@@ -1766,9 +1758,12 @@ function renderSystemStats(system) {
   const network = system.network || {};
   const timeline = network.upload_timeline || system.upload_timeline || {};
   const filesystems = system.filesystems || [];
-  const cpuHistory = pushHistory("cpu", cpu.percent);
-  const rxHistory = pushHistory("rx", network.rx_bytes_per_s);
-  const txHistory = pushHistory("tx", network.tx_bytes_per_s);
+  // History is stored server-side, so the graphs show the whole window the
+  // moment the page loads instead of filling in live in the browser.
+  const cpuHistory = (cpu.history || []).map(point => point.v);
+  const rxHistory = (network.rx_history || []).map(point => point.v);
+  const txHistory = (network.tx_history || []).map(point => point.v);
+  const windowLabel = `${getTimelineMinutes()}m ago`;
   el.innerHTML = `
     <div class="system-grid">
       <div class="system-card">
@@ -1783,6 +1778,7 @@ function renderSystemStats(system) {
             max: 100,
             format: value => `${Math.round(value)}%`,
             yUnit: "% busy",
+            xLabels: [windowLabel, "now"],
           })}
         </div>
         <div class="metric-row">
@@ -1803,6 +1799,7 @@ function renderSystemStats(system) {
               title: "Download trend",
               format: value => `${fmtBytes(value)}/s`,
               yUnit: "per second",
+              xLabels: [windowLabel, "now"],
             })}
           </div>
           <div>
@@ -1811,6 +1808,7 @@ function renderSystemStats(system) {
               title: "Upload trend",
               format: value => `${fmtBytes(value)}/s`,
               yUnit: "per second",
+              xLabels: [windowLabel, "now"],
             })}
           </div>
         </div>

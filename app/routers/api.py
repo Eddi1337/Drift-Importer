@@ -6,7 +6,6 @@ import hashlib
 import os
 import re
 import shutil
-import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -31,17 +30,19 @@ from ..models import (
     Job,
     JobLog,
     MediaItem,
+    SystemSample,
     Tag,
     UploadedClip,
     UploadState,
 )
 from ..settings_store import app_settings_dict, encode_destination_ids, get_app_settings, touch_settings
 from ..streaming import stream_file
+from ..sysmon import get_monitor
 
 router = APIRouter()
 
-_last_cpu_sample: tuple[float, int, int] | None = None
-_last_net_sample: tuple[float, int, int] | None = None
+# Default stats window: last 30 minutes (in hours, since the API is hours-based).
+DEFAULT_TIMELINE_HOURS = 0.5
 
 
 # --- serialization helpers --------------------------------------------------
@@ -97,93 +98,65 @@ def _destination_storage_payload(
     }
 
 
-def _read_cpu_totals() -> tuple[int, int] | None:
-    try:
-        first = Path("/proc/stat").read_text().splitlines()[0].split()
-    except (OSError, IndexError):
-        return None
-    if not first or first[0] != "cpu":
-        return None
-    values = [int(v) for v in first[1:]]
-    idle = values[3] + (values[4] if len(values) > 4 else 0)
-    total = sum(values)
-    return total, idle
-
-
 def _cpu_payload() -> dict:
-    global _last_cpu_sample
-    sample = _read_cpu_totals()
-    now = time.monotonic()
+    # The instantaneous percent comes from the background monitor's latest
+    # tick (a smoothed interval average), so it no longer depends on how often
+    # the client happens to poll. Load averages are cheap to read on demand.
+    snap = get_monitor().snapshot()
     load = None
     if hasattr(os, "getloadavg"):
         try:
             load = os.getloadavg()
         except OSError:
             load = None
-    payload = {
-        "percent": None,
+    return {
+        "percent": snap.get("cpu_percent"),
         "load_1m": _round_or_none(load[0]) if load else None,
         "load_5m": _round_or_none(load[1]) if load else None,
         "load_15m": _round_or_none(load[2]) if load else None,
         "cpu_count": os.cpu_count(),
     }
-    if sample is None:
-        return payload
-    total, idle = sample
-    if _last_cpu_sample is not None:
-        _, last_total, last_idle = _last_cpu_sample
-        total_delta = total - last_total
-        idle_delta = idle - last_idle
-        if total_delta > 0:
-            payload["percent"] = round(max(0.0, min(100.0, (1 - idle_delta / total_delta) * 100)), 1)
-    _last_cpu_sample = (now, total, idle)
-    return payload
-
-
-def _read_network_totals() -> tuple[int, int] | None:
-    try:
-        lines = Path("/proc/net/dev").read_text().splitlines()[2:]
-    except OSError:
-        return None
-    rx = 0
-    tx = 0
-    for line in lines:
-        if ":" not in line:
-            continue
-        iface, data = line.split(":", 1)
-        iface = iface.strip()
-        if iface == "lo":
-            continue
-        parts = data.split()
-        if len(parts) < 16:
-            continue
-        rx += int(parts[0])
-        tx += int(parts[8])
-    return rx, tx
 
 
 def _network_payload() -> dict:
-    global _last_net_sample
-    sample = _read_network_totals()
-    now = time.monotonic()
-    payload = {
-        "rx_bytes_total": None,
-        "tx_bytes_total": None,
-        "rx_bytes_per_s": 0,
-        "tx_bytes_per_s": 0,
+    snap = get_monitor().snapshot()
+    return {
+        "rx_bytes_total": snap.get("rx_bytes_total"),
+        "tx_bytes_total": snap.get("tx_bytes_total"),
+        "rx_bytes_per_s": int(snap.get("rx_bytes_per_s") or 0),
+        "tx_bytes_per_s": int(snap.get("tx_bytes_per_s") or 0),
     }
-    if sample is None:
-        return payload
-    rx, tx = sample
-    payload["rx_bytes_total"] = rx
-    payload["tx_bytes_total"] = tx
-    if _last_net_sample is not None:
-        last_now, last_rx, last_tx = _last_net_sample
-        elapsed = max(0.001, now - last_now)
-        payload["rx_bytes_per_s"] = max(0, int((rx - last_rx) / elapsed))
-        payload["tx_bytes_per_s"] = max(0, int((tx - last_tx) / elapsed))
-    _last_net_sample = (now, rx, tx)
-    return payload
+
+
+def _downsample(rows: list, max_points: int) -> list:
+    """Stride a list down to at most max_points, keeping order (and the ends)."""
+    if len(rows) <= max_points:
+        return rows
+    step = (len(rows) + max_points - 1) // max_points
+    sampled = rows[::step]
+    if sampled and sampled[-1] is not rows[-1]:
+        sampled.append(rows[-1])
+    return sampled
+
+
+def _system_history(session: Session, hours: float) -> tuple[list, list, list]:
+    """Return (cpu, rx, tx) history series within the window, as [{t, v}, ...]."""
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    since = now - dt.timedelta(hours=max(0.0, float(hours or 0)))
+    rows = (
+        session.query(SystemSample)
+        .filter(SystemSample.created_at >= since)
+        .order_by(SystemSample.created_at)
+        .all()
+    )
+    rows = _downsample(rows, 300)
+    cpu, rx, tx = [], [], []
+    for row in rows:
+        t = row.created_at.isoformat()
+        cpu.append({"t": t, "v": row.cpu_percent if row.cpu_percent is not None else 0})
+        rx.append({"t": t, "v": int(row.rx_bytes_per_s or 0)})
+        tx.append({"t": t, "v": int(row.tx_bytes_per_s or 0)})
+    return cpu, rx, tx
 
 
 def _filesystem_payload() -> list[dict]:
@@ -243,10 +216,10 @@ def _timeline_bucket_minutes(hours: float) -> int:
 
 def build_upload_timeline(
     rows: list[UploadedClip],
-    hours: float = 3,
+    hours: float = DEFAULT_TIMELINE_HOURS,
     now: dt.datetime | None = None,
 ) -> dict:
-    hours = max(0.25, min(float(hours or 3), 72.0))
+    hours = max(0.25, min(float(hours or DEFAULT_TIMELINE_HOURS), 72.0))
     bucket_minutes = _timeline_bucket_minutes(hours)
     now = now or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     since = now - dt.timedelta(hours=hours)
@@ -300,17 +273,33 @@ def build_upload_timeline(
     }
 
 
-def build_system_stats(upload_rows: list[UploadedClip] | None = None, timeline_hours: float = 3) -> dict:
+def build_system_stats(
+    upload_rows: list[UploadedClip] | None = None,
+    timeline_hours: float = DEFAULT_TIMELINE_HOURS,
+    session: Session | None = None,
+) -> dict:
+    cpu = _cpu_payload()
+    network = _network_payload()
+    # Server-stored history so the graph shows the whole window on page load
+    # rather than the browser filling it in live. Empty when no DB session
+    # (e.g. unit tests) or before the first samples are recorded.
+    if session is not None:
+        cpu_hist, rx_hist, tx_hist = _system_history(session, timeline_hours)
+    else:
+        cpu_hist, rx_hist, tx_hist = [], [], []
+    cpu["history"] = cpu_hist
+    network["rx_history"] = rx_hist
+    network["tx_history"] = tx_hist
     return {
         "sampled_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "cpu": _cpu_payload(),
-        "network": _network_payload(),
+        "cpu": cpu,
+        "network": network,
         "upload_timeline": build_upload_timeline(upload_rows or [], timeline_hours),
         "filesystems": _filesystem_payload(),
     }
 
 
-def build_upload_stats(session: Session, timeline_hours: float = 3) -> dict:
+def build_upload_stats(session: Session, timeline_hours: float = DEFAULT_TIMELINE_HOURS) -> dict:
     destinations = session.query(Destination).order_by(Destination.name).all()
     rows = session.query(UploadedClip).all()
     rows_by_destination: dict[int, list[UploadedClip]] = {}
@@ -319,7 +308,7 @@ def build_upload_stats(session: Session, timeline_hours: float = 3) -> dict:
 
     return {
         "overview": _build_upload_totals(rows),
-        "system": build_system_stats(rows, timeline_hours),
+        "system": build_system_stats(rows, timeline_hours, session=session),
         "destinations": [
             {
                 **dest_dict(destination),
@@ -1131,7 +1120,7 @@ def list_recent_uploads(
 
 @router.get("/stats/uploads")
 def upload_stats(
-    timeline_hours: float = 3,
+    timeline_hours: float = DEFAULT_TIMELINE_HOURS,
     session: Session = Depends(get_session),
 ):
     return build_upload_stats(session, timeline_hours=timeline_hours)
@@ -1139,7 +1128,7 @@ def upload_stats(
 
 @router.get("/stats")
 def stats(
-    timeline_hours: float = 3,
+    timeline_hours: float = DEFAULT_TIMELINE_HOURS,
     session: Session = Depends(get_session),
 ):
     return build_upload_stats(session, timeline_hours=timeline_hours)
