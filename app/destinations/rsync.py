@@ -213,6 +213,7 @@ class RsyncBackend(UploadBackend):
         filename,
         progress: ProgressCb = None,
         start_offset: int = 0,
+        mtime: float | None = None,  # rsync preserves source mtime via -t
     ) -> str:
         local_path = Path(local_path)
         total = local_path.stat().st_size

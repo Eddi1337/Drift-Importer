@@ -241,6 +241,7 @@ class NextcloudBackend(UploadBackend):
         filename,
         progress: ProgressCb = None,
         start_offset: int = 0,
+        mtime: float | None = None,  # accepted for interface parity; not applied
     ) -> str:
         settings = get_settings()
         local_path = Path(local_path)

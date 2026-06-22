@@ -144,11 +144,16 @@ class LocalBackend(UploadBackend):
         filename,
         progress: ProgressCb = None,
         start_offset: int = 0,
+        mtime: float | None = None,
     ) -> str:
         settings = get_settings()
         local_path = Path(local_path)
         root = self._require_root()
         total = local_path.stat().st_size
+        # Stamp the written file with the clip's capture time so the NAS shows
+        # the recording date (and agrees with its {year}/{month} folder) instead
+        # of the upload time. Fall back to preserving the source file's mtime.
+        when = mtime if mtime is not None else local_path.stat().st_mtime
         # Fail fast if the destination can't hold what's left to send, rather
         # than writing chunks until the filesystem fills and the transfer dies
         # mid-stream.
@@ -160,6 +165,7 @@ class LocalBackend(UploadBackend):
         written = start_offset
         chunk = settings.upload_chunk_bytes
         if start_offset >= total and target.exists():
+            os.utime(target, (when, when))
             if progress and total:
                 progress(total, total)
             return str(target)
@@ -176,4 +182,5 @@ class LocalBackend(UploadBackend):
                 if progress and total:
                     progress(written, total)
         os.replace(tmp, target)
+        os.utime(target, (when, when))
         return str(target)

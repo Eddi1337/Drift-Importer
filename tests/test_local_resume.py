@@ -109,6 +109,41 @@ def test_local_backend_round_trip_missing_root(tmp_path):
         backend.verify_round_trip()
 
 
+def test_local_backend_stamps_capture_mtime(tmp_path):
+    """The uploaded file's mtime reflects the capture time, not the upload time."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"0123456789abcdef")
+
+    root = tmp_path / "remote"
+    root.mkdir()
+    backend = LocalBackend(Destination(name="NAS", type="local", base_path=str(root)))
+
+    # 2025-11-13 11:29:40 UTC -> a clip that belongs in the 2025/11 folder.
+    import datetime as dt
+
+    capture_ts = dt.datetime(2025, 11, 13, 11, 29, 40, tzinfo=dt.timezone.utc).timestamp()
+    remote_path = backend.upload(source, "2025/11", "clip.mp4", mtime=capture_ts)
+
+    assert Path(remote_path).stat().st_mtime == capture_ts
+
+
+def test_local_backend_preserves_source_mtime_when_unset(tmp_path):
+    """With no explicit mtime, the source file's mtime is preserved (cp -p)."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"0123456789abcdef")
+    import os
+
+    os.utime(source, (1_700_000_000, 1_700_000_000))
+
+    root = tmp_path / "remote"
+    root.mkdir()
+    backend = LocalBackend(Destination(name="NAS", type="local", base_path=str(root)))
+
+    remote_path = backend.upload(source, "2025/11", "clip.mp4")
+
+    assert Path(remote_path).stat().st_mtime == 1_700_000_000
+
+
 def test_local_backend_refuses_when_disk_full(tmp_path, monkeypatch):
     """Preflight space check fails fast instead of filling the disk."""
     source = tmp_path / "clip.mp4"

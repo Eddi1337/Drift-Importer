@@ -401,6 +401,9 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
             filename = item.filename
             checksum_value = item.checksum
             remote_dir = render_remote_dir(dest.path_template, item.capture_time)
+            # Stamp the remote file with the capture time so its date matches the
+            # {year}/{month} folder it lands in, not the moment it was uploaded.
+            capture_mtime = item.capture_time.timestamp() if item.capture_time else None
             dest_detached = dest  # used only for read-only backend config below
             backend = get_backend(dest_detached)
             dest_name = dest.name
@@ -599,6 +602,7 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                     filename,
                     on_progress,
                     start_offset=start_offset,
+                    mtime=capture_mtime,
                 )
             except Exception as exc:  # noqa: BLE001
                 result_status = "error"

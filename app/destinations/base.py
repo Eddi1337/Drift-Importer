@@ -112,6 +112,13 @@ class UploadBackend:
         filename: str,
         progress: ProgressCb = None,
         start_offset: int = 0,
+        mtime: Optional[float] = None,
     ) -> str:
-        """Upload local_path into remote_dir/filename. Return the remote path."""
+        """Upload local_path into remote_dir/filename. Return the remote path.
+
+        ``mtime`` is the clip's capture time as a POSIX timestamp. Backends that
+        can set a modification time on the written file should apply it, so the
+        remote file's date reflects when the footage was recorded (and matches
+        the ``{year}/{month}`` folder it lands in) rather than the upload time.
+        """
         raise NotImplementedError
