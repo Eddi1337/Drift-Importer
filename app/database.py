@@ -107,6 +107,11 @@ def _run_migrations() -> None:
             cols = _column_names(conn, "jobs")
             if "dismissed_at" not in cols:
                 conn.execute("ALTER TABLE jobs ADD COLUMN dismissed_at DATETIME")
+            # Indexes for the jobs list (filter by status/dismissed, order by date).
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_jobs_status_created ON jobs (status, created_at)"
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_jobs_dismissed ON jobs (dismissed_at)")
 
         if "destinations" in tables:
             cols = _column_names(conn, "destinations")

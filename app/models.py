@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Table,
@@ -206,6 +207,12 @@ class UploadedClip(Base):
 
 class Job(Base):
     __tablename__ = "jobs"
+    # The jobs list filters by status + dismissed and orders by created_at; these
+    # indexes keep it fast as the table grows to thousands of rows.
+    __table_args__ = (
+        Index("ix_jobs_status_created", "status", "created_at"),
+        Index("ix_jobs_dismissed", "dismissed_at"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     kind: Mapped[str] = mapped_column(String(32))  # import|thumbnail|merge|timestamp|upload
@@ -221,11 +228,14 @@ class Job(Base):
     started_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
 
+    # lazy="select": logs are only loaded when explicitly accessed (the jobs
+    # list never touches them). Eager "selectin" loaded thousands of log rows on
+    # every /api/jobs poll, which made the page crawl.
     logs: Mapped[List["JobLog"]] = relationship(
         back_populates="job",
         cascade="all, delete-orphan",
         order_by="JobLog.created_at",
-        lazy="selectin",
+        lazy="select",
     )
 
 
