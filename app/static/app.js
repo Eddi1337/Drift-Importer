@@ -158,6 +158,23 @@ function isActiveJob(job) {
   return job.status === "queued" || job.status === "running";
 }
 
+function isInflightJob(job) {
+  return job.status === "queued" || job.status === "running" || job.status === "paused";
+}
+
+// One overall percent across all in-flight (queued/running/paused) sub-jobs.
+// Matches the server-side compute_jobs_overview used for Home Assistant.
+function overallJobProgress(jobs) {
+  const inflight = (jobs || []).filter(isInflightJob);
+  if (!inflight.length) return { percent: null, inflight: 0, running: 0 };
+  const sum = inflight.reduce((acc, j) => acc + (Number(j.progress) || 0), 0);
+  return {
+    percent: Math.round((sum / inflight.length) * 100),
+    inflight: inflight.length,
+    running: inflight.filter(j => j.status === "running").length,
+  };
+}
+
 async function loadSettings() {
   try {
     appState.settings = await api.get("/api/settings");
@@ -190,13 +207,16 @@ async function refreshGlobalJobs() {
 function renderJobBadge() {
   const b = document.getElementById("jobBadge");
   if (!b) return;
-  const active = appState.jobs.filter(isActiveJob);
-  if (!active.length) {
-    b.textContent = "";
+  const o = overallJobProgress(appState.jobs);
+  if (!o.inflight) {
+    b.innerHTML = "";
     return;
   }
-  const running = active.filter(j => j.status === "running").length;
-  b.textContent = `${running ? "●" : "○"} ${active.length} active job${active.length === 1 ? "" : "s"}`;
+  b.innerHTML = `
+    <span class="badge-text">${o.running ? "●" : "○"} ${o.inflight} job${o.inflight === 1 ? "" : "s"}</span>
+    <span class="prog menu-progress"><span style="width:${o.percent}%"></span></span>
+    <span class="badge-pct">${o.percent}%</span>
+  `;
 }
 
 function renderLiveActivity() {
@@ -1402,6 +1422,7 @@ function renderJobsPage() {
   const paused = jobs.filter(j => j.status === "paused");
   const failed = jobs.filter(j => j.status === "error");
   const completed = jobs.filter(j => j.status === "done");
+  renderJobsOverall(jobs);
   if (controls) {
     controls.innerHTML = `
       <button class="ghost" onclick="pauseAllJobs()" ${active.length ? "" : "disabled"}>Pause all</button>
@@ -1449,6 +1470,24 @@ function renderJobsPage() {
   });
   el.innerHTML = html + "</table>";
   restoreJobLogScroll(logScroll);
+}
+
+function renderJobsOverall(jobs) {
+  const el = document.getElementById("jobsOverall");
+  if (!el) return;
+  const o = overallJobProgress(jobs);
+  if (!o.inflight) {
+    el.innerHTML = "";
+    return;
+  }
+  el.innerHTML = `
+    <div class="jobs-overall-head">
+      <strong>Overall progress</strong>
+      <span class="hint">${o.running} running · ${o.inflight} job${o.inflight === 1 ? "" : "s"} in progress</span>
+      <span class="jobs-overall-pct">${o.percent}%</span>
+    </div>
+    <div class="prog job-progress jobs-overall-bar"><span style="width:${o.percent}%"></span></div>
+  `;
 }
 
 function captureJobLogScroll() {

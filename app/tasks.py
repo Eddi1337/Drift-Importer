@@ -13,7 +13,6 @@ from .config import get_settings
 from .database import session_scope
 from .destinations import get_backend
 from .destinations.base import join_remote, render_remote_dir
-from .ha import publish_state
 from .jobs import JobContext, handler
 from .media import (
     capture_time_or_mtime,
@@ -23,8 +22,7 @@ from .media import (
     probe,
 )
 from .merge import merge_clips
-from .models import AppSettings, Destination, MediaItem, UploadedClip, UploadState, utcnow
-from .settings_store import get_app_settings
+from .models import Destination, MediaItem, UploadedClip, UploadState, utcnow
 from .timestamps import set_file_mtime, shift_datetime, write_metadata_creation_time
 
 log = logging.getLogger("drift.tasks")
@@ -137,20 +135,6 @@ def _mark_upload_progress(
             clip.size_bytes = total
             clip.last_error = error
             clip.updated_at = utcnow()
-
-
-def _publish_upload_status(
-    prefs: AppSettings,
-    job_id: int,
-    status: str,
-    attributes: dict,
-) -> None:
-    progress_pct = attributes.get("progress_pct")
-    state_value = progress_pct if isinstance(progress_pct, (int, float)) else status
-    payload = dict(attributes)
-    payload["status"] = status
-    publish_state(prefs, f"job_{job_id}", state_value, payload)
-    publish_state(prefs, "uploads", state_value, payload)
 
 
 # --- import -----------------------------------------------------------------
@@ -313,7 +297,6 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
     ctx.log(f"Preparing upload batch for {len(media_ids)} media items")
 
     with session_scope() as s:
-        prefs = get_app_settings(s)
         if dest_ids:
             dests = (
                 s.query(Destination)
@@ -337,12 +320,6 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
     units = [(mid, did) for mid in media_ids for did, _ in dest_meta]
     total = len(units) or 1
     done = 0
-    _publish_upload_status(
-        prefs,
-        job_id,
-        "running",
-        {"job_id": job_id, "total_items": total, "completed_items": 0, "progress_pct": 0},
-    )
 
     for mid, did in units:
         # 1) Read what we need and mark "uploading" in a short transaction, then
@@ -449,20 +426,6 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                             clip.updated_at = utcnow()
                     done += 1
                     ctx.set_progress(done / total, f"Verified existing {filename}")
-                    _publish_upload_status(
-                        prefs,
-                        job_id,
-                        "running",
-                        {
-                            "job_id": job_id,
-                            "current_file": filename,
-                            "current_destination": dest_name,
-                            "completed_items": done,
-                            "total_items": total,
-                            "progress_pct": round((done / total) * 100, 1),
-                            "mode": "verified-deduplicated",
-                        },
-                    )
                     continue
                 log.warning(
                     "Ledger row for media=%s destination=%s did not verify; re-uploading",
@@ -524,20 +487,6 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                             clip.updated_at = now
                     done += 1
                     ctx.set_progress(done / total, f"Verified existing {filename}")
-                    _publish_upload_status(
-                        prefs,
-                        job_id,
-                        "running",
-                        {
-                            "job_id": job_id,
-                            "current_file": filename,
-                            "current_destination": dest_name,
-                            "completed_items": done,
-                            "total_items": total,
-                            "progress_pct": round((done / total) * 100, 1),
-                            "mode": "verified-existing",
-                        },
-                    )
                     continue
             except Exception as exc:  # noqa: BLE001
                 ctx.log(f"Existing-file check failed for {filename}: {exc}", level="WARNING")
@@ -563,22 +512,6 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
             now = time.monotonic()
             if now - last_persist >= 0.75 or sent >= total_bytes:
                 _mark_upload_progress(mid, did, clip_id, sent, total_bytes)
-                _publish_upload_status(
-                    prefs,
-                    job_id,
-                    "running",
-                    {
-                        "job_id": job_id,
-                        "current_file": filename,
-                        "current_destination": dest_name,
-                        "checksum": checksum_value,
-                        "bytes_uploaded": sent,
-                        "total_bytes": total_bytes,
-                        "completed_items": done,
-                        "total_items": total,
-                        "progress_pct": round(((_done + frac) / total) * 100, 1),
-                    },
-                )
                 last_persist = now
 
         result_status = "done"
@@ -678,28 +611,6 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                 clip.updated_at = utcnow()
         done += 1
         ctx.set_progress(done / total)
-        _publish_upload_status(
-            prefs,
-            job_id,
-            "running" if done < total else result_status,
-            {
-                "job_id": job_id,
-                "current_file": filename,
-                "current_destination": dest_name,
-                "completed_items": done,
-                "total_items": total,
-                "progress_pct": round((done / total) * 100, 1),
-                "last_result": result_status,
-                "last_error": result_error,
-            },
-        )
-
-    _publish_upload_status(
-        prefs,
-        job_id,
-        "done",
-        {"job_id": job_id, "total_items": total, "completed_items": done, "progress_pct": 100},
-    )
 
 
 # --- helper to enqueue follow-up jobs without a circular import -------------

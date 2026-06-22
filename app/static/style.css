@@ -117,9 +117,61 @@ nav a.on, nav a:hover {
 .badge {
   margin-left: auto;
   min-width: 10rem;
-  text-align: right;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
   color: var(--warn);
   font-size: 0.9rem;
+}
+
+.badge:empty {
+  min-width: 0;
+}
+
+.badge .badge-text {
+  white-space: nowrap;
+}
+
+.badge .menu-progress {
+  width: 5.5rem;
+  height: 0.5rem;
+  flex: 0 0 auto;
+}
+
+.badge .badge-pct {
+  color: var(--fg);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  min-width: 2.6rem;
+  text-align: right;
+}
+
+.jobs-overall {
+  margin: 0.25rem 0 0.9rem;
+}
+
+.jobs-overall:empty {
+  display: none;
+}
+
+.jobs-overall-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.4rem;
+}
+
+.jobs-overall-head .jobs-overall-pct {
+  margin-left: auto;
+  font-size: 1.05rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.jobs-overall-bar {
+  min-width: 0;
+  width: 100%;
 }
 
 main { padding: 1rem; max-width: 1240px; margin: 0 auto; }
@@ -1336,7 +1388,7 @@ code { color: var(--acc); }
 
 @media (max-width: 720px) {
   .topbar { align-items: flex-start; flex-wrap: wrap; }
-  .badge { margin-left: 0; min-width: 0; text-align: left; }
+  .badge { margin-left: 0; min-width: 0; justify-content: flex-start; }
   .form-grid, .settings-grid { grid-template-columns: 1fr; }
   .settings-grid .span-2 { grid-column: auto; }
   .form-grid .span-2 { grid-column: auto; }
