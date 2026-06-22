@@ -1625,9 +1625,13 @@ function pushNamedHistory(group, name, value, max = 60) {
 }
 
 function renderTimeSeriesChart(series, opts = {}) {
+  // The plot SVG is stretched to fill its box (preserveAspectRatio="none") so
+  // the line spans the full width. That stretch would warp any text drawn
+  // inside it, so ALL labels (axis values, time range) are rendered as HTML
+  // overlays at real CSS font sizes and aligned to the gridlines instead.
   const width = opts.width || 360;
   const height = opts.height || 140;
-  const pad = { top: 14, right: 16, bottom: 24, left: 42 };
+  const padV = 8; // vertical inset (user units) so peaks/troughs don't clip
   const rows = series.filter(row => row.values?.length);
   if (!rows.length) return "<span class='hint'>No time-series data yet.</span>";
   const points = Math.max(...rows.map(row => row.values.length));
@@ -1635,42 +1639,59 @@ function renderTimeSeriesChart(series, opts = {}) {
   const minValue = opts.min ?? Math.min(0, ...values);
   const maxValue = opts.max ?? Math.max(1, ...values);
   const span = Math.max(1, maxValue - minValue);
-  const innerWidth = width - pad.left - pad.right;
-  const innerHeight = height - pad.top - pad.bottom;
-  const xAt = idx => pad.left + (points <= 1 ? 0 : (idx / (points - 1)) * innerWidth);
-  const yAt = value => pad.top + innerHeight - ((Number(value || 0) - minValue) / span) * innerHeight;
-  const grid = [0, 0.5, 1].map(t => {
-    const y = pad.top + innerHeight - t * innerHeight;
-    const value = minValue + t * span;
-    return `<g class="chart-grid"><line x1="${pad.left}" y1="${y.toFixed(1)}" x2="${width - pad.right}" y2="${y.toFixed(1)}"></line><text x="4" y="${(y + 4).toFixed(1)}">${esc(opts.format ? opts.format(value) : value.toFixed(0))}</text></g>`;
-  }).join("");
+  const innerHeight = height - padV * 2;
+  const xAt = idx => (points <= 1 ? 0 : (idx / (points - 1)) * width);
+  const yAt = value => padV + innerHeight - ((Number(value || 0) - minValue) / span) * innerHeight;
+  const fmt = value => (opts.format ? opts.format(value) : Number(value || 0).toFixed(0));
+
+  // Min / mid / max gridlines, full-width in the SVG; their value labels are
+  // emitted as HTML positioned at the same vertical percentage.
+  const ticks = [1, 0.5, 0].map(t => {
+    const y = padV + innerHeight - t * innerHeight;
+    return { pct: (y / height) * 100, yUnits: y, label: fmt(minValue + t * span) };
+  });
+  const grid = ticks
+    .map(tick => `<line class="chart-grid-line" x1="0" y1="${tick.yUnits.toFixed(1)}" x2="${width}" y2="${tick.yUnits.toFixed(1)}"></line>`)
+    .join("");
+
   const paths = rows.map((row, idx) => {
     const coords = row.values.map((value, pointIdx) => `${xAt(pointIdx).toFixed(1)},${yAt(value).toFixed(1)}`);
     const line = coords.length ? `M ${coords.join(" L ")}` : "";
-    const linePoints = coords.join(" L ");
     const area = coords.length
-      ? `M ${linePoints} L ${xAt(row.values.length - 1).toFixed(1)},${(pad.top + innerHeight).toFixed(1)} L ${pad.left},${(pad.top + innerHeight).toFixed(1)} Z`
+      ? `M ${coords.join(" L ")} L ${xAt(row.values.length - 1).toFixed(1)},${(padV + innerHeight).toFixed(1)} L 0,${(padV + innerHeight).toFixed(1)} Z`
       : "";
     const latest = row.values[row.values.length - 1] || 0;
     return `<g class="chart-series ${esc(row.cls || `series-${idx + 1}`)}">
-      <title>${esc(row.label || "Series")}: ${esc(opts.format ? opts.format(latest) : latest)}</title>
+      <title>${esc(row.label || "Series")}: ${esc(fmt(latest))}</title>
       ${opts.area === false ? "" : `<path class="chart-area" d="${area}"></path>`}
       <path class="chart-line" d="${line}"></path>
     </g>`;
   }).join("");
+
+  const yLabels = ticks
+    .map(tick => `<span style="top:${tick.pct.toFixed(2)}%">${esc(tick.label)}</span>`)
+    .join("");
+
+  const xLabels = (opts.xLabels && opts.xLabels.length ? opts.xLabels : ["older", "now"]).filter(Boolean);
+  const xAxis = xLabels.length
+    ? `<div class="time-chart-xaxis">${xLabels.map(label => `<span>${esc(label)}</span>`).join("")}</div>`
+    : "";
+
   const legend = rows.map(row => {
     const latest = row.values[row.values.length - 1] || 0;
-    return `<span class="${esc(row.cls || "")}"><i></i>${esc(row.label || "Series")} <strong>${esc(opts.format ? opts.format(latest) : latest)}</strong></span>`;
+    return `<span class="${esc(row.cls || "")}"><i></i>${esc(row.label || "Series")} <strong>${esc(fmt(latest))}</strong></span>`;
   }).join("");
-  const minLabel = opts.format ? opts.format(Math.min(...values)) : Math.min(...values).toFixed(0);
-  const maxLabel = opts.format ? opts.format(Math.max(...values)) : Math.max(...values).toFixed(0);
+
   return `<div class="time-chart-wrap">
-    ${opts.title ? `<div class="time-chart-head"><strong>${esc(opts.title)}</strong><span class="hint">min ${esc(minLabel)} · max ${esc(maxLabel)}</span></div>` : ""}
-    <svg class="time-chart ${esc(opts.cls || "")}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${esc(opts.title || "Time-series chart")}">
-      ${grid}
-      <line class="chart-axis" x1="${pad.left}" y1="${pad.top + innerHeight}" x2="${width - pad.right}" y2="${pad.top + innerHeight}"></line>
-      ${paths}
-    </svg>
+    ${opts.title ? `<div class="time-chart-head"><strong>${esc(opts.title)}</strong>${opts.yUnit ? `<span class="hint">${esc(opts.yUnit)}</span>` : ""}</div>` : ""}
+    <div class="time-chart-plot">
+      <div class="time-chart-yaxis">${yLabels}</div>
+      <svg class="time-chart ${esc(opts.cls || "")}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${esc(opts.title || "Time-series chart")}">
+        ${grid}
+        ${paths}
+      </svg>
+    </div>
+    ${xAxis}
     <div class="time-chart-legend">${legend}</div>
   </div>`;
 }
@@ -1685,6 +1706,8 @@ function renderSparkline(values, cls = "", opts = {}) {
       max: opts.max,
       min: opts.min,
       format: opts.format,
+      yUnit: opts.yUnit,
+      xLabels: opts.xLabels || ["older", "now"],
     },
   );
 }
@@ -1705,6 +1728,8 @@ function renderUploadTimeline(timeline) {
       cls: "upload-series",
       height: 170,
       format: fmtBytes,
+      yUnit: "bytes / bucket",
+      xLabels: [fmtDateTime(first?.start) || "", fmtDateTime(last?.end) || ""],
     },
   );
   return `
@@ -1721,10 +1746,6 @@ function renderUploadTimeline(timeline) {
         </div>
       </div>
       ${chart}
-      <div class="row spread timeline-axis">
-        <span>${esc(fmtDateTime(first?.start) || "")}</span>
-        <span>${esc(fmtDateTime(last?.end) || "")}</span>
-      </div>
     </div>
   `;
 }
@@ -1761,6 +1782,7 @@ function renderSystemStats(system) {
             title: "CPU trend",
             max: 100,
             format: value => `${Math.round(value)}%`,
+            yUnit: "% busy",
           })}
         </div>
         <div class="metric-row">
@@ -1780,6 +1802,7 @@ function renderSystemStats(system) {
             ${renderSparkline(rxHistory, "rx-line", {
               title: "Download trend",
               format: value => `${fmtBytes(value)}/s`,
+              yUnit: "per second",
             })}
           </div>
           <div>
@@ -1787,6 +1810,7 @@ function renderSystemStats(system) {
             ${renderSparkline(txHistory, "tx-line", {
               title: "Upload trend",
               format: value => `${fmtBytes(value)}/s`,
+              yUnit: "per second",
             })}
           </div>
         </div>
@@ -1868,6 +1892,8 @@ function renderStatsDestinations(rows) {
 function renderDestinationTimeline(timeline) {
   const points = timeline?.points || [];
   if (!points.length) return "<span class='hint'>No destination upload timeline data.</span>";
+  const first = points[0];
+  const last = points[points.length - 1];
   return `<div class="destination-timeline">
     ${renderTimeSeriesChart(
       [
@@ -1878,8 +1904,10 @@ function renderDestinationTimeline(timeline) {
       {
         title: `Destination timeline · ${timeline.bucket_minutes || "?"} minute buckets`,
         cls: "destination-series",
-        height: 130,
+        height: 150,
         format: fmtBytes,
+        yUnit: "bytes / bucket",
+        xLabels: [fmtDateTime(first?.start) || "", fmtDateTime(last?.end) || ""],
       },
     )}
   </div>`;

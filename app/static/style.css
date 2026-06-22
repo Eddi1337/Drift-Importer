@@ -659,12 +659,12 @@ input:focus, select:focus {
   height: 7.6rem;
   border-radius: 50%;
   background: conic-gradient(var(--acc) calc(var(--pct) * 1%), var(--surface-2) 0);
-  display: grid;
-  place-items: center;
   position: relative;
   flex: 0 0 auto;
 }
 
+/* The donut hole, the percentage and its caption are all centred on the same
+   point so the number sits exactly in the middle of the ring. */
 .system-gauge::after {
   content: "";
   width: 4.5rem;
@@ -672,23 +672,32 @@ input:focus, select:focus {
   border-radius: 50%;
   background: var(--panel-strong);
   position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
 }
 
 .system-gauge span,
 .system-gauge small {
-  position: relative;
+  position: absolute;
+  left: 50%;
   z-index: 1;
+  white-space: nowrap;
 }
 
 .system-gauge span {
-  font-size: 1.12rem;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 1.3rem;
   font-weight: 800;
+  line-height: 1;
 }
 
 .system-gauge small {
-  align-self: start;
-  margin-top: -2.1rem;
+  top: 50%;
+  transform: translate(-50%, 0.95rem);
   color: var(--mut);
+  font-size: 0.66rem;
 }
 
 .spark {
@@ -728,9 +737,41 @@ input:focus, select:focus {
   font-size: 0.88rem;
 }
 
+.time-chart-wrap {
+  --yaxis-w: 3.4rem;
+  --yaxis-gap: 0.4rem;
+}
+
+.time-chart-plot {
+  display: flex;
+  align-items: stretch;
+  gap: var(--yaxis-gap);
+}
+
+/* Axis value labels live in the DOM (not inside the stretched SVG) so the text
+   is crisp and never warped. Each is absolutely placed at its gridline %. */
+.time-chart-yaxis {
+  position: relative;
+  flex: 0 0 var(--yaxis-w);
+  width: var(--yaxis-w);
+  font-size: 0.74rem;
+  color: var(--mut);
+}
+
+.time-chart-yaxis span {
+  position: absolute;
+  right: 0;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
 .time-chart {
+  flex: 1 1 auto;
   width: 100%;
-  height: 8rem;
+  min-width: 0;
+  height: 8.5rem;
   background:
     linear-gradient(180deg, rgba(71, 122, 59, 0.08), transparent),
     var(--panel);
@@ -739,15 +780,21 @@ input:focus, select:focus {
   overflow: hidden;
 }
 
-.time-chart .chart-grid line,
-.time-chart .chart-axis {
+.time-chart .chart-grid-line {
   stroke: var(--line);
   stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  opacity: 0.55;
 }
 
-.time-chart .chart-grid text {
-  fill: var(--mut);
-  font-size: 0.62rem;
+.time-chart-xaxis {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-left: calc(var(--yaxis-w) + var(--yaxis-gap));
+  color: var(--mut);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .time-chart .chart-line {
