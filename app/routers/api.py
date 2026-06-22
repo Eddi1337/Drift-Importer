@@ -19,7 +19,8 @@ from ..crypto import encrypt
 from ..config import get_settings
 from ..database import get_session
 from ..destinations import get_backend
-from ..devices import detect_devices, scan_media_files
+from ..devices import scan_media_files
+from ..devicescan import get_device_monitor
 from ..media import classify, make_thumbnail
 from ..jobs import get_manager, jobs_overview
 from ..models import (
@@ -367,11 +368,12 @@ def _is_attached_camera_path(path: Path) -> bool:
         resolved = path.resolve()
     except OSError:
         resolved = path
-    for device in detect_devices():
-        if not device.dcim_path:
+    for device in get_device_monitor().get_devices():
+        dcim = device.get("dcim_path")
+        if not dcim:
             continue
         try:
-            resolved.relative_to(device.dcim_path.resolve())
+            resolved.relative_to(Path(dcim).resolve())
             return True
         except (OSError, ValueError):
             continue
@@ -398,11 +400,12 @@ def _safe_device_media_path(path: str) -> Path:
         raise HTTPException(404, "Camera file not found")
     if classify(resolved) is None:
         raise HTTPException(400, "Path is not a supported media file")
-    for device in detect_devices():
-        if not device.dcim_path:
+    for device in get_device_monitor().get_devices():
+        dcim = device.get("dcim_path")
+        if not dcim:
             continue
         try:
-            resolved.relative_to(device.dcim_path.resolve())
+            resolved.relative_to(Path(dcim).resolve())
             return resolved
         except (OSError, ValueError):
             continue
@@ -447,18 +450,10 @@ def _read_log_lines(limit: int = 500, min_level: str = "INFO") -> dict:
 
 @router.get("/devices")
 def list_devices():
-    devices = detect_devices()
-    return [
-        {
-            "path": str(d.path),
-            "label": d.label,
-            "dcim_path": str(d.dcim_path) if d.dcim_path else None,
-            "free_bytes": d.free_bytes,
-            "total_bytes": d.total_bytes,
-            "file_count": len(scan_media_files(d.dcim_path)) if d.dcim_path else 0,
-        }
-        for d in devices
-    ]
+    # Served from the background DeviceMonitor's cache so the request never
+    # blocks on a slow/remote mount (the scan excludes destinations + network
+    # filesystems and runs on a timer).
+    return get_device_monitor().get_devices()
 
 
 class ImportDeviceReq(BaseModel):
@@ -1264,19 +1259,36 @@ def jobs_overview_endpoint(session: Session = Depends(get_session)):
 def list_jobs(
     limit: int = 100,
     include_dismissed: bool = False,
+    status: Optional[str] = None,
     session: Session = Depends(get_session),
 ):
-    # The worker runs the OLDEST queued job, so a plain newest-first + limit
-    # hides the in-progress job behind a large backlog. Surface active jobs
-    # first (running, then paused, then the next queued in run order), then
-    # back-fill with the most recent finished jobs.
     def base():
         q = session.query(Job)
         return q if include_dismissed else q.filter(Job.dismissed_at.is_(None))
 
+    # Running first, then paused, then queued, then everything else.
+    status_rank = case(
+        (Job.status == "running", 0), (Job.status == "paused", 1), (Job.status == "queued", 2), else_=3
+    )
+
+    if status:
+        # Filtered view (clicking a summary box). Still lead with running so an
+        # in-progress job is visible even inside a 'queued/running' filter.
+        wanted = [s.strip() for s in status.split(",") if s.strip()]
+        rows = (
+            base()
+            .filter(Job.status.in_(wanted))
+            .order_by(status_rank, Job.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return [job_dict(j) for j in rows]
+
+    # Default view: the worker runs the OLDEST queued job, so a plain
+    # newest-first + limit hides the in-progress job behind a large backlog.
+    # Surface active jobs first (in run order), then back-fill recent finished.
     terminal_reserve = 25
     active_limit = max(20, limit - terminal_reserve)
-    status_rank = case((Job.status == "running", 0), (Job.status == "paused", 1), else_=2)
     active = (
         base()
         .filter(Job.status.in_(("running", "paused", "queued")))

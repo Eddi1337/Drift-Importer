@@ -174,6 +174,23 @@ nav a.on, nav a:hover {
   width: 100%;
 }
 
+/* Clickable summary boxes that filter the job list. */
+.jobs-filter-card {
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.jobs-filter-card:hover {
+  border-color: var(--acc);
+}
+
+.jobs-filter-card.selected {
+  border-color: var(--acc);
+  box-shadow: inset 0 0 0 1px var(--acc);
+  background: var(--surface-2);
+}
+
 main { padding: 1rem; max-width: 1240px; margin: 0 auto; }
 
 .panel {

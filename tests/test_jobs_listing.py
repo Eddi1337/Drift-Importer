@@ -39,3 +39,21 @@ def test_list_jobs_surfaces_running_job_despite_large_queue():
     assert rows[0]["status"] == "running"      # active jobs first
     assert "done" in statuses                  # recent finished jobs still back-filled
     assert len(rows) <= 100
+
+
+def test_list_jobs_status_filter():
+    session = _session()
+    session.add_all([
+        Job(kind="upload", status="done", progress=1.0),
+        Job(kind="upload", status="error", progress=0.2),
+        Job(kind="upload", status="running", progress=0.5),
+        Job(kind="upload", status="queued", progress=0.0),
+    ])
+    session.commit()
+
+    done = list_jobs(status="done", session=session)
+    assert [r["status"] for r in done] == ["done"]
+
+    rq = list_jobs(status="running,queued", session=session)
+    assert {r["status"] for r in rq} == {"running", "queued"}
+    assert rq[0]["status"] == "running"        # running surfaced first within the filter

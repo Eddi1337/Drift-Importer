@@ -46,17 +46,21 @@ async def lifespan(app: FastAPI):
     get_manager().start()
     from .sysmon import get_monitor
     from .ha_publish import get_publisher
+    from .devicescan import get_device_monitor
 
     get_monitor().start()
     get_publisher().start()
+    get_device_monitor().start()
     logging.getLogger("drift").info("Drift-Import %s started", __version__)
     yield
     get_manager().stop()
     from .sysmon import get_monitor as _get_monitor
     from .ha_publish import get_publisher as _get_publisher
+    from .devicescan import get_device_monitor as _get_device_monitor
 
     _get_monitor().stop()
     _get_publisher().stop()
+    _get_device_monitor().stop()
 
 
 app = FastAPI(title="Drift-Import", version=__version__, lifespan=lifespan)

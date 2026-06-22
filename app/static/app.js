@@ -37,6 +37,7 @@ const appState = {
   lastRecentUploadSignature: "",
   lastLiveActivitySignature: "",
   jobPollStarted: false,
+  jobFilter: null,
   galleryPollers: [],
   jobsPoller: null,
   jobTimer: null,
@@ -191,8 +192,9 @@ function ensureGlobalJobPolling() {
 
 async function refreshGlobalJobs() {
   try {
+    const statusParam = appState.jobFilter ? `&status=${encodeURIComponent(appState.jobFilter)}` : "";
     const [jobs, overview] = await Promise.all([
-      api.get("/api/jobs?limit=100"),
+      api.get(`/api/jobs?limit=100${statusParam}`),
       api.get("/api/jobs/overview"),
     ]);
     appState.jobs = jobs;
@@ -204,6 +206,11 @@ async function refreshGlobalJobs() {
   } catch (_e) {
     // Ignore transient failures.
   }
+}
+
+function setJobFilter(filter) {
+  appState.jobFilter = appState.jobFilter === filter ? null : filter;
+  refreshGlobalJobs();
 }
 
 function renderJobBadge() {
@@ -1414,84 +1421,163 @@ function initJobs() {
   }, 1000);
 }
 
+// The jobs page updates in place (no innerHTML churn) so the summary boxes,
+// overall bar and per-row progress don't flash on every 1s/3s refresh.
+const JOB_FILTERS = [
+  { key: "running,queued", label: "Queued / running", count: o => (o.running || 0) + (o.queued || 0) },
+  { key: "paused", label: "Paused", count: o => o.paused || 0 },
+  { key: "done", label: "Completed", count: o => o.done || 0 },
+  { key: "error", label: "Errors", count: o => o.error || 0 },
+];
+
+function ensureJobsSummary(summary) {
+  if (summary.dataset.built) return;
+  summary.dataset.built = "1";
+  summary.innerHTML =
+    JOB_FILTERS.map(f =>
+      `<div class="live-card jobs-filter-card" data-filter="${esc(f.key)}" role="button" tabindex="0" title="Click to filter the list">
+         <div class="hint">${esc(f.label)}</div><div class="value" data-count="${esc(f.key)}">0</div>
+       </div>`
+    ).join("") +
+    `<div class="live-card"><div class="hint">Latest</div><div data-latest>—</div></div>`;
+  summary.querySelectorAll(".jobs-filter-card").forEach(card => {
+    const trigger = () => setJobFilter(card.dataset.filter);
+    card.addEventListener("click", trigger);
+    card.addEventListener("keydown", e => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); trigger(); }
+    });
+  });
+}
+
+function setNodeText(node, text) {
+  if (node && node.textContent !== String(text)) node.textContent = text;
+}
+
+function updateJobsSummary(summary, o, jobs) {
+  JOB_FILTERS.forEach(f => {
+    setNodeText(summary.querySelector(`[data-count="${f.key}"]`), f.count(o));
+    const card = summary.querySelector(`.jobs-filter-card[data-filter="${f.key}"]`);
+    if (card) card.classList.toggle("selected", appState.jobFilter === f.key);
+  });
+  setNodeText(summary.querySelector("[data-latest]"), jobs[0] ? jobs[0].description : "No jobs yet");
+}
+
+function ensureJobControls(controls) {
+  if (controls.dataset.built) return;
+  controls.dataset.built = "1";
+  controls.innerHTML = `
+    <button class="ghost" data-act="pause" onclick="pauseAllJobs()">Pause all</button>
+    <button class="ghost" data-act="resume" onclick="resumeAllJobs()">Resume all</button>
+    <button class="danger" data-act="stop" onclick="stopAllJobs()">Stop all</button>`;
+}
+
+function updateJobControls(controls, o) {
+  const anyActive = (o.active || 0) > 0;
+  const anyPaused = (o.paused || 0) > 0;
+  controls.querySelector('[data-act="pause"]').disabled = !anyActive;
+  controls.querySelector('[data-act="resume"]').disabled = !anyPaused;
+  controls.querySelector('[data-act="stop"]').disabled = !(anyActive || anyPaused);
+}
+
+function updateJobsOverall() {
+  const el = document.getElementById("jobsOverall");
+  if (!el) return;
+  const o = appState.jobsOverview;
+  if (!o || !o.active) {
+    if (el.dataset.built) { el.innerHTML = ""; delete el.dataset.built; }
+    return;
+  }
+  if (!el.dataset.built) {
+    el.dataset.built = "1";
+    el.innerHTML = `
+      <div class="jobs-overall-head">
+        <strong>Overall progress</strong>
+        <span class="hint" data-sub></span>
+        <span class="jobs-overall-pct" data-pct></span>
+      </div>
+      <div class="prog job-progress jobs-overall-bar"><span data-fill></span></div>`;
+  }
+  const ofN = o.total_in_run ? ` · ${o.completed_in_run} of ${o.total_in_run} done` : "";
+  setNodeText(el.querySelector("[data-sub]"), `${o.running} running · ${o.active} in progress${ofN}`);
+  setNodeText(el.querySelector("[data-pct]"), `${o.percent}%`);
+  el.querySelector("[data-fill]").style.width = `${o.percent}%`;
+}
+
+function jobRowDetailHtml(j) {
+  return j.error ? `<span style="color:#ffaea2">${esc(j.error)}</span>` : esc(j.detail || "");
+}
+
+function updateJobRow(el, j) {
+  const pct = Math.round(j.progress * 100);
+  const fill = el.querySelector(`[data-fill="${j.id}"]`);
+  if (fill) fill.style.width = `${pct}%`;
+  setNodeText(el.querySelector(`[data-pct="${j.id}"]`), `${pct}%`);
+  setNodeText(el.querySelector(`[data-elapsed="${j.id}"]`), fmtElapsed(j.started_at || j.created_at, j.finished_at));
+  const detailEl = el.querySelector(`[data-detail="${j.id}"]`);
+  if (detailEl) {
+    const html = jobRowDetailHtml(j);
+    if (detailEl.innerHTML !== html) detailEl.innerHTML = html;
+  }
+}
+
+function renderJobsTable(el, jobs) {
+  if (!jobs.length) {
+    const key = "empty:" + (appState.jobFilter || "");
+    if (el.dataset.sig !== key) {
+      el.dataset.sig = key;
+      el.innerHTML = `<span class='hint'>${appState.jobFilter ? "No jobs match this filter." : "No jobs yet."}</span>`;
+    }
+    return;
+  }
+  // Rebuild only when the rows/statuses/expansion change; patch progress and
+  // timings in place otherwise, so a live upload doesn't flash the table.
+  const sig = jobs.map(j => `${j.id}:${j.status}:${appState.expandedJobs.has(j.id) ? 1 : 0}`).join(",");
+  if (el.dataset.sig !== sig) {
+    el.dataset.sig = sig;
+    const logScroll = captureJobLogScroll();
+    let html = "<table class='jobs-table'><tr><th>ID</th><th>Kind</th><th>Description</th><th>Status</th><th>Timing</th><th class='progress-col'>Progress</th><th></th></tr>";
+    jobs.forEach(j => {
+      const pct = Math.round(j.progress * 100);
+      const elapsed = fmtElapsed(j.started_at || j.created_at, j.finished_at);
+      const started = j.started_at ? fmtDateTime(j.started_at) : "Queued";
+      const cancel = (isActiveJob(j) || j.status === "paused")
+        ? `<button class="ghost" onclick="cancelJob(${j.id})">Cancel</button>` : "";
+      const retry = (j.kind === "upload" && !isActiveJob(j) && j.status !== "paused")
+        ? `<button class="ghost" onclick="retryJob(${j.id})">Retry</button>` : "";
+      const dismiss = `<button class="ghost" onclick="dismissJob(${j.id})">Dismiss</button>`;
+      const expanded = appState.expandedJobs.has(j.id);
+      const logs = appState.jobLogs[j.id] || [];
+      html += `<tr class="job-row ${expanded ? "expanded" : ""}">
+        <td>${j.id}</td>
+        <td>${esc(j.kind)}</td>
+        <td><button class="job-title" onclick="toggleJobLogs(${j.id})">${expanded ? "Hide" : "Show"} logs</button> ${esc(j.description)}<br><span class="hint" data-detail="${j.id}">${jobRowDetailHtml(j)}</span></td>
+        <td>${renderJobState(j.status)}</td>
+        <td><div class="job-time"><strong data-elapsed="${j.id}">${esc(elapsed)}</strong><span class="hint">Started ${esc(started)}</span></div></td>
+        <td class="progress-cell"><div class="prog job-progress"><span data-fill="${j.id}" style="width:${pct}%"></span></div><div class="progress-label" data-pct="${j.id}">${pct}%</div></td>
+        <td><div class="row job-row-actions">${cancel}${retry}${dismiss}</div></td>
+      </tr>`;
+      if (expanded) {
+        html += `<tr class="job-log-row"><td colspan="7">${renderJobLogPanel(j.id, logs)}</td></tr>`;
+      }
+    });
+    el.innerHTML = html + "</table>";
+    restoreJobLogScroll(logScroll);
+  }
+  jobs.forEach(j => updateJobRow(el, j));
+}
+
 function renderJobsPage() {
   const summary = document.getElementById("jobSummary");
   const el = document.getElementById("jobsTable");
   const controls = document.getElementById("jobBulkActions");
   if (!summary || !el) return;
-  const jobs = appState.jobs;
-  // Counts come from the server overview (whole table), not the page of rows.
+  const jobs = appState.jobs || [];
   const o = appState.jobsOverview || {};
-  const queuedRunning = (o.running || 0) + (o.queued || 0);
-  renderJobsOverall();
-  if (controls) {
-    const anyActive = (o.active || 0) > 0;
-    const anyPaused = (o.paused || 0) > 0;
-    controls.innerHTML = `
-      <button class="ghost" onclick="pauseAllJobs()" ${anyActive ? "" : "disabled"}>Pause all</button>
-      <button class="ghost" onclick="resumeAllJobs()" ${anyPaused ? "" : "disabled"}>Resume all</button>
-      <button class="danger" onclick="stopAllJobs()" ${(anyActive || anyPaused) ? "" : "disabled"}>Stop all</button>
-    `;
-  }
-  summary.innerHTML = `
-    <div class="live-card"><div class="hint">Queued / running</div><div class="value">${queuedRunning}</div></div>
-    <div class="live-card"><div class="hint">Paused</div><div class="value">${o.paused || 0}</div></div>
-    <div class="live-card"><div class="hint">Completed</div><div class="value">${o.done || 0}</div></div>
-    <div class="live-card"><div class="hint">Errors</div><div class="value">${o.error || 0}</div></div>
-    <div class="live-card"><div class="hint">Latest</div><div>${esc(jobs[0] ? jobs[0].description : "No jobs yet")}</div></div>
-  `;
-  if (!jobs.length) {
-    el.innerHTML = "<span class='hint'>No jobs yet.</span>";
-    return;
-  }
-  const logScroll = captureJobLogScroll();
-  let html = "<table class='jobs-table'><tr><th>ID</th><th>Kind</th><th>Description</th><th>Status</th><th>Timing</th><th class='progress-col'>Progress</th><th></th></tr>";
-  jobs.forEach(j => {
-    const pct = Math.round(j.progress * 100);
-    const detail = j.error ? `<span style="color:#ffaea2">${esc(j.error)}</span>` : esc(j.detail || "");
-    const elapsed = fmtElapsed(j.started_at || j.created_at, j.finished_at);
-    const started = j.started_at ? fmtDateTime(j.started_at) : "Queued";
-    const cancel = (isActiveJob(j) || j.status === "paused")
-      ? `<button class="ghost" onclick="cancelJob(${j.id})">Cancel</button>` : "";
-    const retry = (j.kind === "upload" && !isActiveJob(j) && j.status !== "paused")
-      ? `<button class="ghost" onclick="retryJob(${j.id})">Retry</button>` : "";
-    const dismiss = `<button class="ghost" onclick="dismissJob(${j.id})">Dismiss</button>`;
-    const expanded = appState.expandedJobs.has(j.id);
-    const logs = appState.jobLogs[j.id] || [];
-    html += `<tr class="job-row ${expanded ? "expanded" : ""}">
-      <td>${j.id}</td>
-      <td>${esc(j.kind)}</td>
-      <td><button class="job-title" onclick="toggleJobLogs(${j.id})">${expanded ? "Hide" : "Show"} logs</button> ${esc(j.description)}<br><span class="hint">${detail}</span></td>
-      <td>${renderJobState(j.status)}</td>
-      <td><div class="job-time"><strong>${esc(elapsed)}</strong><span class="hint">Started ${esc(started)}</span></div></td>
-      <td class="progress-cell"><div class="prog job-progress"><span style="width:${pct}%"></span></div><div class="progress-label">${pct}%</div></td>
-      <td><div class="row job-row-actions">${cancel}${retry}${dismiss}</div></td>
-    </tr>`;
-    if (expanded) {
-      html += `<tr class="job-log-row"><td colspan="7">${renderJobLogPanel(j.id, logs)}</td></tr>`;
-    }
-  });
-  el.innerHTML = html + "</table>";
-  restoreJobLogScroll(logScroll);
-}
-
-function renderJobsOverall() {
-  const el = document.getElementById("jobsOverall");
-  if (!el) return;
-  const o = appState.jobsOverview;
-  if (!o || !o.active) {
-    el.innerHTML = "";
-    return;
-  }
-  const ofN = o.total_in_run ? ` · ${o.completed_in_run} of ${o.total_in_run} done` : "";
-  el.innerHTML = `
-    <div class="jobs-overall-head">
-      <strong>Overall progress</strong>
-      <span class="hint">${o.running} running · ${o.active} in progress${ofN}</span>
-      <span class="jobs-overall-pct">${o.percent}%</span>
-    </div>
-    <div class="prog job-progress jobs-overall-bar"><span style="width:${o.percent}%"></span></div>
-  `;
+  ensureJobsSummary(summary);
+  updateJobsSummary(summary, o, jobs);
+  if (controls) { ensureJobControls(controls); updateJobControls(controls, o); }
+  updateJobsOverall();
+  renderJobsTable(el, jobs);
 }
 
 function captureJobLogScroll() {
