@@ -18,45 +18,19 @@ from typing import Optional
 from . import ha
 from .database import session_scope
 from .devices import detect_devices
+from .jobs import jobs_overview
 from .models import Job
 from .settings_store import get_app_settings
 
 log = logging.getLogger("drift.ha")
 
-_ACTIVE_STATES = ("queued", "running", "paused")
 # Camera detection walks mount paths (incl. an NFS NAS), so do it less often
 # than the cheap DB-only progress refresh.
 _DEVICE_SCAN_INTERVAL_S = 15.0
 
-
-def compute_jobs_overview(session) -> dict:
-    """Overall progress/status across all active (queued/running/paused) jobs.
-
-    The percent is the mean completion of the active jobs, i.e. one bar that
-    covers all the sub-jobs. When nothing is active it reads as 100% / idle.
-    """
-    active = session.query(Job).filter(Job.status.in_(_ACTIVE_STATES)).all()
-    running = sum(1 for j in active if j.status == "running")
-    queued = sum(1 for j in active if j.status == "queued")
-    paused = sum(1 for j in active if j.status == "paused")
-    progress = (sum(float(j.progress or 0.0) for j in active) / len(active)) if active else 1.0
-    if running:
-        status = "running"
-    elif queued:
-        status = "queued"
-    elif paused:
-        status = "paused"
-    else:
-        status = "idle"
-    return {
-        "active": len(active),
-        "running": running,
-        "queued": queued,
-        "paused": paused,
-        "progress": progress,
-        "percent": round(progress * 100),
-        "status": status,
-    }
+# The overall progress/status published to HA is the same aggregate the jobs
+# page uses (count-based across the current run).
+compute_jobs_overview = jobs_overview
 
 
 def camera_status() -> tuple[bool, Optional[str]]:

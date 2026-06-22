@@ -1,9 +1,11 @@
+import datetime as dt
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base
-from app.ha_publish import compute_jobs_overview
+from app.ha_publish import compute_jobs_overview  # alias of jobs.jobs_overview
 from app.models import Job
 
 
@@ -18,25 +20,30 @@ def _session():
     return sessionmaker(bind=engine, expire_on_commit=False, future=True)()
 
 
-def test_overview_averages_inflight_progress_and_ignores_terminal_jobs():
+def test_overview_progress_is_count_based_over_the_current_run():
     session = _session()
+    base = dt.datetime(2026, 6, 22, 12, 0, 0)
     session.add_all([
-        Job(kind="upload", status="running", progress=0.5),
-        Job(kind="upload", status="running", progress=0.1),
-        Job(kind="upload", status="queued", progress=0.0),
-        # Terminal jobs must not drag the overall percent up or down.
-        Job(kind="upload", status="done", progress=1.0),
-        Job(kind="upload", status="error", progress=0.3),
+        # Historical completed job from an earlier run — must NOT count.
+        Job(kind="upload", status="done", progress=1.0, created_at=base - dt.timedelta(hours=2)),
+        # Current run: created from the oldest active job onwards.
+        Job(kind="upload", status="running", progress=0.5, created_at=base),
+        Job(kind="upload", status="running", progress=0.1, created_at=base + dt.timedelta(seconds=1)),
+        Job(kind="upload", status="queued", progress=0.0, created_at=base + dt.timedelta(seconds=2)),
+        Job(kind="upload", status="done", progress=1.0, created_at=base + dt.timedelta(seconds=3)),
+        Job(kind="upload", status="error", progress=0.3, created_at=base + dt.timedelta(seconds=4)),
     ])
     session.commit()
 
-    overview = compute_jobs_overview(session)
+    o = compute_jobs_overview(session)
 
-    assert overview["active"] == 3
-    assert overview["running"] == 2
-    assert overview["status"] == "running"
-    # mean(0.5, 0.1, 0.0) = 0.2 -> 20%
-    assert overview["percent"] == 20
+    assert o["active"] == 3 and o["running"] == 2 and o["queued"] == 1
+    assert o["done"] == 2 and o["error"] == 1
+    assert o["status"] == "running"
+    assert o["completed_in_run"] == 1  # only the in-run done job, not the historical one
+    assert o["total_in_run"] == 4      # 3 active + 1 completed-in-run
+    # (1 done + (0.5 + 0.1) running progress) / 4 = 0.4
+    assert o["percent"] == 40
 
 
 def test_overview_idle_when_nothing_active():
@@ -44,8 +51,8 @@ def test_overview_idle_when_nothing_active():
     session.add(Job(kind="upload", status="done", progress=1.0))
     session.commit()
 
-    overview = compute_jobs_overview(session)
+    o = compute_jobs_overview(session)
 
-    assert overview["active"] == 0
-    assert overview["status"] == "idle"
-    assert overview["percent"] == 100
+    assert o["active"] == 0
+    assert o["status"] == "idle"
+    assert o["percent"] == 100

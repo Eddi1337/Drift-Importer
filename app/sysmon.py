@@ -28,11 +28,31 @@ SAMPLE_INTERVAL_S = 10.0
 RETENTION = dt.timedelta(hours=6)
 _PRUNE_EVERY_S = 300.0
 
+# When the host's /proc is bind-mounted at /host/proc (see docker-compose), read
+# it instead of the container's. This matters for the network counters: the NAS
+# upload is NFS traffic in the HOST's network namespace, so the container's own
+# /proc/net/dev only shows tiny API/control traffic, not the real upload.
+_HOST_PROC = Path("/host/proc")
+
+
+def _proc_path(name: str) -> Path:
+    host = _HOST_PROC / name
+    return host if host.exists() else Path("/proc") / name
+
+
+def _net_dev_path() -> Path:
+    # /proc/net is a per-netns self-symlink, so reading the bind-mounted
+    # /host/proc/net/dev still resolves to OUR (container) namespace. Read host
+    # PID 1's net instead — it lives in the host's root network namespace, where
+    # the real interfaces (and the NFS upload traffic) are.
+    host = _HOST_PROC / "1" / "net" / "dev"
+    return host if host.exists() else Path("/proc/net/dev")
+
 
 def read_cpu_totals() -> Optional[tuple[int, int]]:
     """Return (total_jiffies, idle_jiffies) from /proc/stat, or None."""
     try:
-        first = Path("/proc/stat").read_text().splitlines()[0].split()
+        first = _proc_path("stat").read_text().splitlines()[0].split()
     except (OSError, IndexError):
         return None
     if not first or first[0] != "cpu":
@@ -45,7 +65,7 @@ def read_cpu_totals() -> Optional[tuple[int, int]]:
 def read_network_totals() -> Optional[tuple[int, int]]:
     """Return (rx_bytes, tx_bytes) summed over non-loopback interfaces, or None."""
     try:
-        lines = Path("/proc/net/dev").read_text().splitlines()[2:]
+        lines = _net_dev_path().read_text().splitlines()[2:]
     except OSError:
         return None
     rx = tx = 0

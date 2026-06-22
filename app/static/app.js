@@ -72,6 +72,20 @@ function fmtBytes(n) {
   return n.toFixed(1) + " " + u[i];
 }
 
+// Network throughput, shown in bits/sec (bps/kbps/Mbps/Gbps) like routers and
+// speed tests report it — input is bytes/sec.
+function fmtBitrate(bytesPerSec) {
+  let bits = (Number(bytesPerSec) || 0) * 8;
+  if (bits < 1000) return Math.round(bits) + " bps";
+  const u = ["kbps", "Mbps", "Gbps", "Tbps"];
+  let i = -1;
+  while (bits >= 1000 && i < u.length - 1) {
+    bits /= 1000;
+    i++;
+  }
+  return bits.toFixed(bits < 10 ? 2 : 1) + " " + u[i];
+}
+
 function fmtDur(s) {
   if (!s) return "";
   const m = Math.floor(s / 60);
@@ -158,23 +172,6 @@ function isActiveJob(job) {
   return job.status === "queued" || job.status === "running";
 }
 
-function isInflightJob(job) {
-  return job.status === "queued" || job.status === "running" || job.status === "paused";
-}
-
-// One overall percent across all in-flight (queued/running/paused) sub-jobs.
-// Matches the server-side compute_jobs_overview used for Home Assistant.
-function overallJobProgress(jobs) {
-  const inflight = (jobs || []).filter(isInflightJob);
-  if (!inflight.length) return { percent: null, inflight: 0, running: 0 };
-  const sum = inflight.reduce((acc, j) => acc + (Number(j.progress) || 0), 0);
-  return {
-    percent: Math.round((sum / inflight.length) * 100),
-    inflight: inflight.length,
-    running: inflight.filter(j => j.status === "running").length,
-  };
-}
-
 async function loadSettings() {
   try {
     appState.settings = await api.get("/api/settings");
@@ -194,7 +191,12 @@ function ensureGlobalJobPolling() {
 
 async function refreshGlobalJobs() {
   try {
-    appState.jobs = await api.get("/api/jobs?limit=100");
+    const [jobs, overview] = await Promise.all([
+      api.get("/api/jobs?limit=100"),
+      api.get("/api/jobs/overview"),
+    ]);
+    appState.jobs = jobs;
+    appState.jobsOverview = overview;
     renderJobBadge();
     renderLiveActivity();
     renderJobsPage();
@@ -207,13 +209,13 @@ async function refreshGlobalJobs() {
 function renderJobBadge() {
   const b = document.getElementById("jobBadge");
   if (!b) return;
-  const o = overallJobProgress(appState.jobs);
-  if (!o.inflight) {
+  const o = appState.jobsOverview;
+  if (!o || !o.active) {
     b.innerHTML = "";
     return;
   }
   b.innerHTML = `
-    <span class="badge-text">${o.running ? "●" : "○"} ${o.inflight} job${o.inflight === 1 ? "" : "s"}</span>
+    <span class="badge-text">${o.running ? "●" : "○"} ${o.active} job${o.active === 1 ? "" : "s"}</span>
     <span class="prog menu-progress"><span style="width:${o.percent}%"></span></span>
     <span class="badge-pct">${o.percent}%</span>
   `;
@@ -1418,23 +1420,24 @@ function renderJobsPage() {
   const controls = document.getElementById("jobBulkActions");
   if (!summary || !el) return;
   const jobs = appState.jobs;
-  const active = jobs.filter(isActiveJob);
-  const paused = jobs.filter(j => j.status === "paused");
-  const failed = jobs.filter(j => j.status === "error");
-  const completed = jobs.filter(j => j.status === "done");
-  renderJobsOverall(jobs);
+  // Counts come from the server overview (whole table), not the page of rows.
+  const o = appState.jobsOverview || {};
+  const queuedRunning = (o.running || 0) + (o.queued || 0);
+  renderJobsOverall();
   if (controls) {
+    const anyActive = (o.active || 0) > 0;
+    const anyPaused = (o.paused || 0) > 0;
     controls.innerHTML = `
-      <button class="ghost" onclick="pauseAllJobs()" ${active.length ? "" : "disabled"}>Pause all</button>
-      <button class="ghost" onclick="resumeAllJobs()" ${paused.length ? "" : "disabled"}>Resume all</button>
-      <button class="danger" onclick="stopAllJobs()" ${(active.length || paused.length) ? "" : "disabled"}>Stop all</button>
+      <button class="ghost" onclick="pauseAllJobs()" ${anyActive ? "" : "disabled"}>Pause all</button>
+      <button class="ghost" onclick="resumeAllJobs()" ${anyPaused ? "" : "disabled"}>Resume all</button>
+      <button class="danger" onclick="stopAllJobs()" ${(anyActive || anyPaused) ? "" : "disabled"}>Stop all</button>
     `;
   }
   summary.innerHTML = `
-    <div class="live-card"><div class="hint">Queued / running</div><div class="value">${active.length}</div></div>
-    <div class="live-card"><div class="hint">Paused</div><div class="value">${paused.length}</div></div>
-    <div class="live-card"><div class="hint">Completed</div><div class="value">${completed.length}</div></div>
-    <div class="live-card"><div class="hint">Errors</div><div class="value">${failed.length}</div></div>
+    <div class="live-card"><div class="hint">Queued / running</div><div class="value">${queuedRunning}</div></div>
+    <div class="live-card"><div class="hint">Paused</div><div class="value">${o.paused || 0}</div></div>
+    <div class="live-card"><div class="hint">Completed</div><div class="value">${o.done || 0}</div></div>
+    <div class="live-card"><div class="hint">Errors</div><div class="value">${o.error || 0}</div></div>
     <div class="live-card"><div class="hint">Latest</div><div>${esc(jobs[0] ? jobs[0].description : "No jobs yet")}</div></div>
   `;
   if (!jobs.length) {
@@ -1472,18 +1475,19 @@ function renderJobsPage() {
   restoreJobLogScroll(logScroll);
 }
 
-function renderJobsOverall(jobs) {
+function renderJobsOverall() {
   const el = document.getElementById("jobsOverall");
   if (!el) return;
-  const o = overallJobProgress(jobs);
-  if (!o.inflight) {
+  const o = appState.jobsOverview;
+  if (!o || !o.active) {
     el.innerHTML = "";
     return;
   }
+  const ofN = o.total_in_run ? ` · ${o.completed_in_run} of ${o.total_in_run} done` : "";
   el.innerHTML = `
     <div class="jobs-overall-head">
       <strong>Overall progress</strong>
-      <span class="hint">${o.running} running · ${o.inflight} job${o.inflight === 1 ? "" : "s"} in progress</span>
+      <span class="hint">${o.running} running · ${o.active} in progress${ofN}</span>
       <span class="jobs-overall-pct">${o.percent}%</span>
     </div>
     <div class="prog job-progress jobs-overall-bar"><span style="width:${o.percent}%"></span></div>
@@ -1833,20 +1837,20 @@ function renderSystemStats(system) {
         </div>
         <div class="network-graphs">
           <div>
-            <div class="metric-row"><span>Down <strong>${fmtBytes(network.rx_bytes_per_s || 0)}/s</strong></span></div>
+            <div class="metric-row"><span>Down <strong>${fmtBitrate(network.rx_bytes_per_s || 0)}</strong></span></div>
             ${renderSparkline(rxHistory, "rx-line", {
               title: "Download trend",
-              format: value => `${fmtBytes(value)}/s`,
-              yUnit: "per second",
+              format: value => fmtBitrate(value),
+              yUnit: "bitrate",
               xLabels: [windowLabel, "now"],
             })}
           </div>
           <div>
-            <div class="metric-row"><span>Up <strong>${fmtBytes(network.tx_bytes_per_s || 0)}/s</strong></span></div>
+            <div class="metric-row"><span>Up <strong>${fmtBitrate(network.tx_bytes_per_s || 0)}</strong></span></div>
             ${renderSparkline(txHistory, "tx-line", {
               title: "Upload trend",
-              format: value => `${fmtBytes(value)}/s`,
-              yUnit: "per second",
+              format: value => fmtBitrate(value),
+              yUnit: "bitrate",
               xLabels: [windowLabel, "now"],
             })}
           </div>

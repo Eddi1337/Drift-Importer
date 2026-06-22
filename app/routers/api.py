@@ -12,7 +12,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from ..crypto import encrypt
@@ -21,7 +21,7 @@ from ..database import get_session
 from ..destinations import get_backend
 from ..devices import detect_devices, scan_media_files
 from ..media import classify, make_thumbnail
-from ..jobs import get_manager
+from ..jobs import get_manager, jobs_overview
 from ..models import (
     Album,
     AlbumItem,
@@ -1254,17 +1254,47 @@ def job_log_dict(row: JobLog) -> dict:
     }
 
 
+@router.get("/jobs/overview")
+def jobs_overview_endpoint(session: Session = Depends(get_session)):
+    """Aggregate counts + overall progress across ALL jobs (not just a page)."""
+    return jobs_overview(session)
+
+
 @router.get("/jobs")
 def list_jobs(
-    limit: int = 50,
+    limit: int = 100,
     include_dismissed: bool = False,
     session: Session = Depends(get_session),
 ):
-    q = session.query(Job)
-    if not include_dismissed:
-        q = q.filter(Job.dismissed_at.is_(None))
-    jobs = q.order_by(Job.created_at.desc()).limit(limit).all()
-    return [job_dict(j) for j in jobs]
+    # The worker runs the OLDEST queued job, so a plain newest-first + limit
+    # hides the in-progress job behind a large backlog. Surface active jobs
+    # first (running, then paused, then the next queued in run order), then
+    # back-fill with the most recent finished jobs.
+    def base():
+        q = session.query(Job)
+        return q if include_dismissed else q.filter(Job.dismissed_at.is_(None))
+
+    terminal_reserve = 25
+    active_limit = max(20, limit - terminal_reserve)
+    status_rank = case((Job.status == "running", 0), (Job.status == "paused", 1), else_=2)
+    active = (
+        base()
+        .filter(Job.status.in_(("running", "paused", "queued")))
+        .order_by(status_rank, Job.created_at.asc())
+        .limit(active_limit)
+        .all()
+    )
+    terminal_room = max(0, limit - len(active))
+    terminal = (
+        base()
+        .filter(Job.status.in_(("done", "error", "cancelled")))
+        .order_by(Job.created_at.desc())
+        .limit(terminal_room)
+        .all()
+        if terminal_room
+        else []
+    )
+    return [job_dict(j) for j in active] + [job_dict(j) for j in terminal]
 
 
 @router.get("/jobs/{job_id}/logs")

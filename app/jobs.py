@@ -15,14 +15,88 @@ import threading
 import time
 from typing import Callable, Dict, Optional
 
+from sqlalchemy import func
+
 from .config import get_settings
 from .database import session_scope
 from .models import Job, JobLog, utcnow
 
 log = logging.getLogger("drift.jobs")
 
+ACTIVE_STATES = ("queued", "running", "paused")
+
 # kind -> handler(job_id, payload, ctx)
 _HANDLERS: Dict[str, Callable] = {}
+
+
+def jobs_overview(session) -> dict:
+    """Aggregate job state across the whole table (not just a page of rows).
+
+    Progress is count-based over the *current run* — the batch of jobs created
+    since the oldest still-active job — i.e. completed / total. A simple mean of
+    active jobs' progress would sit near 0% the whole time a big queue drains,
+    because freshly-queued jobs are all at 0%.
+    """
+    counts = dict(
+        session.query(Job.status, func.count())
+        .filter(Job.dismissed_at.is_(None))
+        .group_by(Job.status)
+        .all()
+    )
+    running = counts.get("running", 0)
+    queued = counts.get("queued", 0)
+    paused = counts.get("paused", 0)
+    active = running + queued + paused
+
+    oldest_active = (
+        session.query(func.min(Job.created_at))
+        .filter(Job.status.in_(ACTIVE_STATES), Job.dismissed_at.is_(None))
+        .scalar()
+    )
+    if oldest_active is not None and active:
+        done_in_run = (
+            session.query(func.count())
+            .filter(
+                Job.status == "done",
+                Job.dismissed_at.is_(None),
+                Job.created_at >= oldest_active,
+            )
+            .scalar()
+        ) or 0
+        running_progress = (
+            session.query(func.coalesce(func.sum(Job.progress), 0.0))
+            .filter(Job.status == "running", Job.dismissed_at.is_(None))
+            .scalar()
+        ) or 0.0
+        total_run = active + done_in_run
+        progress = (done_in_run + float(running_progress)) / total_run if total_run else 1.0
+    else:
+        done_in_run = 0
+        progress = 1.0
+
+    if running:
+        status = "running"
+    elif queued:
+        status = "queued"
+    elif paused:
+        status = "paused"
+    else:
+        status = "idle"
+
+    return {
+        "active": active,
+        "running": running,
+        "queued": queued,
+        "paused": paused,
+        "done": counts.get("done", 0),
+        "error": counts.get("error", 0),
+        "cancelled": counts.get("cancelled", 0),
+        "completed_in_run": done_in_run,
+        "total_in_run": active + done_in_run,
+        "progress": progress,
+        "percent": round(progress * 100),
+        "status": status,
+    }
 
 
 def handler(kind: str):

@@ -21,6 +21,9 @@ services:
       # The camera (DCIM) is usually auto-mounted under /media on the host.
       - /media:/media:rslave
       - /mnt:/mnt:rslave
+      # Host /proc so network throughput reflects the host's real traffic (the
+      # NFS upload runs in the host net namespace, not the container's).
+      - /proc:/host/proc:ro
       # mem_limit mirrors the Pi Zero 2 W budget; raise on bigger hardware.
     mem_limit: 400m
 

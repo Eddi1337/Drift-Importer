@@ -20,6 +20,9 @@ services:
       # Camera (auto-mounted under /media) and any mounted NAS.
       - /media:/media:rslave
       - /mnt:/mnt:rslave
+      # Host /proc so the stats page reports real network throughput: the NFS
+      # upload runs in the host's net namespace, invisible in the container's.
+      - /proc:/host/proc:ro
     # Pi Zero 2 W has ~425 MB RAM total; keep the container well under that.
     mem_limit: 256m
 
