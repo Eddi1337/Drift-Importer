@@ -62,21 +62,9 @@ def publish_state(
         log.exception("Failed to publish HA state for %s", entity_id(settings, entity_suffix))
 
 
-def list_entity_ids(settings: AppSettings) -> list[str]:
-    """Return all entity_ids currently in HA's state machine (best effort)."""
-    if not _configured(settings):
-        return []
-    try:
-        with httpx.Client(timeout=10) as client:
-            resp = client.get(f"{_base_url(settings)}/api/states", headers=_headers(settings))
-            resp.raise_for_status()
-            return [str(row.get("entity_id", "")) for row in resp.json()]
-    except Exception:  # noqa: BLE001
-        log.exception("Failed to list HA states")
-        return []
-
-
 def delete_entity(settings: AppSettings, full_entity_id: str) -> bool:
+    """Delete a state from HA. Returns True only when one was actually removed
+    (200); a 404 means it wasn't there, which is fine but not counted."""
     if not _configured(settings):
         return False
     try:
@@ -85,24 +73,26 @@ def delete_entity(settings: AppSettings, full_entity_id: str) -> bool:
                 f"{_base_url(settings)}/api/states/{full_entity_id}",
                 headers=_headers(settings),
             )
-            # 200 = removed, 404 = already gone; both are fine.
-            return resp.status_code in (200, 404)
+            return resp.status_code == 200
     except Exception:  # noqa: BLE001
-        log.exception("Failed to delete HA state %s", full_entity_id)
+        log.warning("Failed to delete HA state %s", full_entity_id)
         return False
 
 
-def prune_legacy_job_entities(settings: AppSettings) -> int:
+def prune_legacy_job_entities(settings: AppSettings, job_ids) -> int:
     """Remove the old per-upload-job (``..._job_<id>``) and ``..._uploads``
-    entities that earlier versions published, leaving only the overall ones."""
+    entities that earlier versions published, leaving only the overall ones.
+
+    Deletes specific entities by id (we know the job ids) rather than listing
+    all of HA's states — some HA instances 500 on ``GET /api/states``.
+    """
     if not _configured(settings):
         return 0
     prefix = _slug(settings.ha_entity_prefix or "drift_import")
-    job_prefix = f"sensor.{prefix}_job_"
-    uploads_id = f"sensor.{prefix}_uploads"
     removed = 0
-    for eid in list_entity_ids(settings):
-        if eid.startswith(job_prefix) or eid == uploads_id:
-            if delete_entity(settings, eid):
-                removed += 1
+    if delete_entity(settings, f"sensor.{prefix}_uploads"):
+        removed += 1
+    for job_id in job_ids:
+        if delete_entity(settings, f"sensor.{prefix}_job_{job_id}"):
+            removed += 1
     return removed

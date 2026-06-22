@@ -92,6 +92,16 @@ class HAPublisher:
             except Exception:  # noqa: BLE001
                 log.exception("HA publish tick failed")
 
+    def _prune_legacy(self, prefs) -> None:
+        try:
+            with session_scope() as s:
+                job_ids = [row[0] for row in s.query(Job.id).filter(Job.kind == "upload").all()]
+            removed = ha.prune_legacy_job_entities(prefs, job_ids)
+            if removed:
+                log.info("Pruned %d legacy HA job entities", removed)
+        except Exception:  # noqa: BLE001
+            log.exception("Legacy HA entity prune failed")
+
     def _tick(self) -> None:
         with session_scope() as s:
             prefs = get_app_settings(s)
@@ -100,12 +110,13 @@ class HAPublisher:
             overview = compute_jobs_overview(s)
 
         # Clear out the legacy per-job/uploads entities once, the first time we
-        # find HA configured.
+        # find HA configured. Runs off the publish path because it can be many
+        # deletes (one per historical upload job).
         if not self._pruned:
-            removed = ha.prune_legacy_job_entities(prefs)
-            if removed:
-                log.info("Pruned %d legacy HA job entities", removed)
             self._pruned = True
+            threading.Thread(
+                target=self._prune_legacy, args=(prefs,), name="drift-ha-prune", daemon=True
+            ).start()
 
         now = time.monotonic()
         if now >= self._next_device_scan:
