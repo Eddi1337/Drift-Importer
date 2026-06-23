@@ -39,6 +39,7 @@ from ..models import (
 from ..settings_store import app_settings_dict, encode_destination_ids, get_app_settings, touch_settings
 from ..streaming import stream_file
 from ..sysmon import get_monitor
+from ..tasks import enqueue_device_import
 
 router = APIRouter()
 
@@ -549,30 +550,27 @@ def import_device(req: ImportDeviceReq, session: Session = Depends(get_session))
     root = Path(req.dcim_path)
     if not root.exists():
         raise HTTPException(400, "DCIM path does not exist")
-    paths = [str(p) for p in scan_media_files(root)]
-    if req.paths:
-        requested = {str(Path(p)) for p in req.paths}
-        paths = [p for p in paths if p in requested and Path(p).is_relative_to(root)]
-    if not paths:
-        raise HTTPException(400, "No media files found on device")
     auto_upload = prefs.auto_upload_on_import if req.auto_upload is None else req.auto_upload
     destination_ids = req.destination_ids
     if auto_upload and destination_ids is None:
         destination_ids = app_settings_dict(prefs)["default_destination_ids"]
-    job_id = get_manager().enqueue(
-        "import",
-        description=f"Import {len(paths)} files from {root.name}",
-        payload={
-            "paths": paths,
-            "source": "device",
-            "auto_upload": auto_upload,
-            "destination_ids": destination_ids,
-            "group_uploads_by_month": req.group_uploads_by_month,
-        },
+    # A whole-device import de-dupes against any pending import so a reconnect (or
+    # a double click) doesn't pile up redundant work. An explicit file selection
+    # is always honoured.
+    job_id, file_count = enqueue_device_import(
+        root,
+        paths=req.paths,
+        auto_upload=auto_upload,
+        destination_ids=destination_ids,
+        group_uploads_by_month=req.group_uploads_by_month,
+        dedup=not req.paths,
     )
+    if file_count == 0:
+        raise HTTPException(400, "No media files found on device")
     return {
         "job_id": job_id,
-        "file_count": len(paths),
+        "file_count": file_count,
+        "already_queued": job_id is None,
         "auto_upload": auto_upload,
         "destination_ids": destination_ids,
         "group_uploads_by_month": req.group_uploads_by_month,

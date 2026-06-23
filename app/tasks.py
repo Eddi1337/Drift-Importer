@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import time
 from pathlib import Path
@@ -13,6 +14,7 @@ from .config import get_settings
 from .database import session_scope
 from .destinations import get_backend
 from .destinations.base import join_remote, render_remote_dir
+from .devices import scan_media_files
 from .jobs import JobContext, handler
 from .media import (
     capture_time_or_mtime,
@@ -22,7 +24,7 @@ from .media import (
     probe,
 )
 from .merge import merge_clips
-from .models import Destination, MediaItem, UploadedClip, UploadState, utcnow
+from .models import Destination, Job, MediaItem, UploadedClip, UploadState, utcnow
 from .timestamps import set_file_mtime, shift_datetime, write_metadata_creation_time
 
 log = logging.getLogger("drift.tasks")
@@ -175,9 +177,17 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
             log.exception("Failed to import %s", path)
             ctx.set_progress((i + 1) / total, f"Failed {path.name}")
     new_ids = list(dict.fromkeys(new_ids))
-    # Thumbnails as a follow-up so import returns fast.
-    get_manager_enqueue("thumbnail", {"media_ids": new_ids})
-    ctx.log(f"Queued thumbnails for {len(new_ids)} imported files", progress=1.0)
+    # Thumbnails as a follow-up so import returns fast. Only queue the items that
+    # don't already have a thumbnail on disk: a device re-import (e.g. the camera
+    # was reconnected) would otherwise regenerate every thumbnail, burning ffmpeg
+    # time and starving uploads.
+    thumb_ids = _media_needing_thumbnails(new_ids)
+    if thumb_ids:
+        get_manager_enqueue("thumbnail", {"media_ids": thumb_ids})
+    ctx.log(
+        f"Queued thumbnails for {len(thumb_ids)} of {len(new_ids)} imported files",
+        progress=1.0,
+    )
     # Optionally queue uploads (the "Upload Everything" flow).
     if payload.get("auto_upload"):
         dest_ids = payload.get("destination_ids")
@@ -202,7 +212,18 @@ def handle_thumbnail(job_id: int, payload: dict, ctx: JobContext) -> None:
                 continue
             path = Path(item.path)
             kind = item.kind
+            has_thumb = bool(item.thumbnail)
         out = _thumb_path_for(mid)
+        if out.exists():
+            # Already generated (e.g. by an earlier import of the same device).
+            # Don't re-run ffmpeg; just make sure the row points at it.
+            if not has_thumb:
+                with session_scope() as s:
+                    item = s.get(MediaItem, mid)
+                    if item:
+                        item.thumbnail = str(out)
+            ctx.set_progress((i + 1) / total, f"Thumbnail already exists for {path.name}")
+            continue
         ctx.set_progress(i / total, f"Generating thumbnail for {path.name}")
         with ctx.ffmpeg_semaphore:
             ok = make_thumbnail(path, kind, out)
@@ -619,6 +640,94 @@ def get_manager_enqueue(kind: str, payload: dict, description: str = "") -> int:
     from .jobs import get_manager
 
     return get_manager().enqueue(kind, description=description or kind, payload=payload)
+
+
+def _media_needing_thumbnails(media_ids: list[int]) -> list[int]:
+    """Filter to media that have no thumbnail on disk yet (order preserved)."""
+    if not media_ids:
+        return []
+    with session_scope() as s:
+        thumbs = dict(
+            s.query(MediaItem.id, MediaItem.thumbnail)
+            .filter(MediaItem.id.in_(media_ids))
+            .all()
+        )
+    need: list[int] = []
+    for mid in media_ids:
+        if mid not in thumbs:
+            continue
+        existing = thumbs[mid]
+        if existing and Path(existing).exists():
+            continue
+        if _thumb_path_for(mid).exists():
+            continue
+        need.append(mid)
+    return need
+
+
+def _import_already_queued(dcim_root: str) -> bool:
+    """True if a queued/running import for the same device is already pending.
+
+    A camera reconnect (or a stray client poll) used to enqueue a fresh import
+    every time it was detected, piling up redundant work. We de-dupe against the
+    ``dcim_root`` stored in each import job's payload.
+    """
+    with session_scope() as s:
+        rows = (
+            s.query(Job.payload)
+            .filter(Job.kind == "import", Job.status.in_(("queued", "running")))
+            .all()
+        )
+    for (payload_json,) in rows:
+        if not payload_json:
+            continue
+        try:
+            data = json.loads(payload_json)
+        except (TypeError, ValueError):
+            continue
+        if data.get("dcim_root") == dcim_root:
+            return True
+    return False
+
+
+def enqueue_device_import(
+    dcim_root: Path,
+    *,
+    paths: list[str] | None = None,
+    auto_upload: bool = False,
+    destination_ids: list[int] | None = None,
+    group_uploads_by_month: bool = False,
+    dedup: bool = True,
+) -> tuple[int | None, int]:
+    """Enqueue an import of a connected device, de-duplicating reconnects.
+
+    Returns ``(job_id, file_count)``. ``job_id`` is ``None`` when there are no
+    files to import, or when ``dedup`` is set and an import for the same device
+    is already queued/running.
+    """
+    root_str = str(dcim_root)
+    found = [str(p) for p in scan_media_files(dcim_root)]
+    if paths:
+        requested = {str(Path(p)) for p in paths}
+        found = [p for p in found if p in requested]
+    if not found:
+        return None, 0
+    if dedup and _import_already_queued(root_str):
+        log.info("Skipping duplicate device import for %s (already queued)", root_str)
+        return None, len(found)
+    job_id = get_manager_enqueue(
+        "import",
+        {
+            "paths": found,
+            "source": "device",
+            "dcim_root": root_str,
+            "auto_upload": auto_upload,
+            "destination_ids": destination_ids,
+            "group_uploads_by_month": group_uploads_by_month,
+        },
+        description=f"Import {len(found)} files from {dcim_root.name}",
+    )
+    return job_id, len(found)
 
 
 class UploadPlanRow(NamedTuple):

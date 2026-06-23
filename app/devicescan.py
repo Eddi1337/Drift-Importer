@@ -10,11 +10,13 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
 from .database import session_scope
 from .devices import detect_devices, scan_media_files
 from .models import Destination
+from .settings_store import app_settings_dict, get_app_settings
 
 log = logging.getLogger("drift.devices")
 
@@ -42,6 +44,10 @@ class DeviceMonitor:
         self._scanned = False
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        # DCIM paths already auto-imported during their current connection. A
+        # path is forgotten when the device disconnects, so a reconnect imports
+        # again, but a steady connection only triggers once.
+        self._auto_imported: set[str] = set()
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="drift-devices", daemon=True)
@@ -74,8 +80,45 @@ class DeviceMonitor:
             with self._lock:
                 self._cache = cache
                 self._scanned = True
+            self._maybe_auto_import(cache)
         except Exception:  # noqa: BLE001
             log.exception("Device scan failed")
+
+    def _maybe_auto_import(self, devices: list[dict]) -> None:
+        """Auto-import each connected device once per connection, server-side."""
+        current = {d["dcim_path"] for d in devices if d.get("dcim_path")}
+        # Forget disconnected devices so a reconnect imports again.
+        self._auto_imported &= current
+        pending = current - self._auto_imported
+        if not pending:
+            return
+        with session_scope() as s:
+            prefs = get_app_settings(s)
+            if not prefs.auto_import_on_connect:
+                return
+            auto_upload = bool(prefs.auto_upload_on_import)
+            dest_ids = app_settings_dict(prefs)["default_destination_ids"] if auto_upload else None
+        # Imported lazily: tasks imports devices, and importing it at module load
+        # would create a cycle through the job handlers.
+        from .tasks import enqueue_device_import
+
+        for dcim in pending:
+            try:
+                job_id, count = enqueue_device_import(
+                    Path(dcim),
+                    auto_upload=auto_upload,
+                    destination_ids=dest_ids,
+                    dedup=True,
+                )
+            except Exception:  # noqa: BLE001
+                log.exception("Auto-import failed for %s", dcim)
+                continue
+            if count == 0:
+                # Nothing to import yet (card still settling); retry next scan.
+                continue
+            self._auto_imported.add(dcim)
+            if job_id:
+                log.info("Auto-import queued %s files from %s (job %s)", count, dcim, job_id)
 
 
 _monitor: Optional[DeviceMonitor] = None

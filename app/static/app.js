@@ -25,8 +25,6 @@ const appState = {
   jobs: [],
   expandedJobs: new Set(),
   jobLogs: {},
-  seenDevices: new Set(),
-  autoImportTriggered: new Set(),
   folderBrowsers: {},
   cameraFiles: [],
   cameraFileSelection: new Set(),
@@ -313,19 +311,8 @@ async function refreshDevices() {
         </div>
       </div>
     `;
-    devs.forEach(d => {
-      const isNew = !appState.seenDevices.has(d.path);
-      appState.seenDevices.add(d.path);
-      if (
-        isNew &&
-        d.dcim_path &&
-        appState.settings?.auto_import_on_connect &&
-        !appState.autoImportTriggered.has(d.path)
-      ) {
-        appState.autoImportTriggered.add(d.path);
-        importDevice(d.dcim_path, undefined, true);
-      }
-    });
+    // Auto-import-on-connect is handled server-side by the device monitor so it
+    // fires exactly once per physical connection (not on every page load/poll).
     if (primary.dcim_path && primary.dcim_path !== appState.currentDcimPath) {
       await loadCameraFiles(primary.dcim_path);
     }
@@ -343,10 +330,14 @@ async function importDevice(dcim, autoUpload, quiet = false, paths = null, desti
     if (opts.groupUploadsByMonth) body.group_uploads_by_month = true;
     const r = await api.post("/api/import-device", body);
     if (!quiet) {
-      const uploadText = r.auto_upload
-        ? (r.group_uploads_by_month ? " + monthly upload batches" : " + upload")
-        : "";
-      toast(`Queued import of ${r.file_count} files${uploadText}`);
+      if (r.already_queued) {
+        toast(`Import of ${r.file_count} files is already queued`);
+      } else {
+        const uploadText = r.auto_upload
+          ? (r.group_uploads_by_month ? " + monthly upload batches" : " + upload")
+          : "";
+        toast(`Queued import of ${r.file_count} files${uploadText}`);
+      }
     }
   } catch (e) {
     toast("Import failed: " + e.message);
