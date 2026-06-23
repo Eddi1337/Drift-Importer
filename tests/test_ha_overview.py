@@ -46,6 +46,33 @@ def test_overview_progress_is_count_based_over_the_current_run():
     assert o["percent"] == 40
 
 
+def test_lingering_paused_job_does_not_pin_progress_near_100():
+    """Regression: a paused job left over from an earlier flood used to anchor the
+    'current run' back over thousands of finished jobs, so a freshly connected
+    batch read ~99% instead of ~0%."""
+    session = _session()
+    flood = dt.datetime(2026, 6, 22, 9, 0, 0)
+    # An earlier batch: one job the user paused, plus 200 jobs that completed.
+    session.add(Job(kind="upload", status="paused", progress=0.0, created_at=flood))
+    for i in range(200):
+        t = flood + dt.timedelta(seconds=i + 1)
+        session.add(Job(kind="thumbnail", status="done", progress=1.0,
+                        created_at=t, finished_at=t + dt.timedelta(seconds=1)))
+    # Hours later the queue has drained; a new card is connected -> fresh jobs.
+    fresh = flood + dt.timedelta(hours=3)
+    for i in range(5):
+        session.add(Job(kind="upload", status="queued", progress=0.0,
+                        created_at=fresh + dt.timedelta(seconds=i)))
+    session.commit()
+
+    o = compute_jobs_overview(session)
+
+    # The new batch hasn't uploaded anything yet.
+    assert o["percent"] == 0
+    assert o["completed_in_run"] == 0
+    assert o["total_in_run"] == 5
+
+
 def test_overview_idle_when_nothing_active():
     session = _session()
     session.add(Job(kind="upload", status="done", progress=1.0))

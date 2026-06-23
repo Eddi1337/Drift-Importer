@@ -15,7 +15,7 @@ import threading
 import time
 from typing import Callable, Dict, Optional
 
-from sqlalchemy import func
+from sqlalchemy import case, func
 
 from .config import get_settings
 from .database import session_scope
@@ -25,17 +25,70 @@ log = logging.getLogger("drift.jobs")
 
 ACTIVE_STATES = ("queued", "running", "paused")
 
+# Only look this far back when reconstructing the current run; a single run
+# realistically never spans longer, and it bounds the scan as history grows.
+RUN_LOOKBACK = dt.timedelta(days=30)
+
 # kind -> handler(job_id, payload, ctx)
 _HANDLERS: Dict[str, Callable] = {}
+
+
+def _naive(value: Optional[dt.datetime]) -> Optional[dt.datetime]:
+    if value is not None and value.tzinfo is not None:
+        return value.replace(tzinfo=None)
+    return value
+
+
+def current_run_start(session, now: Optional[dt.datetime] = None) -> Optional[dt.datetime]:
+    """``created_at`` where the current contiguous run of work began.
+
+    A "run" is a stretch of jobs whose activity overlaps with no idle gap: while
+    at least one job is queued or running the run continues; the moment the queue
+    fully drains, the next job to arrive starts a fresh run. Detecting the gap
+    (rather than anchoring on the oldest still-active job) keeps a lingering job
+    from an old batch — most importantly a *paused* one, which a user can leave
+    held indefinitely — from dragging the window back over thousands of long-since
+    finished jobs and pinning the progress bar near 100%.
+
+    Paused jobs are treated as transparent (they neither hold the queue busy nor
+    anchor a run), since they're explicitly set aside by the user.
+    """
+    now = _naive(now) or dt.datetime.utcnow()
+    cutoff = now - RUN_LOOKBACK
+    rows = (
+        session.query(Job.created_at, Job.finished_at, Job.status)
+        .filter(Job.dismissed_at.is_(None), Job.created_at >= cutoff)
+        .order_by(Job.created_at)
+        .all()
+    )
+    run_start: Optional[dt.datetime] = None
+    busy_until: Optional[dt.datetime] = None
+    for created, finished, status in rows:
+        created = _naive(created)
+        if created is None:
+            continue
+        if status in ("running", "queued"):
+            busy_end = dt.datetime.max          # active: queue never drains here
+        elif status == "paused":
+            busy_end = created                  # transparent / user-held
+        else:                                   # done | error | cancelled
+            busy_end = _naive(finished) or created
+        if run_start is None or created > busy_until:
+            # First job, or the queue had drained before this one was created.
+            run_start = created
+            busy_until = busy_end
+        elif busy_end > busy_until:
+            busy_until = busy_end
+    return run_start
 
 
 def jobs_overview(session) -> dict:
     """Aggregate job state across the whole table (not just a page of rows).
 
-    Progress is count-based over the *current run* — the batch of jobs created
-    since the oldest still-active job — i.e. completed / total. A simple mean of
-    active jobs' progress would sit near 0% the whole time a big queue drains,
-    because freshly-queued jobs are all at 0%.
+    The status counts are global (they drive the jobs-page summary boxes), but
+    the progress bar is scoped to the *current run* (see ``current_run_start``)
+    and is count-based — completed / total — so a fresh batch reads ~0% even when
+    the table is full of finished jobs from earlier runs.
     """
     counts = dict(
         session.query(Job.status, func.count())
@@ -48,30 +101,33 @@ def jobs_overview(session) -> dict:
     paused = counts.get("paused", 0)
     active = running + queued + paused
 
-    oldest_active = (
-        session.query(func.min(Job.created_at))
-        .filter(Job.status.in_(ACTIVE_STATES), Job.dismissed_at.is_(None))
-        .scalar()
-    )
-    if oldest_active is not None and active:
-        done_in_run = (
-            session.query(func.count())
-            .filter(
-                Job.status == "done",
-                Job.dismissed_at.is_(None),
-                Job.created_at >= oldest_active,
+    run_start = current_run_start(session)
+    if run_start is not None:
+        run_running, run_queued, run_paused, run_done = (
+            session.query(
+                func.coalesce(func.sum(case((Job.status == "running", 1), else_=0)), 0),
+                func.coalesce(func.sum(case((Job.status == "queued", 1), else_=0)), 0),
+                func.coalesce(func.sum(case((Job.status == "paused", 1), else_=0)), 0),
+                func.coalesce(func.sum(case((Job.status == "done", 1), else_=0)), 0),
             )
-            .scalar()
-        ) or 0
+            .filter(Job.dismissed_at.is_(None), Job.created_at >= run_start)
+            .one()
+        )
         running_progress = (
             session.query(func.coalesce(func.sum(Job.progress), 0.0))
-            .filter(Job.status == "running", Job.dismissed_at.is_(None))
+            .filter(
+                Job.status == "running",
+                Job.dismissed_at.is_(None),
+                Job.created_at >= run_start,
+            )
             .scalar()
         ) or 0.0
-        total_run = active + done_in_run
+        done_in_run = int(run_done)
+        total_run = int(run_running) + int(run_queued) + int(run_paused) + done_in_run
         progress = (done_in_run + float(running_progress)) / total_run if total_run else 1.0
     else:
         done_in_run = 0
+        total_run = 0
         progress = 1.0
 
     if running:
@@ -92,7 +148,7 @@ def jobs_overview(session) -> dict:
         "error": counts.get("error", 0),
         "cancelled": counts.get("cancelled", 0),
         "completed_in_run": done_in_run,
-        "total_in_run": active + done_in_run,
+        "total_in_run": total_run,
         "progress": progress,
         "percent": round(progress * 100),
         "status": status,
