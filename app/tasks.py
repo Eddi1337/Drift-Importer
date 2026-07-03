@@ -40,7 +40,8 @@ def import_one(session, path: Path, source: str, derived: bool = False) -> Media
     path_str = str(path)
     existing = session.query(MediaItem).filter(MediaItem.path == path_str).first()
     if existing:
-        _refresh_metadata_from_file(existing, path)
+        if _needs_metadata_refresh(existing, path):
+            _refresh_metadata_from_file(existing, path)
         return existing
     kind = classify(path) or "video"
     info = probe(path)
@@ -77,6 +78,25 @@ def import_one(session, path: Path, source: str, derived: bool = False) -> Media
             return existing
         raise
     return item
+
+
+def _needs_metadata_refresh(item: MediaItem, path: Path) -> bool:
+    """Whether a known file actually needs a (slow) ffprobe re-inspection.
+
+    Camera files are immutable: if the size on disk still matches the indexed
+    size and the probe-derived fields were captured, re-probing can't learn
+    anything new. Skipping it keeps a card re-import (every camera reconnect)
+    down to one stat per clip instead of one ffprobe subprocess per clip.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return True
+    if item.size_bytes != size:
+        return True
+    if item.kind == "video":
+        return item.duration_s is None or item.codec is None
+    return item.width is None
 
 
 def _refresh_metadata_from_file(item: MediaItem, path: Path) -> None:
@@ -148,7 +168,16 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
     # a device exposes nested/duplicate DCIM mounts.
     paths: List[str] = list(dict.fromkeys(payload.get("paths", [])))
     total = len(paths) or 1
+    auto_upload = bool(payload.get("auto_upload"))
+    group_by_month = bool(payload.get("group_uploads_by_month"))
+    dest_ids = payload.get("destination_ids")
+    # New files are tracked separately from already-known ones: a fresh clip's
+    # upload is enqueued the moment it's imported (so transfers start while the
+    # rest of the card is still being indexed), and re-verification uploads of
+    # old clips queue strictly after all the new footage.
     new_ids: List[int] = []
+    known_ids: List[int] = []
+    seen_ids: set[int] = set()
     ctx.log(f"Preparing to import {len(paths)} media files")
     for i, p in enumerate(paths):
         path = Path(p)
@@ -160,8 +189,19 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
         # UNIQUE constraint on media_items.path) must not abort the whole job.
         try:
             with session_scope() as s:
+                was_known = (
+                    s.query(MediaItem.id).filter(MediaItem.path == str(path)).first()
+                    is not None
+                )
                 item = import_one(s, path, source=payload.get("source", "device"))
-                new_ids.append(item.id)
+                item_id = item.id
+            if item_id in seen_ids:
+                ctx.set_progress((i + 1) / total, f"Already imported {path.name}")
+                continue
+            seen_ids.add(item_id)
+            (known_ids if was_known else new_ids).append(item_id)
+            if auto_upload and not group_by_month and not was_known:
+                enqueue_upload_jobs([item_id], dest_ids, description_prefix="Auto-upload")
             ctx.set_progress((i + 1) / total, f"Imported {path.name}")
         except IntegrityError:
             # Already imported by a concurrent job / earlier run — reuse it.
@@ -169,32 +209,33 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
                 existing = (
                     s.query(MediaItem).filter(MediaItem.path == str(path)).first()
                 )
-                if existing:
-                    new_ids.append(existing.id)
+                if existing and existing.id not in seen_ids:
+                    seen_ids.add(existing.id)
+                    known_ids.append(existing.id)
             log.info("Skipped already-imported file %s", path)
             ctx.set_progress((i + 1) / total, f"Already imported {path.name}")
         except Exception:  # noqa: BLE001
             log.exception("Failed to import %s", path)
             ctx.set_progress((i + 1) / total, f"Failed {path.name}")
-    new_ids = list(dict.fromkeys(new_ids))
+    all_ids = new_ids + known_ids
     # Thumbnails as a follow-up so import returns fast. Only queue the items that
     # don't already have a thumbnail on disk: a device re-import (e.g. the camera
     # was reconnected) would otherwise regenerate every thumbnail, burning ffmpeg
     # time and starving uploads.
-    thumb_ids = _media_needing_thumbnails(new_ids)
+    thumb_ids = _media_needing_thumbnails(all_ids)
     if thumb_ids:
         get_manager_enqueue("thumbnail", {"media_ids": thumb_ids})
     ctx.log(
-        f"Queued thumbnails for {len(thumb_ids)} of {len(new_ids)} imported files",
+        f"Queued thumbnails for {len(thumb_ids)} of {len(all_ids)} imported files",
         progress=1.0,
     )
-    # Optionally queue uploads (the "Upload Everything" flow).
-    if payload.get("auto_upload"):
-        dest_ids = payload.get("destination_ids")
-        if payload.get("group_uploads_by_month"):
-            enqueue_upload_jobs_by_month(new_ids, dest_ids, description_prefix="Auto-upload")
+    # Optionally queue uploads (the "Upload Everything" flow). New clips were
+    # already enqueued inline above; only the month-grouped flow batches here.
+    if auto_upload:
+        if group_by_month:
+            enqueue_upload_jobs_by_month(all_ids, dest_ids, description_prefix="Auto-upload")
         else:
-            enqueue_upload_jobs(new_ids, dest_ids, description_prefix="Auto-upload")
+            enqueue_upload_jobs(known_ids, dest_ids, description_prefix="Auto-upload")
 
 
 # --- thumbnail --------------------------------------------------------------
@@ -355,7 +396,8 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                 ctx.set_progress(done / total, f"Skipped missing media {mid} for destination {did}")
                 continue
             local_path_obj = Path(item.path)
-            _refresh_metadata_from_file(item, local_path_obj)
+            if _needs_metadata_refresh(item, local_path_obj):
+                _refresh_metadata_from_file(item, local_path_obj)
             local_size = item.size_bytes or local_path_obj.stat().st_size
             if not item.checksum:
                 item.checksum = checksum(local_path_obj)
