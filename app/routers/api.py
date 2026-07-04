@@ -12,7 +12,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import case, func
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from ..crypto import encrypt
@@ -39,7 +39,7 @@ from ..models import (
 from ..settings_store import app_settings_dict, encode_destination_ids, get_app_settings, touch_settings
 from ..streaming import stream_file
 from ..sysmon import get_monitor
-from ..tasks import enqueue_device_import
+from ..tasks import enqueue_device_import, enqueue_upload_jobs
 
 router = APIRouter()
 
@@ -78,11 +78,38 @@ def _build_upload_totals(rows: list[UploadedClip]) -> dict:
     }
 
 
+def _build_upload_totals_query(session: Session, destination_id: int | None = None) -> dict:
+    query = session.query(
+        func.sum(case((UploadedClip.status == "done", 1), else_=0)).label("done_count"),
+        func.sum(case((UploadedClip.status == "error", 1), else_=0)).label("error_count"),
+        func.sum(case((UploadedClip.status == "uploading", 1), else_=0)).label("uploading_count"),
+        func.sum(case((UploadedClip.status == "pending", 1), else_=0)).label("pending_count"),
+        func.sum(case((UploadedClip.status == "done", UploadedClip.size_bytes), else_=0)).label("uploaded_bytes"),
+        func.avg(
+            case((UploadedClip.status == "done", UploadedClip.upload_duration_s), else_=None)
+        ).label("avg_duration"),
+        func.avg(
+            case((UploadedClip.status == "done", UploadedClip.upload_throughput_bps), else_=None)
+        ).label("avg_throughput"),
+    )
+    if destination_id is not None:
+        query = query.filter(UploadedClip.destination_id == destination_id)
+    row = query.one()
+    return {
+        "uploaded_clip_count": int(row.done_count or 0),
+        "error_clip_count": int(row.error_count or 0),
+        "uploading_clip_count": int(row.uploading_count or 0),
+        "pending_clip_count": int(row.pending_count or 0),
+        "uploaded_bytes": int(row.uploaded_bytes or 0),
+        "average_upload_duration_s": _round_or_none(row.avg_duration),
+        "average_throughput_bps": _round_or_none(row.avg_throughput),
+    }
+
+
 def _destination_storage_payload(
     destination: Destination,
-    rows: list[UploadedClip],
+    uploaded_bytes: int,
 ) -> dict:
-    uploaded_bytes = sum(int(row.size_bytes or 0) for row in rows if row.status == "done")
     try:
         backend_storage = get_backend(destination).storage_info()
     except Exception as exc:  # noqa: BLE001
@@ -275,6 +302,25 @@ def build_upload_timeline(
     }
 
 
+def _timeline_rows_query(
+    session: Session,
+    hours: float = DEFAULT_TIMELINE_HOURS,
+    destination_id: int | None = None,
+) -> list[UploadedClip]:
+    hours = max(0.25, min(float(hours or DEFAULT_TIMELINE_HOURS), 72.0))
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    since = now - dt.timedelta(hours=hours)
+    query = session.query(UploadedClip).filter(
+        or_(
+            (UploadedClip.status == "done") & (UploadedClip.uploaded_at >= since),
+            (UploadedClip.status != "done") & (UploadedClip.updated_at >= since),
+        )
+    )
+    if destination_id is not None:
+        query = query.filter(UploadedClip.destination_id == destination_id)
+    return query.all()
+
+
 def build_system_stats(
     upload_rows: list[UploadedClip] | None = None,
     timeline_hours: float = DEFAULT_TIMELINE_HOURS,
@@ -303,24 +349,22 @@ def build_system_stats(
 
 def build_upload_stats(session: Session, timeline_hours: float = DEFAULT_TIMELINE_HOURS) -> dict:
     destinations = session.query(Destination).order_by(Destination.name).all()
-    rows = session.query(UploadedClip).all()
-    rows_by_destination: dict[int, list[UploadedClip]] = {}
-    for row in rows:
-        rows_by_destination.setdefault(row.destination_id, []).append(row)
+    overview = _build_upload_totals_query(session)
+    system_rows = _timeline_rows_query(session, timeline_hours)
 
     return {
-        "overview": _build_upload_totals(rows),
-        "system": build_system_stats(rows, timeline_hours, session=session),
+        "overview": overview,
+        "system": build_system_stats(system_rows, timeline_hours, session=session),
         "destinations": [
             {
                 **dest_dict(destination),
-                **_build_upload_totals(rows_by_destination.get(destination.id, [])),
+                **(destination_totals := _build_upload_totals_query(session, destination.id)),
                 "storage": _destination_storage_payload(
                     destination,
-                    rows_by_destination.get(destination.id, []),
+                    destination_totals["uploaded_bytes"],
                 ),
                 "upload_timeline": build_upload_timeline(
-                    rows_by_destination.get(destination.id, []),
+                    _timeline_rows_query(session, timeline_hours, destination.id),
                     timeline_hours,
                 ),
             }
@@ -1138,22 +1182,7 @@ class UploadReq(BaseModel):
 def start_upload(req: UploadReq, session: Session = Depends(get_session)):
     if not req.media_ids:
         raise HTTPException(400, "No media selected")
-    rows = (
-        session.query(MediaItem.id, MediaItem.filename)
-        .filter(MediaItem.id.in_(req.media_ids))
-        .all()
-    )
-    names = {mid: filename for mid, filename in rows}
-    job_ids = []
-    for mid in list(dict.fromkeys(req.media_ids)):
-        filename = names.get(mid, f"item {mid}")
-        job_ids.append(
-            get_manager().enqueue(
-                "upload",
-                description=f"Upload {filename}",
-                payload={"media_ids": [mid], "destination_ids": req.destination_ids},
-            )
-        )
+    job_ids = enqueue_upload_jobs(req.media_ids, req.destination_ids)
     return {"job_ids": job_ids, "job_id": job_ids[0] if job_ids else None}
 
 

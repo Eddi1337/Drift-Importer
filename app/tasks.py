@@ -431,6 +431,21 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                 clip.size_bytes = local_size
                 clip.updated_at = utcnow()
             ledger_done = clip.status == "done" and bool(clip.remote_path)
+            if ledger_done:
+                state.status = "done"
+                state.remote_path = clip.remote_path
+                state.error = None
+                state.bytes_uploaded = local_size
+                state.total_bytes = local_size
+                state.uploaded_at = state.uploaded_at or utcnow()
+                state.updated_at = utcnow()
+                clip.bytes_uploaded = local_size
+                clip.last_error = None
+                local_filename = item.filename
+                dest_name = dest.name
+                done += 1
+                ctx.set_progress(done / total, f"Already uploaded {local_filename} on {dest_name}")
+                continue
             state.status = "uploading"
             state.error = None
             state.total_bytes = local_size
@@ -452,62 +467,6 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
         ctx.log(f"Resolved {filename} to {remote_hint}", progress=done / total)
 
         # 2) Perform the upload with no DB transaction held open.
-        if ledger_done:
-            ctx.set_progress(done / total, f"Verifying {filename} on {dest_name}")
-            try:
-                if backend.remote_file_matches(remote_dir, filename, local_size, checksum_value):
-                    log.info(
-                        "Verified existing upload for media=%s destination=%s remote=%s",
-                        mid,
-                        did,
-                        remote_hint,
-                    )
-                    with session_scope() as s:
-                        state = (
-                            s.query(UploadState)
-                            .filter(
-                                UploadState.media_id == mid,
-                                UploadState.destination_id == did,
-                            )
-                            .first()
-                        )
-                        clip = s.get(UploadedClip, clip_id)
-                        if state:
-                            state.status = "done"
-                            state.remote_path = clip.remote_path if clip else remote_hint
-                            state.error = None
-                            state.bytes_uploaded = local_size
-                            state.total_bytes = local_size
-                            state.uploaded_at = state.uploaded_at or utcnow()
-                            state.updated_at = utcnow()
-                        if clip:
-                            clip.status = "done"
-                            clip.bytes_uploaded = local_size
-                            clip.size_bytes = local_size
-                            clip.last_error = None
-                            clip.uploaded_at = clip.uploaded_at or utcnow()
-                            clip.updated_at = utcnow()
-                    done += 1
-                    ctx.set_progress(done / total, f"Verified existing {filename}")
-                    continue
-                log.warning(
-                    "Ledger row for media=%s destination=%s did not verify; re-uploading",
-                    mid,
-                    did,
-                )
-            except Exception as exc:  # noqa: BLE001
-                log.exception(
-                    "Remote verification failed before upload for media=%s destination=%s",
-                    mid,
-                    did,
-                )
-                with session_scope() as s:
-                    clip = s.get(UploadedClip, clip_id)
-                    if clip:
-                        clip.status = "pending"
-                        clip.last_error = f"Pre-upload verification failed: {exc}"
-                        clip.updated_at = utcnow()
-
         if not ledger_done:
             ctx.set_progress(done / total, f"Checking existing {filename} on {dest_name}")
             try:
@@ -809,12 +768,70 @@ def _month_upload_groups(rows: Iterable[UploadPlanRow]) -> list[tuple[str, list[
     return groups
 
 
+def _destination_ids_for_upload(session, destination_ids: list[int] | None) -> list[int]:
+    if destination_ids:
+        rows = (
+            session.query(Destination.id)
+            .filter(Destination.id.in_(destination_ids))
+            .order_by(Destination.rank, Destination.id)
+            .all()
+        )
+    else:
+        rows = (
+            session.query(Destination.id)
+            .filter(Destination.is_default == True, Destination.enabled == True)  # noqa: E712
+            .order_by(Destination.rank, Destination.id)
+            .all()
+        )
+    return [row[0] for row in rows]
+
+
+def _media_ids_needing_upload(
+    media_ids: list[int],
+    destination_ids: list[int] | None = None,
+) -> list[int]:
+    """Return media ids that are not already done for every target destination."""
+    if not media_ids:
+        return []
+    with session_scope() as s:
+        dest_ids = _destination_ids_for_upload(s, destination_ids)
+        if not dest_ids:
+            return media_ids
+        rows = (
+            s.query(MediaItem.id, MediaItem.checksum)
+            .filter(MediaItem.id.in_(media_ids))
+            .all()
+        )
+        checksum_by_id = {mid: cs for mid, cs in rows}
+        checksums = [cs for cs in checksum_by_id.values() if cs]
+        done_pairs = set()
+        if checksums:
+            done_pairs = set(
+                s.query(UploadedClip.destination_id, UploadedClip.checksum)
+                .filter(
+                    UploadedClip.destination_id.in_(dest_ids),
+                    UploadedClip.checksum.in_(checksums),
+                    UploadedClip.status == "done",
+                    UploadedClip.remote_path.isnot(None),
+                    UploadedClip.remote_path != "",
+                )
+                .all()
+            )
+    needed = []
+    for mid in media_ids:
+        cs = checksum_by_id.get(mid)
+        if not cs or any((did, cs) not in done_pairs for did in dest_ids):
+            needed.append(mid)
+    return needed
+
+
 def enqueue_upload_jobs(
     media_ids: list[int],
     destination_ids: list[int] | None = None,
     description_prefix: str = "Upload",
 ) -> list[int]:
     media_ids = list(dict.fromkeys(media_ids))
+    media_ids = _media_ids_needing_upload(media_ids, destination_ids)
     if not media_ids:
         return []
     with session_scope() as s:
@@ -843,6 +860,7 @@ def enqueue_upload_jobs_by_month(
     description_prefix: str = "Upload",
 ) -> list[int]:
     media_ids = list(dict.fromkeys(media_ids))
+    media_ids = _media_ids_needing_upload(media_ids, destination_ids)
     if not media_ids:
         return []
     with session_scope() as s:
