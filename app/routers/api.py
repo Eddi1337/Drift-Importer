@@ -457,6 +457,103 @@ def _safe_device_media_path(path: str) -> Path:
     raise HTTPException(400, "Path is outside a detected camera mount")
 
 
+def _device_roots() -> list[Path]:
+    roots = []
+    for device in get_device_monitor().get_devices():
+        root = device.get("path") or device.get("dcim_path")
+        if not root:
+            continue
+        try:
+            roots.append(Path(root).resolve())
+        except OSError:
+            continue
+    return roots
+
+
+def _safe_device_root(root_path: str) -> Path:
+    try:
+        requested = Path(root_path).resolve()
+    except OSError as exc:
+        raise HTTPException(400, "Camera root is not accessible") from exc
+    for root in _device_roots():
+        if requested == root:
+            return root
+    raise HTTPException(400, "Path is not a detected camera root")
+
+
+def _safe_relative_path(root: Path, path: str = "", outside_message: str = "Path is outside root") -> Path:
+    try:
+        resolved_root = root.resolve()
+        child = (resolved_root / path.strip("/")).resolve()
+        child.relative_to(resolved_root)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(400, outside_message) from exc
+    return child
+
+
+def _safe_filename(name: str) -> str:
+    clean = name.strip()
+    if not clean or clean in {".", ".."} or "/" in clean or "\\" in clean:
+        raise HTTPException(400, "Invalid filename")
+    return clean
+
+
+def _entry_dict(entry: Path, root: Path) -> dict:
+    stat = entry.stat()
+    is_dir = entry.is_dir()
+    rel = str(entry.relative_to(root))
+    media_kind = None if is_dir else classify(entry)
+    return {
+        "name": entry.name,
+        "path": "" if rel == "." else rel,
+        "type": "directory" if is_dir else "file",
+        "kind": media_kind,
+        "playable": media_kind == "video",
+        "size_bytes": None if is_dir else int(stat.st_size),
+        "modified_at": dt.datetime.fromtimestamp(stat.st_mtime).isoformat(),
+    }
+
+
+def _list_local_entries(root: Path, path: str = "", outside_message: str = "Path is outside root") -> dict:
+    current = _safe_relative_path(root, path, outside_message)
+    if not current.exists() or not current.is_dir():
+        raise HTTPException(400, "Path is not a directory")
+    entries = []
+    for entry in sorted(current.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+        try:
+            entries.append(_entry_dict(entry, root.resolve()))
+        except OSError:
+            continue
+    return {"root": str(root), "path": path.strip("/"), "entries": entries}
+
+
+def _local_destination_root(destination: Destination) -> Path:
+    if destination.type not in ("local", "nfs", "smb"):
+        raise HTTPException(400, "This action is only available for mounted/local destinations")
+    root = Path(destination.base_path or "/")
+    if not root.exists() or not root.is_dir():
+        raise HTTPException(400, f"Destination root is not mounted: {root}")
+    return root
+
+
+def _parse_file_datetime(value: str) -> dt.datetime:
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid datetime") from exc
+    return parsed
+
+
+class FileRenameReq(BaseModel):
+    path: str
+    filename: str
+
+
+class FileTimestampReq(BaseModel):
+    path: str
+    modified_at: str
+
+
 def _log_level(line: str) -> str | None:
     match = re.search(r"\b(DEBUG|INFO|WARNING|ERROR|CRITICAL)\b", line)
     return match.group(1) if match else None
@@ -582,6 +679,135 @@ def list_device_entries(dcim_path: str, path: str = ""):
             }
         )
     return {"dcim_path": str(root), "path": path.strip("/"), "entries": entries}
+
+
+# --- file explorer ----------------------------------------------------------
+
+@router.get("/file-browser/camera/entries")
+def browse_camera_entries(root_path: str, path: str = ""):
+    root = _safe_device_root(root_path)
+    return _list_local_entries(root, path, "Path is outside the camera root")
+
+
+@router.get("/file-browser/camera/stream")
+def stream_camera_file(root_path: str, path: str, request: Request):
+    root = _safe_device_root(root_path)
+    target = _safe_relative_path(root, path, "Path is outside the camera root")
+    if classify(target) != "video":
+        raise HTTPException(400, "Only video files can be played")
+    return stream_file(request, target)
+
+
+@router.post("/file-browser/camera/rename")
+def rename_camera_file(req: FileRenameReq, root_path: str, session: Session = Depends(get_session)):
+    root = _safe_device_root(root_path)
+    old = _safe_relative_path(root, req.path, "Path is outside the camera root")
+    if not old.exists() or not old.is_file():
+        raise HTTPException(404, "Camera file not found")
+    new = old.with_name(_safe_filename(req.filename))
+    _safe_relative_path(root, str(new.relative_to(root)), "Path is outside the camera root")
+    if new.exists():
+        raise HTTPException(409, "Target filename already exists")
+    old_str = str(old)
+    old.rename(new)
+    item = session.query(MediaItem).filter(MediaItem.path == old_str).first()
+    if item:
+        item.path = str(new)
+        item.filename = new.name
+        session.commit()
+    return _entry_dict(new, root)
+
+
+@router.post("/file-browser/camera/timestamp")
+def timestamp_camera_file(req: FileTimestampReq, root_path: str, session: Session = Depends(get_session)):
+    root = _safe_device_root(root_path)
+    target = _safe_relative_path(root, req.path, "Path is outside the camera root")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, "Camera file not found")
+    when = _parse_file_datetime(req.modified_at)
+    os.utime(target, (when.timestamp(), when.timestamp()))
+    item = session.query(MediaItem).filter(MediaItem.path == str(target)).first()
+    if item:
+        item.capture_time = when
+        session.commit()
+    return _entry_dict(target, root)
+
+
+@router.get("/file-browser/destinations/{dest_id}/entries")
+def browse_destination_file_entries(dest_id: int, path: str = "", session: Session = Depends(get_session)):
+    destination = session.get(Destination, dest_id)
+    if not destination:
+        raise HTTPException(404, "Destination not found")
+    if destination.type in ("local", "nfs", "smb"):
+        root = _local_destination_root(destination)
+        data = _list_local_entries(root, path, "Path is outside the destination root")
+        data["destination_id"] = dest_id
+        data["local_actions"] = True
+        return data
+    try:
+        entries = get_backend(destination).list_entries(path)
+        return {
+            "destination_id": dest_id,
+            "root": destination.base_path,
+            "path": path.strip("/"),
+            "local_actions": False,
+            "entries": entries,
+        }
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/file-browser/destinations/{dest_id}/stream")
+def stream_destination_file(dest_id: int, path: str, request: Request, session: Session = Depends(get_session)):
+    destination = session.get(Destination, dest_id)
+    if not destination:
+        raise HTTPException(404, "Destination not found")
+    root = _local_destination_root(destination)
+    target = _safe_relative_path(root, path, "Path is outside the destination root")
+    if classify(target) != "video":
+        raise HTTPException(400, "Only video files can be played")
+    return stream_file(request, target)
+
+
+@router.post("/file-browser/destinations/{dest_id}/rename")
+def rename_destination_file(dest_id: int, req: FileRenameReq, session: Session = Depends(get_session)):
+    destination = session.get(Destination, dest_id)
+    if not destination:
+        raise HTTPException(404, "Destination not found")
+    root = _local_destination_root(destination)
+    old = _safe_relative_path(root, req.path, "Path is outside the destination root")
+    if not old.exists() or not old.is_file():
+        raise HTTPException(404, "Destination file not found")
+    new = old.with_name(_safe_filename(req.filename))
+    _safe_relative_path(root, str(new.relative_to(root)), "Path is outside the destination root")
+    if new.exists():
+        raise HTTPException(409, "Target filename already exists")
+    old_str = str(old)
+    old.rename(new)
+    session.query(UploadedClip).filter(UploadedClip.remote_path == old_str).update(
+        {UploadedClip.remote_path: str(new), UploadedClip.filename: new.name},
+        synchronize_session=False,
+    )
+    session.query(UploadState).filter(UploadState.remote_path == old_str).update(
+        {UploadState.remote_path: str(new)},
+        synchronize_session=False,
+    )
+    session.commit()
+    return _entry_dict(new, root)
+
+
+@router.post("/file-browser/destinations/{dest_id}/timestamp")
+def timestamp_destination_file(dest_id: int, req: FileTimestampReq, session: Session = Depends(get_session)):
+    destination = session.get(Destination, dest_id)
+    if not destination:
+        raise HTTPException(404, "Destination not found")
+    root = _local_destination_root(destination)
+    target = _safe_relative_path(root, req.path, "Path is outside the destination root")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(404, "Destination file not found")
+    when = _parse_file_datetime(req.modified_at)
+    os.utime(target, (when.timestamp(), when.timestamp()))
+    return _entry_dict(target, root)
 
 
 @router.post("/import-device")
@@ -761,23 +987,25 @@ def list_tags(session: Session = Depends(get_session)):
     return [{"id": t.id, "name": t.name} for t in session.query(Tag).order_by(Tag.name).all()]
 
 
-# --- albums -----------------------------------------------------------------
+# --- trips ------------------------------------------------------------------
 
 class AlbumReq(BaseModel):
     name: str
     description: Optional[str] = None
 
 
+@router.post("/trips")
 @router.post("/albums")
 def create_album(req: AlbumReq, session: Session = Depends(get_session)):
     if session.query(Album).filter(Album.name == req.name).first():
-        raise HTTPException(409, "Album exists")
+        raise HTTPException(409, "Trip exists")
     a = Album(name=req.name, description=req.description)
     session.add(a)
     session.commit()
     return {"id": a.id, "name": a.name}
 
 
+@router.get("/trips")
 @router.get("/albums")
 def list_albums(session: Session = Depends(get_session)):
     albums = session.query(Album).order_by(Album.name).all()
@@ -796,12 +1024,13 @@ class AlbumItemsReq(BaseModel):
     media_ids: List[int]  # ordered
 
 
+@router.post("/trips/{album_id}/items")
 @router.post("/albums/{album_id}/items")
 def set_album_items(album_id: int, req: AlbumItemsReq, session: Session = Depends(get_session)):
-    """Replace album membership with the given ordered list (order = merge order)."""
+    """Replace trip membership with the given ordered list (order = combine order)."""
     a = session.get(Album, album_id)
     if not a:
-        raise HTTPException(404, "Album not found")
+        raise HTTPException(404, "Trip not found")
     for it in list(a.items):
         session.delete(it)
     session.flush()
@@ -811,11 +1040,12 @@ def set_album_items(album_id: int, req: AlbumItemsReq, session: Session = Depend
     return {"album_id": album_id, "count": len(req.media_ids)}
 
 
+@router.delete("/trips/{album_id}")
 @router.delete("/albums/{album_id}")
 def delete_album(album_id: int, session: Session = Depends(get_session)):
     a = session.get(Album, album_id)
     if not a:
-        raise HTTPException(404, "Not found")
+        raise HTTPException(404, "Trip not found")
     session.delete(a)
     session.commit()
     return {"deleted": album_id}
@@ -945,16 +1175,12 @@ def recent_upload_dict(r: UploadedClip) -> dict:
 @router.get("/destinations")
 def list_destinations(session: Session = Depends(get_session)):
     ensure_default_nas_destination(session)
-    rows = session.query(UploadedClip).all()
-    rows_by_destination: dict[int, list[UploadedClip]] = {}
-    for row in rows:
-        rows_by_destination.setdefault(row.destination_id, []).append(row)
     return [
         {
             **dest_dict(destination),
             "storage": _destination_storage_payload(
                 destination,
-                rows_by_destination.get(destination.id, []),
+                _build_upload_totals_query(session, destination.id)["uploaded_bytes"],
             ),
         }
         for destination in session.query(Destination)
@@ -1227,7 +1453,7 @@ def start_merge(req: MergeReq, session: Session = Depends(get_session)):
     if req.album_id is not None:
         a = session.get(Album, req.album_id)
         if not a:
-            raise HTTPException(404, "Album not found")
+            raise HTTPException(404, "Trip not found")
         media_ids = [it.media_id for it in a.items]
     if req.order in ("date", "sequence"):
         items = [session.get(MediaItem, mid) for mid in media_ids]
@@ -1241,8 +1467,8 @@ def start_merge(req: MergeReq, session: Session = Depends(get_session)):
         raise HTTPException(400, "Need at least two clips to merge")
     job_id = get_manager().enqueue(
         "merge",
-        description=f"Merge {len(media_ids)} clips",
-        payload={"media_ids": media_ids, "output_name": req.output_name},
+        description=f"Combine {len(media_ids)} clips",
+        payload={"media_ids": media_ids, "output_name": req.output_name, "album_id": req.album_id},
     )
     return {"job_id": job_id}
 

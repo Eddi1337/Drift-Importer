@@ -609,6 +609,81 @@ input:focus, select:focus {
   padding: 1rem;
 }
 
+.explorer-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.explorer-pane {
+  min-width: 0;
+}
+
+.explorer-pane h3 {
+  margin: 0;
+}
+
+.explorer-pane select {
+  max-width: min(22rem, 100%);
+}
+
+.explorer-window {
+  margin-top: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  min-height: 28rem;
+  overflow: hidden;
+}
+
+.explorer-toolbar {
+  padding: 0.65rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-strong);
+}
+
+.explorer-list {
+  max-height: 62vh;
+  overflow: auto;
+}
+
+.explorer-row {
+  display: grid;
+  grid-template-columns: 5rem minmax(12rem, 1fr) minmax(5.5rem, auto) minmax(8rem, auto) minmax(12rem, auto);
+  gap: 0.55rem;
+  align-items: center;
+  padding: 0.42rem 0.65rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.explorer-row:hover {
+  background: var(--soft);
+}
+
+.explorer-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-weight: 650;
+}
+
+button.explorer-name {
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+.explorer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
 .camera-file-list {
   margin-top: 0.85rem;
   max-height: 24rem;
@@ -1411,6 +1486,10 @@ code { color: var(--acc); }
   .form-grid .span-2 { grid-column: auto; }
   .device, .dest-row, .order-item { flex-direction: column; align-items: flex-start; }
   .spread { align-items: flex-start; }
+  .explorer-grid { grid-template-columns: 1fr; }
+  .explorer-row { grid-template-columns: 4.5rem minmax(0, 1fr); }
+  .explorer-row > .hint,
+  .explorer-actions { grid-column: 2; justify-content: flex-start; }
   .camera-file-row { grid-template-columns: auto minmax(0, 1fr); }
   .usage-head, .usage-body, .usage-pie-wrap { flex-direction: column; align-items: flex-start; }
   .usage-pie-wrap { min-width: 0; }

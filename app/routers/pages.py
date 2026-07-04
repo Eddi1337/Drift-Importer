@@ -25,9 +25,19 @@ def destinations(request: Request):
     return _page(request, "destinations.html")
 
 
+@router.get("/explorer", response_class=HTMLResponse)
+def explorer(request: Request):
+    return _page(request, "explorer.html")
+
+
 @router.get("/albums", response_class=HTMLResponse)
 def albums(request: Request):
-    return _page(request, "albums.html")
+    return _page(request, "trips.html")
+
+
+@router.get("/trips", response_class=HTMLResponse)
+def trips(request: Request):
+    return _page(request, "trips.html")
 
 
 @router.get("/jobs", response_class=HTMLResponse)

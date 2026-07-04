@@ -26,6 +26,14 @@ const appState = {
   expandedJobs: new Set(),
   jobLogs: {},
   folderBrowsers: {},
+  fileExplorer: {
+    cameraRoot: "",
+    cameraPath: "",
+    destinationId: null,
+    destinationPath: "",
+    destinationLocalActions: false,
+    pendingAction: null,
+  },
   cameraFiles: [],
   cameraFileSelection: new Set(),
   cameraBrowserPath: "",
@@ -145,7 +153,12 @@ function esc(value) {
 }
 
 function escJs(value) {
-  return String(value ?? "").replaceAll("\\", "\\\\").replaceAll("'", "\\'");
+  return String(value ?? "")
+    .replaceAll("\\", "\\\\")
+    .replaceAll("'", "\\'")
+    .replaceAll('"', "&quot;")
+    .replaceAll("\n", "\\n")
+    .replaceAll("\r", "\\r");
 }
 
 function appendPath(base, child) {
@@ -810,19 +823,19 @@ async function mergeSelected() {
   const ids = selIds();
   if (ids.length < 2) return toast("Select 2+ clips (in capture order)");
   const order = prompt(
-    "Merge order: selected, date, or sequence",
+    "Combine order: selected, date, or sequence",
     "date",
   );
   if (order === null) return;
   const cleanOrder = ["selected", "date", "sequence"].includes(order.trim())
     ? order.trim()
     : "selected";
-  if (!confirm(`Merge ${ids.length} clips using ${cleanOrder} order?`)) return;
+  if (!confirm(`Combine ${ids.length} clips into one video using ${cleanOrder} order?`)) return;
   try {
     await api.post("/api/merge", { media_ids: ids, order: cleanOrder });
-    toast("Merge queued");
+    toast("Combine queued");
   } catch (e) {
-    toast("Merge failed: " + e.message);
+    toast("Combine failed: " + e.message);
   }
 }
 
@@ -839,16 +852,16 @@ async function tagSelected() {
 
 async function addToAlbum() {
   if (!selected.size) return toast("Select clips first");
-  const albums = await api.get("/api/albums");
-  if (!albums.length) return toast("Create an album first (Albums page)");
+  const albums = await api.get("/api/trips");
+  if (!albums.length) return toast("Create a trip first (Trips page)");
   const list = albums.map(a => `${a.id}: ${a.name}`).join("\n");
-  const pick = prompt(`Album id to add ${selected.size} clips to:\n${list}`, "");
+  const pick = prompt(`Trip id to add ${selected.size} clips to:\n${list}`, "");
   const aid = parseInt(pick, 10);
   if (isNaN(aid)) return;
   const album = albums.find(a => a.id === aid);
   const merged = [...new Set([...(album ? album.item_ids : []), ...selIds()])];
-  await api.post(`/api/albums/${aid}/items`, { media_ids: merged });
-  toast("Added to album");
+  await api.post(`/api/trips/${aid}/items`, { media_ids: merged });
+  toast("Added to trip");
 }
 
 async function deleteSelected() {
@@ -1275,7 +1288,231 @@ function clearFolderBrowser(targetId) {
   delete appState.folderBrowsers[targetId];
 }
 
-// ============================ ALBUMS ========================================
+// ============================ FILE EXPLORER =================================
+
+async function initFileExplorer() {
+  ensureGlobalJobPolling();
+  const [devices, destinations] = await Promise.all([
+    api.get("/api/devices"),
+    api.get("/api/destinations"),
+  ]);
+  const cameraSelect = document.getElementById("explorerCameraSelect");
+  const destSelect = document.getElementById("explorerDestinationSelect");
+  if (cameraSelect) {
+    cameraSelect.innerHTML = devices.length
+      ? devices.map(d => `<option value="${esc(d.path || d.dcim_path)}">${esc(d.label || d.path)}</option>`).join("")
+      : "<option value=''>No camera attached</option>";
+    appState.fileExplorer.cameraRoot = cameraSelect.value || "";
+    appState.fileExplorer.cameraPath = "";
+  }
+  if (destSelect) {
+    destSelect.innerHTML = destinations.length
+      ? destinations.map(d => `<option value="${d.id}">${esc(d.name)} (${esc(d.base_path || d.type)})</option>`).join("")
+      : "<option value=''>No destination configured</option>";
+    appState.fileExplorer.destinationId = destSelect.value ? Number(destSelect.value) : null;
+    appState.fileExplorer.destinationPath = "";
+  }
+  await Promise.all([loadExplorerPane("camera"), loadExplorerPane("destination")]);
+}
+
+function selectExplorerCamera() {
+  const select = document.getElementById("explorerCameraSelect");
+  appState.fileExplorer.cameraRoot = select?.value || "";
+  appState.fileExplorer.cameraPath = "";
+  loadExplorerPane("camera");
+}
+
+function selectExplorerDestination() {
+  const select = document.getElementById("explorerDestinationSelect");
+  appState.fileExplorer.destinationId = select?.value ? Number(select.value) : null;
+  appState.fileExplorer.destinationPath = "";
+  loadExplorerPane("destination");
+}
+
+async function loadExplorerPane(side, path = null) {
+  const state = appState.fileExplorer;
+  const pane = document.getElementById(side === "camera" ? "cameraExplorer" : "destinationExplorer");
+  const meta = document.getElementById(side === "camera" ? "cameraExplorerMeta" : "destinationExplorerMeta");
+  if (!pane) return;
+  pane.textContent = "Loading…";
+  try {
+    let data;
+    if (side === "camera") {
+      if (!state.cameraRoot) {
+        pane.innerHTML = "<span class='hint'>No camera attached.</span>";
+        if (meta) meta.textContent = "";
+        return;
+      }
+      if (path !== null) state.cameraPath = path;
+      data = await api.get(`/api/file-browser/camera/entries?root_path=${encodeURIComponent(state.cameraRoot)}&path=${encodeURIComponent(state.cameraPath)}`);
+      if (meta) meta.textContent = data.root || state.cameraRoot;
+    } else {
+      if (!state.destinationId) {
+        pane.innerHTML = "<span class='hint'>No destination configured.</span>";
+        if (meta) meta.textContent = "";
+        return;
+      }
+      if (path !== null) state.destinationPath = path;
+      data = await api.get(`/api/file-browser/destinations/${state.destinationId}/entries?path=${encodeURIComponent(state.destinationPath)}`);
+      state.destinationLocalActions = !!data.local_actions;
+      if (meta) meta.textContent = `${data.root || ""}${data.local_actions ? "" : " · browse only"}`;
+    }
+    renderExplorerPane(side, data);
+  } catch (e) {
+    pane.textContent = "Unable to load files: " + e.message;
+  }
+}
+
+function renderExplorerPane(side, data) {
+  const pane = document.getElementById(side === "camera" ? "cameraExplorer" : "destinationExplorer");
+  if (!pane) return;
+  const path = data.path || "";
+  const crumbs = path ? path.split("/").filter(Boolean) : [];
+  const parent = crumbs.slice(0, -1).join("/");
+  const rootLabel = side === "camera" ? "Camera" : "Destination";
+  const localActions = side === "camera" || data.local_actions;
+  const crumbHtml = [
+    `<button class="folder-crumb" onclick="loadExplorerPane('${side}', '')">${rootLabel}</button>`,
+    ...crumbs.map((part, idx) => {
+      const crumbPath = crumbs.slice(0, idx + 1).join("/");
+      return `<button class="folder-crumb" onclick="loadExplorerPane('${side}', '${escJs(crumbPath)}')">${esc(part)}</button>`;
+    }),
+  ].join("<span class='folder-sep'>/</span>");
+  const entries = data.entries || [];
+  const rows = entries.length
+    ? entries.map(entry => renderExplorerEntry(side, entry, localActions)).join("")
+    : "<div class='folder-empty'>No files in this folder.</div>";
+  pane.innerHTML = `
+    <div class="folder-toolbar explorer-toolbar">
+      <div class="folder-crumbs">${crumbHtml}</div>
+      <div class="row">
+        ${path ? `<button class="ghost" onclick="loadExplorerPane('${side}', '${escJs(parent)}')">Up</button>` : ""}
+        <button class="ghost" onclick="loadExplorerPane('${side}')">Refresh</button>
+      </div>
+    </div>
+    <div class="explorer-list">${rows}</div>
+  `;
+}
+
+function renderExplorerEntry(side, entry, localActions) {
+  const icon = entry.type === "directory" ? "Folder" : (entry.playable ? "Video" : "File");
+  const path = entry.path || "";
+  if (entry.type === "directory") {
+    return `
+      <div class="explorer-row">
+        <button class="folder-open" onclick="loadExplorerPane('${side}', '${escJs(path)}')">Open</button>
+        <button class="explorer-name" onclick="loadExplorerPane('${side}', '${escJs(path)}')">${esc(entry.name)}</button>
+        <span class="hint">${icon}</span>
+        <span class="hint">${esc(fmtDateTime(entry.modified_at) || "")}</span>
+        <span class="explorer-actions"></span>
+      </div>
+    `;
+  }
+  const play = entry.playable
+    ? `<button class="ghost" onclick="playExplorerFile('${side}', '${escJs(path)}')">Play</button>`
+    : "";
+  const edit = localActions
+    ? `<button class="ghost" onclick="openExplorerRename('${side}', '${escJs(path)}', '${escJs(entry.name)}')">Rename</button>
+       <button class="ghost" onclick="openExplorerDate('${side}', '${escJs(path)}', '${escJs(entry.modified_at || "")}')">Date</button>`
+    : "";
+  return `
+    <div class="explorer-row">
+      <span class="folder-open">${icon}</span>
+      <span class="explorer-name" title="${esc(path)}">${esc(entry.name)}</span>
+      <span class="hint">${esc(fmtBytes(entry.size_bytes || 0))}</span>
+      <span class="hint">${esc(fmtDateTime(entry.modified_at) || "")}</span>
+      <span class="explorer-actions">${play}${edit}</span>
+    </div>
+  `;
+}
+
+function explorerActionUrl(side, action, path = "") {
+  if (side === "camera") {
+    const root = encodeURIComponent(appState.fileExplorer.cameraRoot);
+    const pathPart = path ? `&path=${encodeURIComponent(path)}` : "";
+    return `/api/file-browser/camera/${action}?root_path=${root}${pathPart}`;
+  }
+  const id = appState.fileExplorer.destinationId;
+  const pathPart = path ? `?path=${encodeURIComponent(path)}` : "";
+  return `/api/file-browser/destinations/${id}/${action}${pathPart}`;
+}
+
+function playExplorerFile(side, path) {
+  const dlg = document.getElementById("explorerPlayerDlg");
+  const video = document.getElementById("explorerPlayer");
+  if (!dlg || !video) return;
+  video.src = explorerActionUrl(side, "stream", path);
+  dlg.showModal();
+}
+
+function closeExplorerPlayer() {
+  const dlg = document.getElementById("explorerPlayerDlg");
+  const video = document.getElementById("explorerPlayer");
+  if (video) {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+  }
+  if (dlg) dlg.close();
+}
+
+function openExplorerRename(side, path, name) {
+  appState.fileExplorer.pendingAction = { side, path };
+  const input = document.getElementById("explorerRenameInput");
+  if (input) input.value = name;
+  document.getElementById("explorerRenameDlg")?.showModal();
+}
+
+async function submitExplorerRename() {
+  const pending = appState.fileExplorer.pendingAction;
+  const input = document.getElementById("explorerRenameInput");
+  if (!pending || !input) return;
+  try {
+    await api.post(explorerActionUrl(pending.side, "rename"), {
+      path: pending.path,
+      filename: input.value.trim(),
+    });
+    document.getElementById("explorerRenameDlg")?.close();
+    await loadExplorerPane(pending.side);
+    toast("File renamed");
+  } catch (e) {
+    toast("Rename failed: " + e.message);
+  }
+}
+
+function openExplorerDate(side, path, modifiedAt) {
+  appState.fileExplorer.pendingAction = { side, path };
+  const input = document.getElementById("explorerDateInput");
+  if (input) input.value = toDateTimeLocal(modifiedAt);
+  document.getElementById("explorerDateDlg")?.showModal();
+}
+
+function toDateTimeLocal(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value).slice(0, 16);
+  const pad = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+async function submitExplorerDate() {
+  const pending = appState.fileExplorer.pendingAction;
+  const input = document.getElementById("explorerDateInput");
+  if (!pending || !input || !input.value) return;
+  try {
+    await api.post(explorerActionUrl(pending.side, "timestamp"), {
+      path: pending.path,
+      modified_at: input.value,
+    });
+    document.getElementById("explorerDateDlg")?.close();
+    await loadExplorerPane(pending.side);
+    toast("File date updated");
+  } catch (e) {
+    toast("Date update failed: " + e.message);
+  }
+}
+
+// ============================ TRIPS =========================================
 
 function initAlbums() {
   ensureGlobalJobPolling();
@@ -1286,7 +1523,7 @@ async function createAlbum() {
   const name = document.getElementById("albumName").value.trim();
   if (!name) return toast("Name required");
   try {
-    await api.post("/api/albums", { name });
+    await api.post("/api/trips", { name });
     document.getElementById("albumName").value = "";
     loadAlbums();
   } catch (e) {
@@ -1298,7 +1535,7 @@ async function loadAlbums() {
   const el = document.getElementById("albumList");
   if (!el) return;
   const [albums, media, recentUploads] = await Promise.all([
-    api.get("/api/albums"),
+    api.get("/api/trips"),
     api.get("/api/media"),
     api.get("/api/recent-uploads?limit=100&days=30"),
   ]);
@@ -1308,7 +1545,7 @@ async function loadAlbums() {
   if (!albums.length) {
     const empty = document.createElement("p");
     empty.className = "hint";
-    empty.textContent = "No custom albums yet.";
+    empty.textContent = "No trips yet.";
     el.append(empty);
     return;
   }
@@ -1338,23 +1575,23 @@ async function loadAlbums() {
     const bar = document.createElement("div");
     bar.className = "row";
     const merge = document.createElement("button");
-    merge.textContent = "Merge album";
+    merge.textContent = "Combine trip";
     merge.onclick = async () => {
       await api.post("/api/merge", { album_id: a.id, order: "date" });
-      toast("Merge queued");
+      toast("Trip video combine queued");
     };
     const upl = document.createElement("button");
-    upl.textContent = "Upload album";
+    upl.textContent = "Upload trip";
     upl.onclick = async () => {
       await api.post("/api/upload", { media_ids: a.item_ids });
       toast("Upload queued");
     };
     const del = document.createElement("button");
     del.className = "danger";
-    del.textContent = "Delete album";
+    del.textContent = "Delete trip";
     del.onclick = async () => {
-      if (confirm("Delete album?")) {
-        await api.del(`/api/albums/${a.id}`);
+      if (confirm("Delete trip?")) {
+        await api.del(`/api/trips/${a.id}`);
         loadAlbums();
       }
     };
@@ -1372,7 +1609,7 @@ function renderRecentUploadsAlbum(rows) {
     <div class="row spread">
       <div>
         <h2>Recent uploads <span class="hint">(${count} videos)</span></h2>
-        <p class="hint">Default album populated from clips recently uploaded to the destination.</p>
+        <p class="hint">Recent clips uploaded to the destination.</p>
       </div>
       <button class="ghost">Open</button>
     </div>
@@ -1397,7 +1634,7 @@ async function moveAlbumItem(album, idx, dir) {
   const j = idx + dir;
   if (j < 0 || j >= ids.length) return;
   [ids[idx], ids[j]] = [ids[j], ids[idx]];
-  await api.post(`/api/albums/${album.id}/items`, { media_ids: ids });
+  await api.post(`/api/trips/${album.id}/items`, { media_ids: ids });
   loadAlbums();
 }
 

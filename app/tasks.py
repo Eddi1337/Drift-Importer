@@ -24,7 +24,7 @@ from .media import (
     probe,
 )
 from .merge import merge_clips
-from .models import Destination, Job, MediaItem, UploadedClip, UploadState, utcnow
+from .models import Album, AlbumItem, Destination, Job, MediaItem, UploadedClip, UploadState, utcnow
 from .timestamps import set_file_mtime, shift_datetime, write_metadata_creation_time
 
 log = logging.getLogger("drift.tasks")
@@ -325,6 +325,7 @@ def handle_merge(job_id: int, payload: dict, ctx: JobContext) -> None:
     """Merge ordered clips into one. payload: media_ids (ordered), output_name."""
     settings = get_settings()
     media_ids: List[int] = payload.get("media_ids", [])
+    album_id = payload.get("album_id")
     with session_scope() as s:
         items = [s.get(MediaItem, mid) for mid in media_ids]
         items = [it for it in items if it]
@@ -341,6 +342,12 @@ def handle_merge(job_id: int, payload: dict, ctx: JobContext) -> None:
         if item.capture_time is None and first_capture:
             item.capture_time = first_capture
         new_id = item.id
+        if album_id:
+            album = s.get(Album, album_id)
+            if album:
+                next_pos = max((it.position for it in album.items), default=-1) + 1
+                if all(it.media_id != new_id for it in album.items):
+                    s.add(AlbumItem(album_id=album_id, media_id=new_id, position=next_pos))
     get_manager_enqueue("thumbnail", {"media_ids": [new_id]})
 
 

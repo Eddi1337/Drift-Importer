@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %} · Explorer{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="row spread">
+    <div>
+      <h2>File Explorer</h2>
+      <p class="hint">Browse the attached Drift camera and the upload destination side by side.</p>
+    </div>
+    <button class="ghost" onclick="initFileExplorer()">Refresh</button>
+  </div>
+  <div class="explorer-grid">
+    <div class="explorer-pane">
+      <div class="row spread">
+        <h3>Camera</h3>
+        <select id="explorerCameraSelect" onchange="selectExplorerCamera()"></select>
+      </div>
+      <div id="cameraExplorerMeta" class="hint"></div>
+      <div id="cameraExplorer" class="explorer-window">Loading camera…</div>
+    </div>
+    <div class="explorer-pane">
+      <div class="row spread">
+        <h3>Destination</h3>
+        <select id="explorerDestinationSelect" onchange="selectExplorerDestination()"></select>
+      </div>
+      <div id="destinationExplorerMeta" class="hint"></div>
+      <div id="destinationExplorer" class="explorer-window">Loading destination…</div>
+    </div>
+  </div>
+</section>
+
+<dialog id="explorerPlayerDlg">
+  <video id="explorerPlayer" controls preload="metadata" style="max-width:80vw;max-height:70vh"></video>
+  <div class="row"><button onclick="closeExplorerPlayer()">Close</button></div>
+</dialog>
+
+<dialog id="explorerRenameDlg">
+  <h3>Rename file</h3>
+  <input id="explorerRenameInput">
+  <div class="row">
+    <button onclick="submitExplorerRename()">Rename</button>
+    <button class="ghost" onclick="document.getElementById('explorerRenameDlg').close()">Cancel</button>
+  </div>
+</dialog>
+
+<dialog id="explorerDateDlg">
+  <h3>Update file date</h3>
+  <input id="explorerDateInput" type="datetime-local">
+  <div class="row">
+    <button onclick="submitExplorerDate()">Update</button>
+    <button class="ghost" onclick="document.getElementById('explorerDateDlg').close()">Cancel</button>
+  </div>
+</dialog>
+{% endblock %}
+{% block scripts %}<script>initFileExplorer();</script>{% endblock %}
