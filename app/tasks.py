@@ -163,7 +163,7 @@ def _mark_upload_progress(
 
 @handler("import")
 def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
-    """Import a set of files (by path) into the library."""
+    """Index a set of files (by path) into the library."""
     # De-duplicate while preserving order: the same clip can be listed twice if
     # a device exposes nested/duplicate DCIM mounts.
     paths: List[str] = list(dict.fromkeys(payload.get("paths", [])))
@@ -172,13 +172,13 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
     group_by_month = bool(payload.get("group_uploads_by_month"))
     dest_ids = payload.get("destination_ids")
     # New files are tracked separately from already-known ones: a fresh clip's
-    # upload is enqueued the moment it's imported (so transfers start while the
-    # rest of the card is still being indexed), and re-verification uploads of
+    # upload is enqueued the moment it's indexed (so transfers start while the
+    # rest of the card is still being scanned), and re-verification uploads of
     # old clips queue strictly after all the new footage.
     new_ids: List[int] = []
     known_ids: List[int] = []
     seen_ids: set[int] = set()
-    ctx.log(f"Preparing to import {len(paths)} media files")
+    ctx.log(f"Preparing to index and fingerprint {len(paths)} media files")
     for i, p in enumerate(paths):
         path = Path(p)
         if not path.exists():
@@ -196,13 +196,13 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
                 item = import_one(s, path, source=payload.get("source", "device"))
                 item_id = item.id
             if item_id in seen_ids:
-                ctx.set_progress((i + 1) / total, f"Already imported {path.name}")
+                ctx.set_progress((i + 1) / total, f"Already indexed {path.name}")
                 continue
             seen_ids.add(item_id)
             (known_ids if was_known else new_ids).append(item_id)
             if auto_upload and not group_by_month and not was_known:
                 enqueue_upload_jobs([item_id], dest_ids, description_prefix="Auto-upload")
-            ctx.set_progress((i + 1) / total, f"Imported {path.name}")
+            ctx.set_progress((i + 1) / total, f"Indexed {path.name}")
         except IntegrityError:
             # Already imported by a concurrent job / earlier run — reuse it.
             with session_scope() as s:
@@ -212,10 +212,10 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
                 if existing and existing.id not in seen_ids:
                     seen_ids.add(existing.id)
                     known_ids.append(existing.id)
-            log.info("Skipped already-imported file %s", path)
-            ctx.set_progress((i + 1) / total, f"Already imported {path.name}")
+            log.info("Skipped already-indexed file %s", path)
+            ctx.set_progress((i + 1) / total, f"Already indexed {path.name}")
         except Exception:  # noqa: BLE001
-            log.exception("Failed to import %s", path)
+            log.exception("Failed to index %s", path)
             ctx.set_progress((i + 1) / total, f"Failed {path.name}")
     all_ids = new_ids + known_ids
     # Thumbnails as a follow-up so import returns fast. Only queue the items that
@@ -226,7 +226,7 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
     if thumb_ids:
         get_manager_enqueue("thumbnail", {"media_ids": thumb_ids})
     ctx.log(
-        f"Queued thumbnails for {len(thumb_ids)} of {len(all_ids)} imported files",
+        f"Queued thumbnails for {len(thumb_ids)} of {len(all_ids)} indexed files",
         progress=1.0,
     )
     # Optionally queue uploads (the "Upload Everything" flow). New clips were
@@ -707,10 +707,10 @@ def enqueue_device_import(
     group_uploads_by_month: bool = False,
     dedup: bool = True,
 ) -> tuple[int | None, int]:
-    """Enqueue an import of a connected device, de-duplicating reconnects.
+    """Enqueue indexing of a connected device, de-duplicating reconnects.
 
     Returns ``(job_id, file_count)``. ``job_id`` is ``None`` when there are no
-    files to import, or when ``dedup`` is set and an import for the same device
+    files to index, or when ``dedup`` is set and an import for the same device
     is already queued/running.
     """
     root_str = str(dcim_root)
@@ -733,7 +733,7 @@ def enqueue_device_import(
             "destination_ids": destination_ids,
             "group_uploads_by_month": group_uploads_by_month,
         },
-        description=f"Import {len(found)} files from {dcim_root.name}",
+        description=f"Index and fingerprint {len(found)} files from {dcim_root.name}",
     )
     return job_id, len(found)
 

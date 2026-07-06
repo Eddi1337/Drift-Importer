@@ -46,6 +46,41 @@ def test_overview_progress_is_count_based_over_the_current_run():
     assert o["percent"] == 40
 
 
+def test_overview_progress_counts_only_upload_jobs():
+    session = _session()
+    base = dt.datetime(2026, 6, 22, 12, 0, 0)
+    session.add_all([
+        Job(kind="import", status="running", progress=0.8, created_at=base),
+        Job(kind="thumbnail", status="queued", progress=0.0, created_at=base + dt.timedelta(seconds=1)),
+        Job(kind="upload", status="running", progress=0.25, created_at=base + dt.timedelta(seconds=2)),
+        Job(kind="upload", status="queued", progress=0.0, created_at=base + dt.timedelta(seconds=3)),
+    ])
+    session.commit()
+
+    o = compute_jobs_overview(session)
+
+    assert o["active"] == 4
+    assert o["completed_in_run"] == 0
+    assert o["total_in_run"] == 2
+    assert o["percent"] == 12
+
+
+def test_overview_progress_is_zero_when_active_work_has_no_uploads():
+    session = _session()
+    base = dt.datetime(2026, 6, 22, 12, 0, 0)
+    session.add_all([
+        Job(kind="import", status="running", progress=0.8, created_at=base),
+        Job(kind="thumbnail", status="queued", progress=0.0, created_at=base + dt.timedelta(seconds=1)),
+    ])
+    session.commit()
+
+    o = compute_jobs_overview(session)
+
+    assert o["active"] == 2
+    assert o["total_in_run"] == 0
+    assert o["percent"] == 0
+
+
 def test_lingering_paused_job_does_not_pin_progress_near_100():
     """Regression: a paused job left over from an earlier flood used to anchor the
     'current run' back over thousands of finished jobs, so a freshly connected

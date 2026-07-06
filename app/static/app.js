@@ -1719,14 +1719,14 @@ function updateJobsOverall() {
     el.dataset.built = "1";
     el.innerHTML = `
       <div class="jobs-overall-head">
-        <strong>Overall progress</strong>
+        <strong>Upload progress</strong>
         <span class="hint" data-sub></span>
         <span class="jobs-overall-pct" data-pct></span>
       </div>
       <div class="prog job-progress jobs-overall-bar"><span data-fill></span></div>`;
   }
-  const ofN = o.total_in_run ? ` · ${o.completed_in_run} of ${o.total_in_run} done` : "";
-  setNodeText(el.querySelector("[data-sub]"), `${o.running} running · ${o.active} in progress${ofN}`);
+  const ofN = o.total_in_run ? `${o.completed_in_run} of ${o.total_in_run} uploads done` : "No upload transfers queued";
+  setNodeText(el.querySelector("[data-sub]"), `${o.running} running · ${o.active} jobs active · ${ofN}`);
   setNodeText(el.querySelector("[data-pct]"), `${o.percent}%`);
   el.querySelector("[data-fill]").style.width = `${o.percent}%`;
 }
@@ -1738,8 +1738,10 @@ function jobRowDetailHtml(j) {
 function updateJobRow(el, j) {
   const pct = Math.round(j.progress * 100);
   const fill = el.querySelector(`[data-fill="${j.id}"]`);
-  if (fill) fill.style.width = `${pct}%`;
-  setNodeText(el.querySelector(`[data-pct="${j.id}"]`), `${pct}%`);
+  if (j.kind === "upload") {
+    if (fill) fill.style.width = `${pct}%`;
+    setNodeText(el.querySelector(`[data-pct="${j.id}"]`), `${pct}%`);
+  }
   setNodeText(el.querySelector(`[data-elapsed="${j.id}"]`), fmtElapsed(j.started_at || j.created_at, j.finished_at));
   const detailEl = el.querySelector(`[data-detail="${j.id}"]`);
   if (detailEl) {
@@ -1766,6 +1768,9 @@ function renderJobsTable(el, jobs) {
     let html = "<table class='jobs-table'><tr><th>ID</th><th>Kind</th><th>Description</th><th>Status</th><th>Timing</th><th class='progress-col'>Progress</th><th></th></tr>";
     jobs.forEach(j => {
       const pct = Math.round(j.progress * 100);
+      const progressCell = j.kind === "upload"
+        ? `<div class="prog job-progress"><span data-fill="${j.id}" style="width:${pct}%"></span></div><div class="progress-label" data-pct="${j.id}">${pct}%</div>`
+        : `<span class="hint">Not a file transfer</span>`;
       const elapsed = fmtElapsed(j.started_at || j.created_at, j.finished_at);
       const started = j.started_at ? fmtDateTime(j.started_at) : "Queued";
       const cancel = (isActiveJob(j) || j.status === "paused")
@@ -1781,7 +1786,7 @@ function renderJobsTable(el, jobs) {
         <td><button class="job-title" onclick="toggleJobLogs(${j.id})">${expanded ? "Hide" : "Show"} logs</button> ${esc(j.description)}<br><span class="hint" data-detail="${j.id}">${jobRowDetailHtml(j)}</span></td>
         <td>${renderJobState(j.status)}</td>
         <td><div class="job-time"><strong data-elapsed="${j.id}">${esc(elapsed)}</strong><span class="hint">Started ${esc(started)}</span></div></td>
-        <td class="progress-cell"><div class="prog job-progress"><span data-fill="${j.id}" style="width:${pct}%"></span></div><div class="progress-label" data-pct="${j.id}">${pct}%</div></td>
+        <td class="progress-cell">${progressCell}</td>
         <td><div class="row job-row-actions">${cancel}${retry}${dismiss}</div></td>
       </tr>`;
       if (expanded) {

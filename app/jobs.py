@@ -86,9 +86,10 @@ def jobs_overview(session) -> dict:
     """Aggregate job state across the whole table (not just a page of rows).
 
     The status counts are global (they drive the jobs-page summary boxes), but
-    the progress bar is scoped to the *current run* (see ``current_run_start``)
-    and is count-based — completed / total — so a fresh batch reads ~0% even when
-    the table is full of finished jobs from earlier runs.
+    the progress bar is scoped to upload jobs in the *current run* (see
+    ``current_run_start``) and is count-based — completed / total — so camera
+    indexing, thumbnailing, merges, and timestamp fixes do not move an upload
+    transfer bar.
     """
     counts = dict(
         session.query(Job.status, func.count())
@@ -111,11 +112,13 @@ def jobs_overview(session) -> dict:
                 func.coalesce(func.sum(case((Job.status == "done", 1), else_=0)), 0),
             )
             .filter(Job.dismissed_at.is_(None), Job.created_at >= run_start)
+            .filter(Job.kind == "upload")
             .one()
         )
         running_progress = (
             session.query(func.coalesce(func.sum(Job.progress), 0.0))
             .filter(
+                Job.kind == "upload",
                 Job.status == "running",
                 Job.dismissed_at.is_(None),
                 Job.created_at >= run_start,
@@ -124,7 +127,7 @@ def jobs_overview(session) -> dict:
         ) or 0.0
         done_in_run = int(run_done)
         total_run = int(run_running) + int(run_queued) + int(run_paused) + done_in_run
-        progress = (done_in_run + float(running_progress)) / total_run if total_run else 1.0
+        progress = (done_in_run + float(running_progress)) / total_run if total_run else 0.0
     else:
         done_in_run = 0
         total_run = 0
