@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base
-from app.ha_publish import compute_jobs_overview  # alias of jobs.jobs_overview
+from app.ha_publish import HAPublisher, compute_jobs_overview  # alias of jobs.jobs_overview
 from app.models import Job
 
 
@@ -83,3 +83,15 @@ def test_overview_idle_when_nothing_active():
     assert o["active"] == 0
     assert o["status"] == "idle"
     assert o["percent"] == 100
+
+
+def test_ha_publisher_refreshes_unchanged_state_periodically():
+    publisher = HAPublisher()
+    snapshot = (100, "idle", 0, 0, False, None)
+
+    assert publisher._should_publish(snapshot, 100.0)
+    publisher._last_published = snapshot
+    publisher._last_publish_time = 100.0
+
+    assert not publisher._should_publish(snapshot, 120.0)
+    assert publisher._should_publish(snapshot, 160.0)

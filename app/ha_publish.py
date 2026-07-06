@@ -5,8 +5,9 @@ percent across all sub-jobs), the overall status, and whether the camera is
 connected. Per-job entities are not published, and any legacy per-job/uploads
 entities from older versions are pruned on first run.
 
-Runs as one daemon thread (like the rest of the app's background work) and only
-POSTs to HA when the published snapshot actually changes.
+Runs as one daemon thread (like the rest of the app's background work). It
+POSTs to HA when the published snapshot changes, and also refreshes unchanged
+state periodically because REST-created HA states do not survive HA restarts.
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ log = logging.getLogger("drift.ha")
 # Camera detection walks mount paths (incl. an NFS NAS), so do it less often
 # than the cheap DB-only progress refresh.
 _DEVICE_SCAN_INTERVAL_S = 15.0
+_FORCE_PUBLISH_INTERVAL_S = 60.0
 
 # The overall progress/status published to HA is the same aggregate the jobs
 # page uses (count-based across the current run).
@@ -48,6 +50,7 @@ class HAPublisher:
         self._thread: Optional[threading.Thread] = None
         self._pruned = False
         self._last_published: Optional[tuple] = None
+        self._last_publish_time = 0.0
         self._camera: tuple[bool, Optional[str]] = (False, None)
         self._next_device_scan = 0.0
 
@@ -106,9 +109,10 @@ class HAPublisher:
             camera_connected,
             camera_label,
         )
-        if snapshot == self._last_published:
+        if not self._should_publish(snapshot, now):
             return
         self._last_published = snapshot
+        self._last_publish_time = now
 
         ha.publish_state(
             prefs,
@@ -135,6 +139,11 @@ class HAPublisher:
                 "icon": "mdi:camera" if camera_connected else "mdi:camera-off",
             },
         )
+
+    def _should_publish(self, snapshot: tuple, now: float) -> bool:
+        if snapshot != self._last_published:
+            return True
+        return (now - self._last_publish_time) >= _FORCE_PUBLISH_INTERVAL_S
 
 
 _publisher: Optional[HAPublisher] = None
