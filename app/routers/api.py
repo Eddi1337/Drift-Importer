@@ -408,6 +408,45 @@ def media_dict(m: MediaItem) -> dict:
     }
 
 
+def _device_upload_status_by_path(session: Session, paths: list[Path]) -> dict[str, dict]:
+    """Return upload status metadata for camera paths already indexed in media_items."""
+    if not paths:
+        return {}
+    wanted = [str(path) for path in paths]
+    rows = session.query(MediaItem).filter(MediaItem.path.in_(wanted)).all()
+    checksums = [row.checksum for row in rows if row.checksum]
+    done_checksums: set[str] = set()
+    if checksums:
+        done_checksums = {
+            checksum
+            for (checksum,) in session.query(UploadedClip.checksum)
+            .filter(UploadedClip.checksum.in_(checksums), UploadedClip.status == "done")
+            .all()
+        }
+    status_by_path: dict[str, dict] = {}
+    for row in rows:
+        uploads = [
+            {
+                "destination_id": u.destination_id,
+                "status": u.status,
+                "error": u.error,
+                "bytes_uploaded": u.bytes_uploaded,
+                "total_bytes": u.total_bytes,
+                "progress": round((u.bytes_uploaded / u.total_bytes), 4) if u.total_bytes else 0,
+                "remote_path": u.remote_path,
+                "uploaded_at": u.uploaded_at.isoformat() if u.uploaded_at else None,
+            }
+            for u in row.upload_states
+        ]
+        status_by_path[row.path] = {
+            "media_id": row.id,
+            "uploaded": any(u["status"] == "done" for u in uploads)
+            or bool(row.checksum and row.checksum in done_checksums),
+            "uploads": uploads,
+        }
+    return status_by_path
+
+
 def _is_attached_camera_path(path: Path) -> bool:
     try:
         resolved = path.resolve()
@@ -607,11 +646,11 @@ class ImportDeviceReq(BaseModel):
 
 
 @router.get("/device-files")
-def list_device_files(dcim_path: str):
+def list_device_files(dcim_path: str, session: Session = Depends(get_session)):
     root = Path(dcim_path)
     if not root.exists():
         raise HTTPException(400, "DCIM path does not exist")
-    files = []
+    raw_files = []
     for path in scan_media_files(root):
         kind = classify(path)
         if kind != "video":
@@ -620,8 +659,9 @@ def list_device_files(dcim_path: str):
             stat = path.stat()
         except OSError:
             continue
-        files.append(
+        raw_files.append(
             {
+                "_path": path,
                 "path": str(path),
                 "filename": path.name,
                 "relative_path": str(path.relative_to(root)),
@@ -629,6 +669,19 @@ def list_device_files(dcim_path: str):
                 "modified_at": dt.datetime.fromtimestamp(stat.st_mtime).isoformat(),
             }
         )
+    status_by_path = _device_upload_status_by_path(
+        session, [row["_path"] for row in raw_files]
+    )
+    files = []
+    for row in raw_files:
+        path = row.pop("_path")
+        row.update(
+            status_by_path.get(
+                str(path),
+                {"media_id": None, "uploaded": False, "uploads": []},
+            )
+        )
+        files.append(row)
     return {"dcim_path": str(root), "files": files}
 
 
@@ -651,7 +704,11 @@ def device_file_thumb(path: str):
 
 
 @router.get("/device-entries")
-def list_device_entries(dcim_path: str, path: str = ""):
+def list_device_entries(
+    dcim_path: str,
+    path: str = "",
+    session: Session = Depends(get_session),
+):
     root = Path(dcim_path)
     if not root.exists():
         raise HTTPException(400, "DCIM path does not exist")
@@ -670,6 +727,7 @@ def list_device_entries(dcim_path: str, path: str = ""):
             continue
         entries.append(
             {
+                "_path": entry,
                 "name": entry.name,
                 "path": rel,
                 "full_path": str(entry) if kind == "file" else None,
@@ -678,6 +736,18 @@ def list_device_entries(dcim_path: str, path: str = ""):
                 "modified_at": dt.datetime.fromtimestamp(stat.st_mtime).isoformat(),
             }
         )
+    status_by_path = _device_upload_status_by_path(
+        session, [row["_path"] for row in entries if row["type"] == "file"]
+    )
+    for row in entries:
+        entry = row.pop("_path")
+        if row["type"] == "file":
+            row.update(
+                status_by_path.get(
+                    str(entry),
+                    {"media_id": None, "uploaded": False, "uploads": []},
+                )
+            )
     return {"dcim_path": str(root), "path": path.strip("/"), "entries": entries}
 
 

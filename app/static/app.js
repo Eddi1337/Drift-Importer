@@ -176,6 +176,16 @@ function renderProgressRing(progress) {
   return `<span class="progress-chip"><span class="ring" style="--pct:${pct}"></span><span>${pct}%</span></span>`;
 }
 
+function renderProgressBar(progress, label = "") {
+  const pct = Math.max(0, Math.min(100, Math.round((progress || 0) * 100)));
+  return `
+    <div class="progress-stack">
+      <div class="prog job-progress"><span style="width:${pct}%"></span></div>
+      <div class="progress-label">${label ? `${esc(label)} · ` : ""}${pct}%</div>
+    </div>
+  `;
+}
+
 function renderJobState(status) {
   return `<span class="job-state ${esc(status)}"><span class="status-dot"></span>${esc(status)}</span>`;
 }
@@ -245,18 +255,24 @@ function renderLiveActivity() {
   const active = appState.jobs.filter(isActiveJob);
   const uploads = active.filter(j => j.kind === "upload");
   const current = active[0];
-  if (!el.querySelector("[data-live='active']")) {
-    el.innerHTML = `
-      <div class="live-card"><div class="hint">Active jobs</div><div class="value" data-live="active">0</div></div>
-      <div class="live-card"><div class="hint">Uploads moving</div><div class="value" data-live="uploads">0</div></div>
-      <div class="live-card"><div class="hint">Lead task</div><div class="value" data-live="lead">idle</div></div>
-      <div class="live-card"><div class="hint">Latest detail</div><div data-live="detail">Waiting for camera activity</div></div>
-    `;
-  }
-  setLiveText("active", active.length);
-  setLiveText("uploads", uploads.length);
-  setLiveText("lead", current ? current.kind : "idle");
-  setLiveText("detail", current ? (current.detail || current.description) : "Waiting for camera activity");
+  const rows = active.slice(0, 4).map(job => `
+    <div class="live-job">
+      <div>
+        <strong>${esc(job.kind)}</strong>
+        <span class="hint">${esc(job.description || job.detail || "Background job")}</span>
+      </div>
+      ${renderProgressBar(job.progress || 0, job.status)}
+    </div>
+  `).join("");
+  el.innerHTML = `
+    <div class="live-card"><div class="hint">Active jobs</div><div class="value">${active.length}</div></div>
+    <div class="live-card"><div class="hint">Uploads running</div><div class="value">${uploads.length}</div></div>
+    <div class="live-card"><div class="hint">Lead task</div><div class="value">${esc(current ? current.kind : "idle")}</div></div>
+    <div class="live-card live-card-wide">
+      <div class="hint">Current progress</div>
+      ${rows || "<span class='hint'>No active upload or processing jobs.</span>"}
+    </div>
+  `;
 }
 
 function setLiveText(key, value) {
@@ -302,7 +318,12 @@ async function refreshDevices() {
       free_bytes: d.free_bytes,
       total_bytes: d.total_bytes,
     })));
-    if (signature === appState.lastDeviceSignature) return;
+    if (signature === appState.lastDeviceSignature) {
+      if (appState.currentDcimPath && !appState.cameraBrowserPath) {
+        await loadCameraFiles(appState.currentDcimPath, true);
+      }
+      return;
+    }
     appState.lastDeviceSignature = signature;
     if (!devs.length) {
       appState.currentDcimPath = "";
@@ -357,18 +378,26 @@ async function importDevice(dcim, autoUpload, quiet = false, paths = null, desti
   }
 }
 
-async function loadCameraFiles(dcimPath) {
+async function loadCameraFiles(dcimPath, preserveSelection = false) {
   const list = document.getElementById("cameraFiles");
   const summary = document.getElementById("cameraFileSummary");
   if (!list || !summary) return;
   appState.currentDcimPath = dcimPath;
   appState.cameraBrowserPath = "";
-  appState.cameraFileSelection.clear();
-  list.textContent = "Loading camera videos…";
-  summary.textContent = "Scanning camera storage…";
+  if (!preserveSelection) {
+    appState.cameraFileSelection.clear();
+    list.textContent = "Loading camera videos…";
+    summary.textContent = "Scanning camera storage…";
+  }
   try {
     const data = await api.get(`/api/device-files?dcim_path=${encodeURIComponent(dcimPath)}`);
     appState.cameraFiles = data.files || [];
+    const available = new Set(
+      cameraFilesNeedingUpload().map(file => file.full_path || file.path)
+    );
+    appState.cameraFileSelection.forEach(path => {
+      if (!available.has(path)) appState.cameraFileSelection.delete(path);
+    });
     renderCameraFiles();
   } catch (e) {
     list.textContent = "Unable to load camera videos: " + e.message;
@@ -399,13 +428,25 @@ function renderCameraFiles() {
   const summary = document.getElementById("cameraFileSummary");
   if (!list || !summary) return;
   const files = appState.cameraFiles;
-  const totalBytes = files.reduce((sum, file) => sum + (file.size_bytes || 0), 0);
-  summary.textContent = `${files.length} video file${files.length === 1 ? "" : "s"} on camera · ${appState.cameraFileSelection.size} selected · ${fmtBytes(totalBytes)}`;
-  if (!files.length) {
-    list.innerHTML = "<span class='hint'>No videos found on this camera.</span>";
+  const visible = cameraFilesNeedingUpload(files);
+  const uploadedCount = files.filter(file => file.type !== "directory" && file.uploaded).length;
+  const hiddenFolders = files.filter(file => file.type === "directory").length;
+  const totalBytes = visible.reduce((sum, file) => sum + (file.size_bytes || 0), 0);
+  summary.textContent =
+    `${visible.length} video${visible.length === 1 ? "" : "s"} awaiting upload · ` +
+    `${uploadedCount} already uploaded hidden · ${appState.cameraFileSelection.size} selected · ${fmtBytes(totalBytes)}`;
+  if (!visible.length) {
+    const empty = hiddenFolders
+      ? "No unuploaded videos in this folder. Open another camera folder to check more clips."
+      : "No unuploaded videos found on this camera.";
+    list.innerHTML = `<span class='hint'>${empty}</span>`;
     return;
   }
-  list.innerHTML = renderCameraTable(files);
+  list.innerHTML = renderCameraTable(visible);
+}
+
+function cameraFilesNeedingUpload(files = appState.cameraFiles) {
+  return files.filter(file => file.type === "directory" || !file.uploaded);
 }
 
 function renderCameraTable(files) {
@@ -425,11 +466,25 @@ function renderCameraTable(files) {
           <th>Date on camera</th>
           <th>Size</th>
           <th>Path</th>
+          <th>Upload status</th>
         </tr>
       </thead>
       <tbody>
         ${sorted.map(entry => {
           const filePath = entry.full_path || entry.path;
+          if (entry.type === "directory") {
+            return `
+              <tr>
+                <td></td>
+                <td></td>
+                <td><button class="folder-name" onclick="browseCameraFolder('${escJs(entry.path)}')">${esc(entry.name || entry.filename)}</button></td>
+                <td>${esc(fmtDateTime(entry.modified_at) || "Unknown")}</td>
+                <td></td>
+                <td><span class="path-text" title="${esc(entry.path)}">${esc(entry.path)}</span></td>
+                <td>${renderCameraUploadStatus(entry)}</td>
+              </tr>
+            `;
+          }
           return `
             <tr>
               <td><input type="checkbox" value="${esc(filePath)}" ${appState.cameraFileSelection.has(filePath) ? "checked" : ""} onchange="toggleCameraFile('${escJs(filePath)}', this.checked)"></td>
@@ -438,12 +493,24 @@ function renderCameraTable(files) {
               <td>${esc(fmtDateTime(entry.modified_at) || "Unknown")}</td>
               <td>${esc(fmtBytes(entry.size_bytes))}</td>
               <td><span class="path-text" title="${esc(entry.relative_path || entry.path)}">${esc(entry.relative_path || entry.path)}</span></td>
+              <td>${renderCameraUploadStatus(entry)}</td>
             </tr>
           `;
         }).join("")}
       </tbody>
     </table>
   `;
+}
+
+function renderCameraUploadStatus(entry) {
+  if (entry.type === "directory") return "<span class='hint'>Folder</span>";
+  const uploads = entry.uploads || [];
+  if (entry.uploaded) return "<span class='pill up-done'>Uploaded</span>";
+  if (!uploads.length) return "<span class='pill up-pending'>Not uploaded</span>";
+  return uploads.map(u => {
+    const pct = u.total_bytes ? u.bytes_uploaded / u.total_bytes : (u.progress || 0);
+    return `<div class="camera-upload-status up-${esc(u.status)}" title="${esc(u.error || u.remote_path || "")}">${renderProgressBar(pct, u.status)}</div>`;
+  }).join(" ");
 }
 
 function toggleCameraGroup(key, checked) {
@@ -488,7 +555,9 @@ function toggleCameraFile(path, checked) {
 
 function toggleCameraSelection(checked) {
   if (checked) {
-    appState.cameraFiles.forEach(file => appState.cameraFileSelection.add(file.full_path || file.path));
+    cameraFilesNeedingUpload()
+      .filter(file => file.type !== "directory")
+      .forEach(file => appState.cameraFileSelection.add(file.full_path || file.path));
   }
   else appState.cameraFileSelection.clear();
   renderCameraFiles();
@@ -508,10 +577,11 @@ async function importSelectedCameraFiles(autoUpload) {
 
 async function uploadAllCameraFiles() {
   if (!appState.currentDcimPath) return toast("No camera connected");
-  if (!appState.cameraFiles.length) return toast("No camera videos found");
+  const pending = cameraFilesNeedingUpload().filter(file => file.type !== "directory");
+  if (!pending.length) return toast("No unuploaded camera videos found");
   const destinationIds = await chooseDestinationIds();
   if (destinationIds === false) return;
-  const paths = appState.cameraFiles.map(file => file.full_path || file.path);
+  const paths = pending.map(file => file.full_path || file.path);
   await importDevice(
     appState.currentDcimPath,
     true,

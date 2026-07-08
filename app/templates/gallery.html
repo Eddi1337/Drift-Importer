@@ -4,7 +4,8 @@
 <section class="panel" id="cameraPanel">
   <div class="row spread">
     <div>
-      <h2>Camera</h2>
+      <h2>Videos needing upload</h2>
+      <p class="hint">Only camera videos that have not completed an upload are shown. Completed clips are hidden from this list.</p>
       <div id="deviceDefaults" class="hint"></div>
     </div>
     <div class="row">
@@ -12,12 +13,12 @@
       <button class="ghost" onclick="toggleCameraSelection(true)">Select all</button>
       <button class="ghost" onclick="toggleCameraSelection(false)">Clear</button>
       <button onclick="importSelectedCameraFiles(true)">Upload selected</button>
-      <button onclick="uploadAllCameraFiles()">Upload all</button>
+      <button onclick="uploadAllCameraFiles()">Upload all shown</button>
     </div>
   </div>
   <div id="devices" class="camera-status">Scanning…</div>
   <div class="camera-live">
-    <h3>Live upload activity</h3>
+    <h3>Job and upload progress</h3>
     <div id="liveActivity" class="live-grid">Waiting for jobs…</div>
   </div>
   <div id="cameraFileSummary" class="hint">No camera connected.</div>
