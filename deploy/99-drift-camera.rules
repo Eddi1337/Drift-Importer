@@ -1,0 +1,3 @@
+# Mount the Drift Ghost XL's removable card through a systemd service.  Matching
+# the filesystem label, rather than /dev/sdX, avoids races with other USB disks.
+ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", ENV{ID_FS_LABEL}=="Drift Card", TAG+="systemd", ENV{SYSTEMD_WANTS}+="drift-camera-mount.service"

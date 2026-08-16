@@ -1,5 +1,6 @@
 import datetime as dt
 
+import httpx
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -130,3 +131,28 @@ def test_ha_publisher_refreshes_unchanged_state_periodically():
 
     assert not publisher._should_publish(snapshot, 120.0)
     assert publisher._should_publish(snapshot, 160.0)
+
+
+def test_ha_publish_logs_actionable_message_for_rejected_token(monkeypatch, caplog):
+    from app import ha
+    from app.models import AppSettings
+
+    settings = AppSettings(ha_base_url="http://ha.local:8123", ha_token="invalid")
+    request = httpx.Request("POST", "http://ha.local:8123/api/states/sensor.drift_import_progress")
+    response = httpx.Response(401, request=request)
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, *args, **kwargs):
+            raise httpx.HTTPStatusError("unauthorized", request=request, response=response)
+
+    monkeypatch.setattr(ha.httpx, "Client", lambda **kwargs: Client())
+
+    ha.publish_state(settings, "progress", 0)
+
+    assert "create a new long-lived access token" in caplog.text
