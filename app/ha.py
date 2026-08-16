@@ -58,6 +58,15 @@ def publish_state(
         with httpx.Client(timeout=10) as client:
             resp = client.post(url, headers=_headers(settings), json=payload)
             resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 401:
+            log.error(
+                "Home Assistant rejected the configured API token while publishing %s; "
+                "create a new long-lived access token and update Drift settings",
+                entity_id(settings, entity_suffix),
+            )
+        else:
+            log.exception("Failed to publish HA state for %s", entity_id(settings, entity_suffix))
     except Exception:  # noqa: BLE001
         log.exception("Failed to publish HA state for %s", entity_id(settings, entity_suffix))
 

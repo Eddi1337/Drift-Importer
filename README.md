@@ -57,11 +57,16 @@ journalctl -u drift-import -f
 
 ### Auto-mounting the camera
 
-Raspberry Pi OS Desktop auto-mounts USB media under `/media/<user>/…`. On Lite,
-install `udisks2`/`usbmount` or add an `/etc/fstab` entry, then point
-`DRIFT_MOUNT_PATHS` at the mount base. The app looks for a `DCIM` folder under
+`./install.sh` installs a udev-triggered systemd mount for the Ghost XL card
+labelled `Drift Card`. It mounts safely at `/media/drift-camera` whenever the
+camera is connected, so the app's existing auto-import/upload settings can
+start work without a desktop session. The app looks for a `DCIM` folder under
 each mounted volume, falling back to mounted folders that directly contain
 video files.
+
+If your card has a different filesystem label, change
+`deploy/99-drift-camera.rules` and `deploy/drift-camera-mount.service` to the
+same label before running the installer.
 
 ### Mounting your NAS (recommended for the "local" destination)
 

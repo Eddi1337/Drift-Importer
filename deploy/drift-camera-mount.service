@@ -1,0 +1,12 @@
+[Unit]
+Description=Mount the Drift camera card
+BindsTo=dev-disk-by\x2dlabel-Drift\x20Card.device
+After=dev-disk-by\x2dlabel-Drift\x20Card.device
+ConditionPathExists=/dev/disk/by-label/Drift\x20Card
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/bin/mkdir -p /media/drift-camera
+ExecStart=/usr/bin/mount -t exfat -o rw,nosuid,nodev,noexec,uid=0,gid=0,umask=022 /dev/disk/by-label/Drift\x20Card /media/drift-camera
+ExecStop=/usr/bin/umount /media/drift-camera
