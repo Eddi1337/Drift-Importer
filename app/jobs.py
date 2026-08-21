@@ -104,6 +104,37 @@ def jobs_overview(session) -> dict:
 
     run_start = current_run_start(session)
     if run_start is not None:
+        # This is the general-purpose progress figure for the web UI.  Unlike
+        # the HA upload sensor below, it includes imports, thumbnails and movie
+        # creation, so the on-screen bar never appears frozen while ffmpeg is
+        # doing useful work.
+        work_running, work_queued, work_paused, work_terminal = (
+            session.query(
+                func.coalesce(func.sum(case((Job.status == "running", 1), else_=0)), 0),
+                func.coalesce(func.sum(case((Job.status == "queued", 1), else_=0)), 0),
+                func.coalesce(func.sum(case((Job.status == "paused", 1), else_=0)), 0),
+                func.coalesce(func.sum(case((Job.status.in_(("done", "error", "cancelled")), 1), else_=0)), 0),
+            )
+            .filter(Job.dismissed_at.is_(None), Job.created_at >= run_start)
+            .one()
+        )
+        running_work_progress = (
+            session.query(func.coalesce(func.sum(Job.progress), 0.0))
+            .filter(
+                Job.status == "running",
+                Job.dismissed_at.is_(None),
+                Job.created_at >= run_start,
+            )
+            .scalar()
+        ) or 0.0
+        work_completed_in_run = int(work_terminal)
+        work_total_in_run = (
+            int(work_running) + int(work_queued) + int(work_paused) + work_completed_in_run
+        )
+        work_progress = (
+            (work_completed_in_run + float(running_work_progress)) / work_total_in_run
+            if work_total_in_run else 0.0
+        )
         run_running, run_queued, run_paused, run_done = (
             session.query(
                 func.coalesce(func.sum(case((Job.status == "running", 1), else_=0)), 0),
@@ -132,6 +163,9 @@ def jobs_overview(session) -> dict:
         done_in_run = 0
         total_run = 0
         progress = 1.0
+        work_completed_in_run = 0
+        work_total_in_run = 0
+        work_progress = 1.0
 
     if running:
         status = "running"
@@ -154,6 +188,10 @@ def jobs_overview(session) -> dict:
         "total_in_run": total_run,
         "progress": progress,
         "percent": round(progress * 100),
+        "work_completed_in_run": work_completed_in_run,
+        "work_total_in_run": work_total_in_run,
+        "work_progress": work_progress,
+        "work_percent": round(work_progress * 100),
         "status": status,
     }
 

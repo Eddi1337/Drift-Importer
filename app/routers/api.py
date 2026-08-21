@@ -1543,6 +1543,63 @@ def start_merge(req: MergeReq, session: Session = Depends(get_session)):
     return {"job_id": job_id}
 
 
+@router.post("/daily-movie")
+def start_daily_movie(session: Session = Depends(get_session)):
+    """Group the newest day of original videos and queue its Pi-friendly movie."""
+    latest = (
+        session.query(MediaItem.capture_time)
+        .filter(MediaItem.kind == "video", MediaItem.derived == False)  # noqa: E712
+        .filter(MediaItem.capture_time.is_not(None))
+        .order_by(MediaItem.capture_time.desc())
+        .first()
+    )
+    if not latest or not latest[0]:
+        raise HTTPException(400, "No dated original videos are available in the library")
+    day = latest[0].date()
+    day_start = dt.datetime.combine(day, dt.time.min)
+    day_end = day_start + dt.timedelta(days=1)
+    items = (
+        session.query(MediaItem)
+        .filter(MediaItem.kind == "video", MediaItem.derived == False)  # noqa: E712
+        .filter(MediaItem.capture_time >= day_start, MediaItem.capture_time < day_end)
+        .order_by(MediaItem.capture_time, MediaItem.filename)
+        .all()
+    )
+    if len(items) < 2:
+        raise HTTPException(400, f"Only {len(items)} video is available for {day.isoformat()}")
+    missing = [item.filename for item in items if not Path(item.path).is_file()]
+    if missing:
+        raise HTTPException(
+            409,
+            f"Reconnect the camera: {len(missing)} clip(s) from {day.isoformat()} are unavailable",
+        )
+    group_name = f"Day {day.isoformat()}"
+    album = session.query(Album).filter(Album.name == group_name).first()
+    if not album:
+        album = Album(name=group_name, description="Automatically grouped daily movie clips")
+        session.add(album)
+        session.flush()
+    # Rebuild the group from original clips. This lets a later import for the
+    # same day be included on the next run, without accidentally merging the
+    # previous derived movie back into itself.
+    for membership in list(album.items):
+        session.delete(membership)
+    session.flush()
+    for position, item in enumerate(items):
+        session.add(AlbumItem(album_id=album.id, media_id=item.id, position=position))
+    session.commit()
+    job_id = get_manager().enqueue(
+        "merge",
+        description=f"Make {day.isoformat()} movie from {len(items)} clips",
+        payload={
+            "media_ids": [item.id for item in items],
+            "album_id": album.id,
+            "output_name": f"day_{day.strftime('%Y_%m_%d')}.mp4",
+        },
+    )
+    return {"job_id": job_id, "group_id": album.id, "group_name": group_name, "file_count": len(items)}
+
+
 # --- jobs -------------------------------------------------------------------
 
 def job_dict(j: Job) -> dict:

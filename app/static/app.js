@@ -244,8 +244,8 @@ function renderJobBadge() {
   }
   b.innerHTML = `
     <span class="badge-text">${o.running ? "●" : "○"} ${o.active} job${o.active === 1 ? "" : "s"}</span>
-    <span class="prog menu-progress"><span style="width:${o.percent}%"></span></span>
-    <span class="badge-pct">${o.percent}%</span>
+    <span class="prog menu-progress"><span style="width:${o.work_percent}%"></span></span>
+    <span class="badge-pct">${o.work_percent}%</span>
   `;
 }
 
@@ -573,6 +573,15 @@ async function importSelectedCameraFiles(autoUpload) {
     if (destinationIds === false) return;
   }
   await importDevice(appState.currentDcimPath, autoUpload, false, paths, destinationIds);
+}
+
+async function makeLatestDayMovie() {
+  try {
+    const result = await api.post("/api/daily-movie", {});
+    toast(`${result.group_name}: movie queued from ${result.file_count} clips`);
+  } catch (e) {
+    toast("Could not make daily movie: " + e.message);
+  }
 }
 
 async function uploadAllCameraFiles() {
@@ -1789,16 +1798,16 @@ function updateJobsOverall() {
     el.dataset.built = "1";
     el.innerHTML = `
       <div class="jobs-overall-head">
-        <strong>Upload progress</strong>
+        <strong>Job progress</strong>
         <span class="hint" data-sub></span>
         <span class="jobs-overall-pct" data-pct></span>
       </div>
       <div class="prog job-progress jobs-overall-bar"><span data-fill></span></div>`;
   }
-  const ofN = o.total_in_run ? `${o.completed_in_run} of ${o.total_in_run} uploads done` : "No upload transfers queued";
+  const ofN = o.work_total_in_run ? `${o.work_completed_in_run} of ${o.work_total_in_run} jobs finished` : "No jobs queued";
   setNodeText(el.querySelector("[data-sub]"), `${o.running} running · ${o.active} jobs active · ${ofN}`);
-  setNodeText(el.querySelector("[data-pct]"), `${o.percent}%`);
-  el.querySelector("[data-fill]").style.width = `${o.percent}%`;
+  setNodeText(el.querySelector("[data-pct]"), `${o.work_percent}%`);
+  el.querySelector("[data-fill]").style.width = `${o.work_percent}%`;
 }
 
 function jobRowDetailHtml(j) {
@@ -1808,10 +1817,8 @@ function jobRowDetailHtml(j) {
 function updateJobRow(el, j) {
   const pct = Math.round(j.progress * 100);
   const fill = el.querySelector(`[data-fill="${j.id}"]`);
-  if (j.kind === "upload") {
-    if (fill) fill.style.width = `${pct}%`;
-    setNodeText(el.querySelector(`[data-pct="${j.id}"]`), `${pct}%`);
-  }
+  if (fill) fill.style.width = `${pct}%`;
+  setNodeText(el.querySelector(`[data-pct="${j.id}"]`), `${pct}%`);
   setNodeText(el.querySelector(`[data-elapsed="${j.id}"]`), fmtElapsed(j.started_at || j.created_at, j.finished_at));
   const detailEl = el.querySelector(`[data-detail="${j.id}"]`);
   if (detailEl) {
@@ -1838,9 +1845,7 @@ function renderJobsTable(el, jobs) {
     let html = "<table class='jobs-table'><tr><th>ID</th><th>Kind</th><th>Description</th><th>Status</th><th>Timing</th><th class='progress-col'>Progress</th><th></th></tr>";
     jobs.forEach(j => {
       const pct = Math.round(j.progress * 100);
-      const progressCell = j.kind === "upload"
-        ? `<div class="prog job-progress"><span data-fill="${j.id}" style="width:${pct}%"></span></div><div class="progress-label" data-pct="${j.id}">${pct}%</div>`
-        : `<span class="hint">Not a file transfer</span>`;
+      const progressCell = `<div class="prog job-progress"><span data-fill="${j.id}" style="width:${pct}%"></span></div><div class="progress-label" data-pct="${j.id}">${pct}%</div>`;
       const elapsed = fmtElapsed(j.started_at || j.created_at, j.finished_at);
       const started = j.started_at ? fmtDateTime(j.started_at) : "Queued";
       const cancel = (isActiveJob(j) || j.status === "paused")

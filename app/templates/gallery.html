@@ -13,6 +13,7 @@
       <button class="ghost" onclick="toggleCameraSelection(true)">Select all</button>
       <button class="ghost" onclick="toggleCameraSelection(false)">Clear</button>
       <button onclick="importSelectedCameraFiles(true)">Upload selected</button>
+      <button class="ghost" onclick="makeLatestDayMovie()">Make latest-day movie</button>
       <button onclick="uploadAllCameraFiles()">Upload all shown</button>
     </div>
   </div>
@@ -23,6 +24,7 @@
   </div>
   <div id="cameraFileSummary" class="hint">No camera connected.</div>
   <div id="cameraFiles" class="camera-file-list">No camera connected.</div>
+  <p class="hint"><strong>Make latest-day movie</strong> groups all original videos from the newest day in the library, then joins them in capture order. The original clips stay untouched; keep the camera connected until the job finishes.</p>
 </section>
 
 <dialog id="playerDlg">

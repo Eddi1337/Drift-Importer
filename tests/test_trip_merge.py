@@ -45,7 +45,9 @@ def test_merge_job_adds_combined_clip_to_trip(tmp_path, monkeypatch):
     session_maker = sessionmaker(bind=engine, expire_on_commit=False, future=True)
     monkeypatch.setattr(tasks, "session_scope", _session_scope_factory(session_maker))
     monkeypatch.setattr(tasks, "get_settings", lambda: SimpleNamespace(working_dir=tmp_path))
-    monkeypatch.setattr(tasks, "merge_clips", lambda _paths, output: output.write_bytes(b"merged"))
+    monkeypatch.setattr(
+        tasks, "merge_clips", lambda _paths, output, progress=None: output.write_bytes(b"merged")
+    )
     monkeypatch.setattr(tasks, "get_manager_enqueue", lambda *_args, **_kwargs: 1)
 
     def fake_import_one(session, output, source, derived=False):

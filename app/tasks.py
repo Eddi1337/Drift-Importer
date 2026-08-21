@@ -329,13 +329,21 @@ def handle_merge(job_id: int, payload: dict, ctx: JobContext) -> None:
     with session_scope() as s:
         items = [s.get(MediaItem, mid) for mid in media_ids]
         items = [it for it in items if it]
-        paths = [Path(it.path) for it in items]
+        paths = [Path(it.path) for it in items] or [Path(path) for path in payload.get("paths", [])]
         first_capture = items[0].capture_time if items else None
+    if len(paths) < 2:
+        raise RuntimeError("Need at least two clips to make a movie")
     name = payload.get("output_name") or f"merged_{int(utcnow().timestamp())}.mp4"
     output = settings.working_dir / name
-    ctx.set_progress(0.05, f"Merging {len(paths)} clips")
+    ctx.set_progress(0.05, f"Preparing movie from {len(paths)} clips")
     with ctx.ffmpeg_semaphore:
-        merge_clips(paths, output)
+        merge_clips(
+            paths,
+            output,
+            progress=lambda fraction: ctx.set_progress(
+                0.05 + (fraction * 0.8), f"Making movie: {round(fraction * 100)}%"
+            ),
+        )
     ctx.set_progress(0.9, "Indexing merged clip")
     with session_scope() as s:
         item = import_one(s, output, source="library", derived=True)

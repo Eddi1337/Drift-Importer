@@ -10,7 +10,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 from .config import get_settings
 from .media import probe
@@ -39,9 +39,11 @@ def check_compatible(paths: Sequence[Path]) -> None:
             )
 
 
-def build_concat_command(paths: Sequence[Path], output: Path, list_file: Path) -> List[str]:
+def build_concat_command(
+    paths: Sequence[Path], output: Path, list_file: Path, report_progress: bool = False
+) -> List[str]:
     settings = get_settings()
-    return [
+    command = [
         settings.ffmpeg, "-y",
         "-f", "concat",
         "-safe", "0",
@@ -49,6 +51,11 @@ def build_concat_command(paths: Sequence[Path], output: Path, list_file: Path) -
         "-c", "copy",
         str(output),
     ]
+    if report_progress:
+        # ffmpeg's machine-readable progress is much more reliable than trying
+        # to parse its human-oriented status line.
+        command[2:2] = ["-v", "error", "-progress", "pipe:1", "-nostats"]
+    return command
 
 
 def write_concat_list(paths: Sequence[Path], list_file: Path) -> None:
@@ -60,7 +67,9 @@ def write_concat_list(paths: Sequence[Path], list_file: Path) -> None:
     list_file.write_text("\n".join(lines) + "\n")
 
 
-def merge_clips(paths: Sequence[Path], output: Path) -> Dict:
+def merge_clips(
+    paths: Sequence[Path], output: Path, progress: Optional[Callable[[float], None]] = None
+) -> Dict:
     """Merge clips in the given order. Returns ffmpeg result info."""
     check_compatible(paths)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -68,10 +77,39 @@ def merge_clips(paths: Sequence[Path], output: Path) -> Dict:
         list_file = Path(tf.name)
     try:
         write_concat_list(paths, list_file)
-        cmd = build_concat_command(paths, output, list_file)
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
-        if res.returncode != 0:
-            raise MergeError(f"ffmpeg concat failed: {res.stderr[-2000:]}")
+        total_duration = sum(float(probe(path).get("duration_s") or 0) for path in paths)
+        if progress and total_duration > 0:
+            cmd = build_concat_command(paths, output, list_file, report_progress=True)
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            last_progress = -1.0
+            try:
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    key, separator, value = line.strip().partition("=")
+                    if separator and key in ("out_time_us", "out_time_ms"):
+                        try:
+                            # Despite its older name, out_time_ms is emitted in
+                            # microseconds by the ffmpeg versions used on Pi OS.
+                            fraction = float(value) / (total_duration * 1_000_000)
+                        except ValueError:
+                            continue
+                        fraction = max(0.0, min(1.0, fraction))
+                        if fraction - last_progress >= 0.01:
+                            progress(fraction)
+                            last_progress = fraction
+                _, stderr = proc.communicate(timeout=3600)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                _, stderr = proc.communicate()
+                raise MergeError("ffmpeg concat timed out after one hour")
+            if proc.returncode != 0:
+                raise MergeError(f"ffmpeg concat failed: {stderr[-2000:]}")
+            progress(1.0)
+        else:
+            cmd = build_concat_command(paths, output, list_file)
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+            if res.returncode != 0:
+                raise MergeError(f"ffmpeg concat failed: {res.stderr[-2000:]}")
         if not output.exists() or output.stat().st_size == 0:
             raise MergeError("Merge produced no output file.")
         return {"output": str(output), "size": output.stat().st_size}

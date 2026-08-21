@@ -23,7 +23,7 @@ def _session():
 
 def test_overview_progress_is_count_based_over_the_current_run():
     session = _session()
-    base = dt.datetime(2026, 6, 22, 12, 0, 0)
+    base = dt.datetime.utcnow().replace(microsecond=0)
     session.add_all([
         # Historical completed job from an earlier run — must NOT count.
         Job(kind="upload", status="done", progress=1.0, created_at=base - dt.timedelta(hours=2)),
@@ -49,7 +49,7 @@ def test_overview_progress_is_count_based_over_the_current_run():
 
 def test_overview_progress_counts_only_upload_jobs():
     session = _session()
-    base = dt.datetime(2026, 6, 22, 12, 0, 0)
+    base = dt.datetime.utcnow().replace(microsecond=0)
     session.add_all([
         Job(kind="import", status="running", progress=0.8, created_at=base),
         Job(kind="thumbnail", status="queued", progress=0.0, created_at=base + dt.timedelta(seconds=1)),
@@ -64,11 +64,14 @@ def test_overview_progress_counts_only_upload_jobs():
     assert o["completed_in_run"] == 0
     assert o["total_in_run"] == 2
     assert o["percent"] == 12
+    # The browser bar includes every background job, so imports and thumbnails
+    # visibly advance even though the HA sensor deliberately remains upload-only.
+    assert o["work_percent"] == 26
 
 
 def test_overview_progress_is_zero_when_active_work_has_no_uploads():
     session = _session()
-    base = dt.datetime(2026, 6, 22, 12, 0, 0)
+    base = dt.datetime.utcnow().replace(microsecond=0)
     session.add_all([
         Job(kind="import", status="running", progress=0.8, created_at=base),
         Job(kind="thumbnail", status="queued", progress=0.0, created_at=base + dt.timedelta(seconds=1)),
@@ -80,6 +83,7 @@ def test_overview_progress_is_zero_when_active_work_has_no_uploads():
     assert o["active"] == 2
     assert o["total_in_run"] == 0
     assert o["percent"] == 0
+    assert o["work_percent"] == 40
 
 
 def test_lingering_paused_job_does_not_pin_progress_near_100():
@@ -87,7 +91,7 @@ def test_lingering_paused_job_does_not_pin_progress_near_100():
     'current run' back over thousands of finished jobs, so a freshly connected
     batch read ~99% instead of ~0%."""
     session = _session()
-    flood = dt.datetime(2026, 6, 22, 9, 0, 0)
+    flood = dt.datetime.utcnow().replace(microsecond=0) - dt.timedelta(hours=3)
     # An earlier batch: one job the user paused, plus 200 jobs that completed.
     session.add(Job(kind="upload", status="paused", progress=0.0, created_at=flood))
     for i in range(200):

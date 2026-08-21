@@ -16,8 +16,9 @@ SFTP, or a local/NAS path).
 - **File management** — rename / delete (library-only or with the file).
 - **Timestamp correction** — absolute set or relative batch shift; updates the
   DB, file mtime, and embedded metadata (stream-copy, no re-encode).
-- **Merge clips** in order via ffmpeg concat **stream-copy** (no re-encode →
-  fast and low-CPU on the Pi).
+- **Make a latest-day movie** — one Library action groups all original clips
+  from the newest day and joins them in capture order with **stream-copy** (no
+  re-encode → fast and low-CPU on the Pi), leaving the originals untouched.
 - **Tags & albums** with reordering (album order drives merges).
 - **Multiple destinations** configured in the GUI: Nextcloud (WebDAV), SFTP, and
   local/NAS path. Per-destination upload status, "test connection", and
