@@ -16,12 +16,24 @@ IMAGE_TAG="${IMAGE_TAG:-latest}"
 : "${HARBOR_ROBOT_USER:?HARBOR_ROBOT_USER not set}"
 : "${HARBOR_ROBOT_TOKEN:?HARBOR_ROBOT_TOKEN not set}"
 
-SSH=(ssh -i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new)
+SSH=(ssh -i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+
+retry() {
+  local attempt
+  for attempt in 1 2 3; do
+    "$@" && return 0
+    if [ "$attempt" -lt 3 ]; then
+      echo ">> Connection attempt ${attempt} failed; retrying..." >&2
+      sleep 3
+    fi
+  done
+  return 1
+}
 
 echo ">> Deploying ${HARBOR_REGISTRY}/drift-import/drift-import:${IMAGE_TAG} to ${DEPLOY_HOST}"
 
-"${SSH[@]}" "$DEPLOY_HOST" "mkdir -p ~/${DEPLOY_DIR}"
-scp -i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+retry "${SSH[@]}" "$DEPLOY_HOST" "mkdir -p ~/${DEPLOY_DIR}"
+retry scp -i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
   deploy/docker-compose.pi.yml "$DEPLOY_HOST:~/${DEPLOY_DIR}/docker-compose.yml"
 
 "${SSH[@]}" "$DEPLOY_HOST" \
