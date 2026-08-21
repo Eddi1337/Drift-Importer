@@ -33,7 +33,10 @@ cat > .env <<EOF
 HARBOR_REGISTRY=${HARBOR_REGISTRY}
 IMAGE_TAG=${IMAGE_TAG}
 EOF
-echo "${HARBOR_ROBOT_TOKEN}" | docker login "${HARBOR_REGISTRY}" -u "${HARBOR_ROBOT_USER}" --password-stdin
+# Harbor intentionally serves this private-LAN registry over HTTP. Supplying
+# the scheme is required for docker login; image pulls use the Pi daemon's
+# matching insecure-registry setting.
+echo "${HARBOR_ROBOT_TOKEN}" | docker login "http://${HARBOR_REGISTRY}" -u "${HARBOR_ROBOT_USER}" --password-stdin
 docker compose pull
 docker compose up -d
 docker image prune -f >/dev/null 2>&1 || true
