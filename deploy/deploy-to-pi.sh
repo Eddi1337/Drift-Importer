@@ -1,39 +1,43 @@
 #!/usr/bin/env bash
-# Deploy the tested application source to the Raspberry Pi's systemd service.
-#
-# The Pi runs Drift-Import directly from /opt/drift-import (not in Docker).
-# The container images built by CI remain useful as release artefacts, but the
-# deploy step deliberately syncs only application files and restarts the
-# existing service. Its venv, settings, database and working media stay put.
+# Deploy the freshly-built image to the Raspberry Pi Docker host.
 #
 # The deploy target is CONFIGURABLE via the DEPLOY_HOST variable (set in the
-# runner .env, default below). Point it at any compatible systemd host with an
-# SSH-authorised deployment key to deploy elsewhere.
+# runner .env, default below). Point it at any Docker host with an
+# SSH-authorised key to deploy elsewhere.
 set -euo pipefail
 
 # --- configurable deploy target --------------------------------------------
 DEPLOY_HOST="${DEPLOY_HOST:-ed@192.168.3.188}"        # user@host of the Pi
 DEPLOY_SSH_KEY="${DEPLOY_SSH_KEY:-$HOME/.ssh/drift_deploy}"
-DEPLOY_PATH="${DEPLOY_PATH:-/opt/drift-import}"
+DEPLOY_DIR="${DEPLOY_DIR:-drift-import}"
+IMAGE_TAG="${IMAGE_TAG:-latest}"
+
+: "${HARBOR_REGISTRY:?HARBOR_REGISTRY not set}"
+: "${HARBOR_ROBOT_USER:?HARBOR_ROBOT_USER not set}"
+: "${HARBOR_ROBOT_TOKEN:?HARBOR_ROBOT_TOKEN not set}"
 
 SSH=(ssh -i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new)
 
-echo ">> Syncing Drift-Import source to ${DEPLOY_HOST}:${DEPLOY_PATH}"
+echo ">> Deploying ${HARBOR_REGISTRY}/drift-import/drift-import:${IMAGE_TAG} to ${DEPLOY_HOST}"
 
-# Preserve all Pi-local state. --delete is intentionally avoided: an interrupted
-# transfer must never remove a live application file or footage.
-rsync -az \
-  --exclude='.git/' \
-  --exclude='.venv/' \
-  --exclude='.env' \
-  --exclude='data/' \
-  --exclude='working/' \
-  --exclude='thumbnails/' \
-  --exclude='__pycache__/' \
-  -e "${SSH[*]}" \
-  ./ "${DEPLOY_HOST}:${DEPLOY_PATH}/"
+"${SSH[@]}" "$DEPLOY_HOST" "mkdir -p ~/${DEPLOY_DIR}"
+scp -i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+  deploy/docker-compose.pi.yml "$DEPLOY_HOST:~/${DEPLOY_DIR}/docker-compose.yml"
 
 "${SSH[@]}" "$DEPLOY_HOST" \
-  "sudo -n /bin/systemctl restart drift-import.service && sudo -n /bin/systemctl is-active --quiet drift-import.service"
+  "HARBOR_REGISTRY='${HARBOR_REGISTRY}' HARBOR_ROBOT_USER='${HARBOR_ROBOT_USER}' HARBOR_ROBOT_TOKEN='${HARBOR_ROBOT_TOKEN}' IMAGE_TAG='${IMAGE_TAG}' DEPLOY_DIR='${DEPLOY_DIR}' bash -se" <<'REMOTE'
+set -euo pipefail
+cd ~/${DEPLOY_DIR}
+umask 077
+cat > .env <<EOF
+HARBOR_REGISTRY=${HARBOR_REGISTRY}
+IMAGE_TAG=${IMAGE_TAG}
+EOF
+echo "${HARBOR_ROBOT_TOKEN}" | docker login "${HARBOR_REGISTRY}" -u "${HARBOR_ROBOT_USER}" --password-stdin
+docker compose pull
+docker compose up -d
+docker image prune -f >/dev/null 2>&1 || true
+docker compose ps
+REMOTE
 
 echo ">> Done."

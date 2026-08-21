@@ -14,9 +14,16 @@ services:
       DRIFT_MAX_CONCURRENT_UPLOADS: "1"
       DRIFT_MAX_CONCURRENT_FFMPEG: "1"
       DRIFT_MOUNT_PATHS: "/media,/mnt"
+    env_file:
+      # Keep the live application's settings (including integrations) when
+      # switching runtimes. This file remains on the Pi and is never copied to
+      # CI or committed.
+      - /opt/drift-import/.env
     volumes:
-      - drift-data:/data
-      - drift-working:/working
+      # Preserve the existing systemd deployment's SQLite DB, key, logs and
+      # generated clips across the Docker migration.
+      - /var/lib/drift-import/data:/data
+      - /var/lib/drift-import/working:/working
       # Camera (auto-mounted under /media) and any mounted NAS.
       - /media:/media:rslave
       - /mnt:/mnt:rslave
@@ -25,7 +32,3 @@ services:
       - /proc:/host/proc:ro
     # Pi Zero 2 W has ~425 MB RAM total; keep the container well under that.
     mem_limit: 256m
-
-volumes:
-  drift-data:
-  drift-working:
