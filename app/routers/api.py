@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -40,8 +41,133 @@ from ..settings_store import app_settings_dict, encode_destination_ids, get_app_
 from ..streaming import stream_file
 from ..sysmon import get_monitor
 from ..tasks import enqueue_device_import, enqueue_upload_jobs
+from .. import workflow
 
 router = APIRouter()
+
+
+class CameraWorkflowReq(BaseModel):
+    camera_root: str
+    destination_id: int
+
+
+class DayTripReq(BaseModel):
+    days: List[str]
+    destination_id: int
+    name: str = ""
+
+
+@router.get("/workflow/overview")
+def workflow_overview(session: Session = Depends(get_session)):
+    cameras = []
+    devices = get_device_monitor().get_devices()
+    for root in workflow.camera_roots():
+        matches = [d for d in devices if Path(d["path"]).resolve() == root]
+        try:
+            paths = workflow.scan_videos(root)
+            size = sum(path.stat().st_size for path in paths)
+            error = None
+        except (OSError, RuntimeError) as exc:
+            paths, size, error = [], 0, str(exc)
+        cameras.append({"path": str(root), "label": matches[0].get("label", root.name) if matches else root.name,
+                        "video_count": len(paths), "video_bytes": size, "error": error,
+                        "free_bytes": matches[0].get("free_bytes") if matches else None,
+                        "total_bytes": matches[0].get("total_bytes") if matches else None})
+    destinations = []
+    for dest in session.query(Destination).filter(Destination.enabled.is_(True), Destination.type.in_(("local", "nfs", "smb"))).order_by(Destination.rank):
+        try:
+            root = workflow.require_storage(Path(dest.base_path))
+            usage = shutil.disk_usage(root)
+            storage = {"available": True, "free_bytes": usage.free, "total_bytes": usage.total, "error": None}
+        except (OSError, RuntimeError) as exc:
+            storage = {"available": False, "free_bytes": None, "total_bytes": None, "error": str(exc)}
+        destinations.append({"id": dest.id, "name": dest.name, "base_path": dest.base_path, **storage})
+    host = {"memory_total_bytes": None, "memory_used_bytes": None, "uptime_s": None, "temperature_c": None}
+    proc = Path("/host/proc") if Path("/host/proc/meminfo").exists() else Path("/proc")
+    try:
+        memory = {line.split(":")[0]: int(line.split()[1]) * 1024 for line in (proc / "meminfo").read_text().splitlines() if len(line.split()) >= 2}
+        host["memory_total_bytes"] = memory["MemTotal"]
+        host["memory_used_bytes"] = memory["MemTotal"] - memory.get("MemAvailable", memory.get("MemFree", 0))
+        host["uptime_s"] = float((proc / "uptime").read_text().split()[0])
+    except (OSError, ValueError, KeyError):
+        pass
+    try:
+        host["temperature_c"] = round(float(Path("/sys/class/thermal/thermal_zone0/temp").read_text()) / 1000, 1)
+    except (OSError, ValueError):
+        pass
+    return {"cameras": cameras, "destinations": destinations, "cpu": _cpu_payload(), "host": host,
+            "network": _network_payload(), "jobs": jobs_overview(session),
+            "library": _build_upload_totals_query(session), "recording_days": len(workflow.recording_days(session))}
+
+
+@router.post("/workflow/import")
+def workflow_import(req: CameraWorkflowReq, session: Session = Depends(get_session)):
+    try:
+        root = workflow.camera_root(req.camera_root)
+        dest = workflow.nas_destination(session, req.destination_id)
+        workflow.require_storage(Path(dest.base_path))
+        paths = workflow.scan_videos(root)
+        if not paths:
+            raise ValueError("No camera videos found")
+        job_id, count = enqueue_device_import(root, paths=[str(p) for p in paths], auto_upload=True,
+                                             destination_ids=[dest.id], dedup=True, group_uploads_by_month=True,
+                                             fingerprint_on_import=True)
+        return {"job_id": job_id, "file_count": count}
+    except (ValueError, OSError, RuntimeError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/workflow/verify")
+def workflow_verify(req: CameraWorkflowReq, session: Session = Depends(get_session)):
+    try:
+        root = workflow.camera_root(req.camera_root)
+        dest = workflow.nas_destination(session, req.destination_id)
+        workflow.require_storage(Path(dest.base_path))
+        with workflow.enqueue_lock:
+            for job in session.query(Job).filter(Job.kind == "verify", Job.status.in_(workflow.ACTIVE_STATES)):
+                payload = json.loads(job.payload or "{}")
+                if payload.get("camera_root") == str(root) and payload.get("destination_id") == dest.id:
+                    return {"job_id": job.id}
+            return {"job_id": get_manager().enqueue("verify", description="Verify every camera video against NAS",
+                         payload={"camera_root": str(root), "destination_id": dest.id})}
+    except (ValueError, OSError, RuntimeError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/workflow/verification")
+def latest_verification(camera_root: str, destination_id: int, session: Session = Depends(get_session)):
+    for job in session.query(Job).filter(Job.kind == "verify").order_by(Job.id.desc()):
+        payload = json.loads(job.payload or "{}")
+        if payload.get("camera_root") == camera_root and payload.get("destination_id") == destination_id:
+            return {**job_dict(job), "result": json.loads(job.result) if job.result else None}
+    return None
+
+
+@router.get("/trips/suggestions")
+def day_suggestions(destination_id: int, session: Session = Depends(get_session)):
+    try:
+        return workflow.trip_suggestions(session, destination_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/trips/from-days")
+def create_day_trip(req: DayTripReq, session: Session = Depends(get_session)):
+    try:
+        return workflow.queue_trip(session, req.days, req.destination_id, req.name)
+    except (ValueError, OSError, RuntimeError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/trips/movies")
+def trip_movies(session: Session = Depends(get_session)):
+    from ..models import TripMovie
+    return [{"id": movie.id, "name": session.get(Album, movie.album_id).name,
+             "days": json.loads(movie.days), "media_id": movie.media_id,
+             "path": (media := session.get(MediaItem, movie.media_id)).path,
+             "size_bytes": media.size_bytes, "duration_s": media.duration_s,
+             "destination_id": movie.destination_id}
+            for movie in session.query(TripMovie).order_by(TripMovie.created_at.desc())]
 
 # Default stats window: last 30 minutes (in hours, since the API is hours-based).
 DEFAULT_TIMELINE_HOURS = 0.5
@@ -696,6 +822,11 @@ def device_file_thumb(path: str):
         f"{media_path}:{stat.st_size}:{stat.st_mtime_ns}".encode()
     ).hexdigest()
     out = get_settings().thumbnail_dir / "device" / f"{key}.jpg"
+    from ..storage import require_working_storage
+    try:
+        require_working_storage(out.parent)
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(503, str(exc)) from exc
     if not out.exists():
         ok = make_thumbnail(media_path, classify(media_path) or "video", out)
         if not ok:
@@ -1524,7 +1655,7 @@ def start_merge(req: MergeReq, session: Session = Depends(get_session)):
         a = session.get(Album, req.album_id)
         if not a:
             raise HTTPException(404, "Trip not found")
-        media_ids = [it.media_id for it in a.items]
+        media_ids = [it.media_id for it in a.items if not it.media.derived]
     if req.order in ("date", "sequence"):
         items = [session.get(MediaItem, mid) for mid in media_ids]
         items = [item for item in items if item]

@@ -8,6 +8,22 @@ SFTP, or a local/NAS path).
 
 ## Features
 
+- **Overview homepage** — connected-camera video count/capacity, NAS space,
+  archived totals, recording days, Pi CPU/RAM/temperature/network and activity.
+- **Import & verify** — stream all videos from the entire attached camera
+  (including EVENT recordings) to a chosen NAS. **Verify all NAS copies** runs
+  a background full SHA-256 comparison of every video, not just upload status
+  or the sampled dedup hash. The dated report lists missing/mismatched files;
+  importing again repairs those copies. Keep the camera attached throughout.
+  New imports fingerprint camera files again and add a content suffix to uploaded
+  filenames, so recycled camera counters and identically named EVENT/DCIM clips
+  cannot overwrite a different recording.
+- **Suggested trips** — every indexed recording day appears on Trips. Create a
+  day movie or select several days for one movie in recording order. This uses
+  completed NAS copies, so the camera can be unplugged after offload. Finished
+  movies are kept separately in `<destination>/Trips/<year>/`, with Watch and
+  Download controls. Original clips are untouched.
+
 - **Device detection & import** — scans mounted DCIM volumes; one-click
   *Import* or *Upload Everything*.
 - **Web GUI** with thumbnail gallery and in-browser video playback using HTTP
@@ -31,6 +47,13 @@ SFTP, or a local/NAS path).
   small in-process thread pool backed by SQLite.
 - Uploads and playback **stream from disk in chunks**; whole files never hit RAM.
 - Concurrency is capped (default: 1 upload, 1 ffmpeg at a time) — see `.env`.
+- Pi deployment puts temporary movies/concat manifests at `/mnt/NAS/.drift/tmp`
+  and thumbnails at `/mnt/NAS/.drift/thumbnails`. `/tmp` is a bounded RAM tmpfs.
+  Only small SQLite state/logs remain local; upload progress writes are limited
+  to once per three seconds and system history to once per minute.
+- `DRIFT_REQUIRE_NAS_MOUNT=true` checks the actual filesystem is NFS/CIFS before
+  writes. An existing directory or autofs placeholder on the SD card is rejected.
+  The web dashboard still starts while the NAS is unavailable.
 - Merging uses ffmpeg `-c copy`; if clips' codecs/resolutions differ the merge
   is rejected with an explanation rather than silently re-encoding (which would
   be painfully slow on this hardware).
@@ -127,7 +150,7 @@ Then on the Pi: `docker compose pull && docker compose up -d`.
 ## CI/CD (GitHub Actions → Harbor → Pi)
 
 `.github/workflows/build-deploy.yml` runs on a **self-hosted runner** and, on
-every push to `main`:
+every push to `main` (tests first run on a GitHub-hosted runner):
 
 1. registers ARM QEMU and a `buildx` builder (configured for the HTTP Harbor
    registry),
@@ -136,12 +159,15 @@ every push to `main`:
    runner builds,
 3. deploys to the Pi over SSH (`deploy/deploy-to-pi.sh`): ships
    `deploy/docker-compose.pi.yml`, logs the Pi into Harbor, `docker compose pull`
-   + `up -d`.
+   + `up -d`, checks HTTP health, and performs a real container NAS write/read.
+   Deployments use the commit's immutable 12-character image tag; overlapping
+   workflow runs are serialized to avoid deploying an older image over a newer one.
 
 ### Configurable deploy target
 
-The deploy host is the **`DEPLOY_HOST`** variable (default `ed@192.168.3.188`),
-read by `deploy/deploy-to-pi.sh` and overridable from the runner `.env`. Point
+The deploy host is the **`DEPLOY_HOST`** variable (default `ed@drift-pi.local`),
+read by `deploy/deploy-to-pi.sh`. The main workflow explicitly targets this
+hostname; manual deployments can override it. Point
 it at any Docker host with the deploy SSH key authorised to deploy elsewhere.
 
 ### Runner / credentials provisioning
@@ -155,7 +181,7 @@ job's environment), not in GitHub Secrets:
 HARBOR_REGISTRY=192.168.10.155
 HARBOR_ROBOT_USER=robot$drift-import+drift-pusher
 HARBOR_ROBOT_TOKEN=********
-DEPLOY_HOST=ed@192.168.3.188
+DEPLOY_HOST=ed@drift-pi.local
 DEPLOY_SSH_KEY=/home/github/.ssh/drift_deploy
 ```
 

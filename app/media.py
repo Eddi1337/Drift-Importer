@@ -48,6 +48,13 @@ def probe(path: Path) -> Dict:
     if out.returncode != 0 or not out.stdout:
         return info
     data = json.loads(out.stdout)
+    info["stream_signature"] = [
+        tuple(stream.get(key) for key in (
+            "codec_type", "codec_name", "profile", "width", "height", "pix_fmt",
+            "sample_rate", "channels", "channel_layout", "time_base",
+        ))
+        for stream in data.get("streams", [])
+    ]
     fmt = data.get("format", {})
     if fmt.get("duration"):
         try:

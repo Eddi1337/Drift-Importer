@@ -15,7 +15,7 @@ from .database import session_scope
 from .destinations import get_backend
 from .destinations.base import join_remote, render_remote_dir
 from .devices import scan_media_files
-from .jobs import JobContext, handler
+from .jobs import JobCancelled, JobContext, handler
 from .media import (
     capture_time_or_mtime,
     checksum,
@@ -24,6 +24,7 @@ from .media import (
     probe,
 )
 from .merge import merge_clips
+from .storage import require_working_storage
 from .models import Album, AlbumItem, Destination, Job, MediaItem, UploadedClip, UploadState, utcnow
 from .timestamps import set_file_mtime, shift_datetime, write_metadata_creation_time
 
@@ -32,22 +33,34 @@ log = logging.getLogger("drift.tasks")
 
 def _thumb_path_for(media_id: int) -> Path:
     settings = get_settings()
+    require_working_storage(settings.thumbnail_dir)
     return settings.thumbnail_dir / f"{media_id}.jpg"
 
 
-def import_one(session, path: Path, source: str, derived: bool = False) -> MediaItem:
+def import_one(session, path: Path, source: str, derived: bool = False, verify_checksum: bool = False) -> MediaItem:
     """Insert or fetch a MediaItem for a path, populating metadata."""
     path_str = str(path)
     existing = session.query(MediaItem).filter(MediaItem.path == path_str).first()
+    fresh_checksum = checksum(path) if verify_checksum else None
+    if existing and fresh_checksum and existing.checksum and existing.checksum != fresh_checksum:
+        # Camera counters/paths can be reused after formatting. Keep the old
+        # recording's identity and NAS ledger, then index the new recording.
+        existing.path = f"{path_str}.retired-{existing.id}"
+        session.flush()
+        existing = None
     if existing:
+        if fresh_checksum:
+            existing.checksum = fresh_checksum
         if _needs_metadata_refresh(existing, path):
             _refresh_metadata_from_file(existing, path)
         return existing
     kind = classify(path) or "video"
     info = probe(path)
-    cs = checksum(path)
+    cs = fresh_checksum or checksum(path)
     existing = session.query(MediaItem).filter(MediaItem.checksum == cs).first()
     if existing:
+        if source == "device" and not Path(existing.path).is_file():
+            existing.path = path_str
         _refresh_metadata_from_file(existing, path)
         return existing
     item = MediaItem(
@@ -171,6 +184,7 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
     auto_upload = bool(payload.get("auto_upload"))
     group_by_month = bool(payload.get("group_uploads_by_month"))
     dest_ids = payload.get("destination_ids")
+    upload_options = {"content_names": True} if payload.get("fingerprint_on_import") else {}
     # New files are tracked separately from already-known ones: a fresh clip's
     # upload is enqueued the moment it's indexed (so transfers start while the
     # rest of the card is still being scanned), and re-verification uploads of
@@ -193,7 +207,8 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
                     s.query(MediaItem.id).filter(MediaItem.path == str(path)).first()
                     is not None
                 )
-                item = import_one(s, path, source=payload.get("source", "device"))
+                import_options = {"verify_checksum": True} if payload.get("fingerprint_on_import") else {}
+                item = import_one(s, path, source=payload.get("source", "device"), **import_options)
                 item_id = item.id
             if item_id in seen_ids:
                 ctx.set_progress((i + 1) / total, f"Already indexed {path.name}")
@@ -201,7 +216,7 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
             seen_ids.add(item_id)
             (known_ids if was_known else new_ids).append(item_id)
             if auto_upload and not group_by_month and not was_known:
-                enqueue_upload_jobs([item_id], dest_ids, description_prefix="Auto-upload")
+                enqueue_upload_jobs([item_id], dest_ids, description_prefix="Auto-upload", **upload_options)
             ctx.set_progress((i + 1) / total, f"Indexed {path.name}")
         except IntegrityError:
             # Already imported by a concurrent job / earlier run — reuse it.
@@ -233,9 +248,9 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
     # already enqueued inline above; only the month-grouped flow batches here.
     if auto_upload:
         if group_by_month:
-            enqueue_upload_jobs_by_month(all_ids, dest_ids, description_prefix="Auto-upload")
+            enqueue_upload_jobs_by_month(all_ids, dest_ids, description_prefix="Auto-upload", **upload_options)
         else:
-            enqueue_upload_jobs(known_ids, dest_ids, description_prefix="Auto-upload")
+            enqueue_upload_jobs(known_ids, dest_ids, description_prefix="Auto-upload", **upload_options)
 
 
 # --- thumbnail --------------------------------------------------------------
@@ -334,6 +349,9 @@ def handle_merge(job_id: int, payload: dict, ctx: JobContext) -> None:
     if len(paths) < 2:
         raise RuntimeError("Need at least two clips to make a movie")
     name = payload.get("output_name") or f"merged_{int(utcnow().timestamp())}.mp4"
+    if Path(name).name != name or not name.lower().endswith(".mp4"):
+        raise RuntimeError("Movie output must be an MP4 filename")
+    require_working_storage(settings.working_dir)
     output = settings.working_dir / name
     ctx.set_progress(0.05, f"Preparing movie from {len(paths)} clips")
     with ctx.ffmpeg_semaphore:
@@ -445,6 +463,7 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                 clip.filename = item.filename
                 clip.size_bytes = local_size
                 clip.updated_at = utcnow()
+            force_reupload = bool(clip.full_verification_failed)
             ledger_done = clip.status == "done" and bool(clip.remote_path)
             if ledger_done:
                 state.status = "done"
@@ -469,6 +488,8 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
             clip.last_error = None
             local_path = item.path
             filename = item.filename
+            if payload.get("content_names"):
+                filename = f"{Path(filename).stem}_{item.checksum[:16]}{Path(filename).suffix}"
             checksum_value = item.checksum
             remote_dir = render_remote_dir(dest.path_template, item.capture_time)
             # Stamp the remote file with the capture time so its date matches the
@@ -485,7 +506,7 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
         if not ledger_done:
             ctx.set_progress(done / total, f"Checking existing {filename} on {dest_name}")
             try:
-                if backend.remote_file_matches(remote_dir, filename, local_size, checksum_value):
+                if not force_reupload and backend.remote_file_matches(remote_dir, filename, local_size, checksum_value):
                     log.info(
                         "Found existing verified upload for media=%s destination=%s remote=%s",
                         mid,
@@ -533,7 +554,7 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                     did,
                 )
 
-        start_offset = backend.get_resume_offset(remote_dir, filename, local_size)
+        start_offset = 0 if force_reupload else backend.get_resume_offset(remote_dir, filename, local_size)
         if start_offset:
             ctx.log(f"Resuming {filename} at {start_offset} of {local_size} bytes")
         else:
@@ -545,11 +566,13 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
         def on_progress(sent: int, total_bytes: int, _done=done):
             nonlocal last_persist
             frac = (sent / total_bytes) if total_bytes else 0
-            ctx.set_progress((_done + frac) / total, f"Uploading {filename} -> {dest_name}")
             now = time.monotonic()
-            if now - last_persist >= 0.75 or sent >= total_bytes:
+            if now - last_persist >= 3.0 or sent >= total_bytes:
+                ctx.set_progress((_done + frac) / total, f"Uploading {filename} -> {dest_name}")
                 _mark_upload_progress(mid, did, clip_id, sent, total_bytes)
                 last_persist = now
+            elif ctx.is_cancelled():
+                raise JobCancelled()
 
         result_status = "done"
         result_remote = None
@@ -574,6 +597,8 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                     start_offset=start_offset,
                     mtime=capture_mtime,
                 )
+            except JobCancelled:
+                raise
             except Exception as exc:  # noqa: BLE001
                 result_status = "error"
                 result_error = str(exc)[:2000]
@@ -645,6 +670,8 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                 )
                 clip.uploaded_at = utcnow() if result_status == "done" else clip.uploaded_at
                 clip.last_error = result_error
+                if result_status == "done":
+                    clip.full_verification_failed = False
                 clip.updated_at = utcnow()
         done += 1
         ctx.set_progress(done / total)
@@ -713,6 +740,7 @@ def enqueue_device_import(
     auto_upload: bool = False,
     destination_ids: list[int] | None = None,
     group_uploads_by_month: bool = False,
+    fingerprint_on_import: bool = False,
     dedup: bool = True,
 ) -> tuple[int | None, int]:
     """Enqueue indexing of a connected device, de-duplicating reconnects.
@@ -740,6 +768,7 @@ def enqueue_device_import(
             "auto_upload": auto_upload,
             "destination_ids": destination_ids,
             "group_uploads_by_month": group_uploads_by_month,
+            "fingerprint_on_import": fingerprint_on_import,
         },
         description=f"Index and fingerprint {len(found)} files from {dcim_root.name}",
     )
@@ -844,6 +873,7 @@ def enqueue_upload_jobs(
     media_ids: list[int],
     destination_ids: list[int] | None = None,
     description_prefix: str = "Upload",
+    content_names: bool = False,
 ) -> list[int]:
     media_ids = list(dict.fromkeys(media_ids))
     media_ids = _media_ids_needing_upload(media_ids, destination_ids)
@@ -862,7 +892,7 @@ def enqueue_upload_jobs(
         job_ids.append(
             get_manager_enqueue(
                 "upload",
-                {"media_ids": [mid], "destination_ids": destination_ids},
+                {"media_ids": [mid], "destination_ids": destination_ids, **({"content_names": True} if content_names else {})},
                 description=f"{description_prefix} {filename}",
             )
         )
@@ -873,6 +903,7 @@ def enqueue_upload_jobs_by_month(
     media_ids: list[int],
     destination_ids: list[int] | None = None,
     description_prefix: str = "Upload",
+    content_names: bool = False,
 ) -> list[int]:
     media_ids = list(dict.fromkeys(media_ids))
     media_ids = _media_ids_needing_upload(media_ids, destination_ids)
@@ -895,7 +926,7 @@ def enqueue_upload_jobs_by_month(
         job_ids.append(
             get_manager_enqueue(
                 "upload",
-                {"media_ids": media_ids_for_month, "destination_ids": destination_ids},
+                {"media_ids": media_ids_for_month, "destination_ids": destination_ids, **({"content_names": True} if content_names else {})},
                 description=f"{description_prefix} {month} ({count} {noun})",
             )
         )

@@ -14,6 +14,11 @@ services:
       DRIFT_MAX_CONCURRENT_UPLOADS: "1"
       DRIFT_MAX_CONCURRENT_FFMPEG: "1"
       DRIFT_MOUNT_PATHS: "/media,/mnt"
+      DRIFT_NAS_ROOT: "/mnt/NAS"
+      DRIFT_REQUIRE_NAS_MOUNT: "true"
+      DRIFT_WORKING_DIR: "/mnt/NAS/.drift/tmp"
+      DRIFT_THUMBNAIL_DIR: "/mnt/NAS/.drift/thumbnails"
+      DRIFT_SYSTEM_SAMPLE_INTERVAL_S: "60"
     env_file:
       # Keep the live application's settings (including integrations) when
       # switching runtimes. This file remains on the Pi and is never copied to
@@ -32,3 +37,10 @@ services:
       - /proc:/host/proc:ro
     # Pi Zero 2 W has ~425 MB RAM total; keep the container well under that.
     mem_limit: 256m
+    tmpfs:
+      - /tmp:size=32m
+    logging:
+      driver: json-file
+      options:
+        max-size: "2m"
+        max-file: "2"

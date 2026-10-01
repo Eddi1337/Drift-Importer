@@ -10,17 +10,18 @@
 <body>
   <header class="topbar">
     <a class="brand" href="/">
-      <span class="brand-mark" aria-hidden="true">🏍️</span>
+      <span class="brand-mark" aria-hidden="true">D</span>
       <span>Drift-Import</span>
     </a>
     <nav>
-      <a href="/" class="{{ 'on' if active=='gallery.html' else '' }}">Library</a>
-      <a href="/explorer" class="{{ 'on' if active=='explorer.html' else '' }}">Explorer</a>
+      <a href="/" class="{{ 'on' if active=='dashboard.html' else '' }}">Overview</a>
+      <a href="/import" class="{{ 'on' if active=='import.html' else '' }}">Import</a>
       <a href="/trips" class="{{ 'on' if active=='trips.html' else '' }}">Trips</a>
-      <a href="/destinations" class="{{ 'on' if active=='destinations.html' else '' }}">Destinations</a>
       <a href="/jobs" class="{{ 'on' if active=='jobs.html' else '' }}">Jobs</a>
-      <a href="/stats" class="{{ 'on' if active=='stats.html' else '' }}">Stats</a>
-      <a href="/settings" class="{{ 'on' if active=='settings.html' else '' }}">Settings</a>
+      <details class="nav-more"><summary>More</summary><div>
+        <a href="/library">Library</a><a href="/explorer">Explorer</a>
+        <a href="/stats">System stats</a><a href="/destinations">Destinations</a><a href="/settings">Settings</a>
+      </div></details>
     </nav>
     <span id="jobBadge" class="badge" title="active jobs"></span>
   </header>
@@ -29,6 +30,7 @@
   </main>
   <div id="toast" class="toast"></div>
   <script src="/static/app.js"></script>
+  <script src="/static/workflow.js"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

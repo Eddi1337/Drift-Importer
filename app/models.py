@@ -198,6 +198,7 @@ class UploadedClip(Base):
     upload_throughput_bps: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     uploaded_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    full_verification_failed: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -222,6 +223,7 @@ class Job(Base):
     detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     payload: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON args
+    result: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON report
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     dismissed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
@@ -237,6 +239,19 @@ class Job(Base):
         order_by="JobLog.created_at",
         lazy="select",
     )
+
+
+class TripMovie(Base):
+    """Published NAS movie and the exact ordered inputs used to create it."""
+
+    __tablename__ = "trip_movies"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    signature: Mapped[str] = mapped_column(String(64), unique=True)
+    album_id: Mapped[int] = mapped_column(ForeignKey("albums.id", ondelete="CASCADE"))
+    media_id: Mapped[int] = mapped_column(ForeignKey("media_items.id", ondelete="CASCADE"))
+    destination_id: Mapped[int] = mapped_column(ForeignKey("destinations.id", ondelete="CASCADE"))
+    days: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class JobLog(Base):

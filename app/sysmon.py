@@ -24,7 +24,7 @@ log = logging.getLogger("drift.sysmon")
 
 # 10s ticks keep the history light (last 6h ~= 2160 rows) while still being
 # responsive enough for a live graph. Prune anything older than the retention.
-SAMPLE_INTERVAL_S = 10.0
+SAMPLE_INTERVAL_S = 60.0
 RETENTION = dt.timedelta(hours=6)
 _PRUNE_EVERY_S = 300.0
 
@@ -203,5 +203,6 @@ _monitor: Optional[SystemMonitor] = None
 def get_monitor() -> SystemMonitor:
     global _monitor
     if _monitor is None:
-        _monitor = SystemMonitor()
+        from .config import get_settings
+        _monitor = SystemMonitor(interval=get_settings().system_sample_interval_s)
     return _monitor

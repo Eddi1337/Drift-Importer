@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
     working_dir: Path = Path("./working")
     thumbnail_dir: Path = Path("./thumbnails")
+    nas_root: Path = Path("/mnt/NAS")
+    require_nas_mount: bool = False  # Enabled in the Pi deployment.
+    system_sample_interval_s: float = 60.0
 
     # Comma-separated list of base paths to scan for an attached camera.
     mount_paths: str = "/media,/mnt,/run/media,/Volumes"
@@ -59,6 +62,10 @@ class Settings(BaseSettings):
 
     def ensure_dirs(self) -> None:
         for d in (self.data_dir, self.working_dir, self.thumbnail_dir, self.log_dir):
+            # Leave NAS directories to guarded jobs; the dashboard must still
+            # start when the NAS is offline, without creating SD-card fallbacks.
+            if self.require_nas_mount and d.is_relative_to(self.nas_root):
+                continue
             d.mkdir(parents=True, exist_ok=True)
 
 

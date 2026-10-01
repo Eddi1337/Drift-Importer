@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 {% block title %} · Trips{% endblock %}
 {% block content %}
-<section class="panel">
-  <h2>Trips</h2>
-  <div class="row">
-    <input id="albumName" placeholder="New trip name">
-    <button onclick="createAlbum()">Create trip</button>
-  </div>
-  <div id="albumList">Loading…</div>
+<div class="page-heading"><div><p class="eyebrow">02 / MAKE THE JOURNEY</p><h1>Trips</h1><p class="hint">Your recording days appear here after importing. Originals stay on the NAS.</p></div></div>
+<section class="panel"><div class="row spread"><h2>Suggested recording days</h2><label>NAS destination<select id="workflowDestination" onchange="loadDaySuggestions()"></select></label></div>
+  <p class="hint">Create one movie for a day, or select several days for one longer trip. Clips follow recording time; the camera can be unplugged once they are archived.</p>
+  <div id="daySuggestions">Loading recording days…</div>
+  <div class="row action-row"><input id="dayTripName" aria-label="Trip name" placeholder="Trip name (optional)"><button id="combineDaysButton" onclick="createSelectedDayTrip()" disabled>Combine selected days</button><span id="selectedDaysCount" class="hint">No days selected</span></div>
 </section>
-<p class="hint">Open a trip to reorder clips. Use Combine trip to join the clips into one long video and add it back to the trip.</p>
+<section class="panel" id="finishedMovies"><h2>Finished trip movies</h2><p class="hint">Saved separately in Trips / year on your NAS. Movie creation uses stream copy, with temporary files on the NAS.</p><div id="tripMovies">Loading movies…</div></section>
+<details class="panel" id="customTrips"><summary>Custom clip groups</summary><p class="hint">For manually arranging clips into a trip.</p><div class="row"><input id="albumName" aria-label="Custom trip name" placeholder="New custom trip name"><button onclick="createAlbum()">Create group</button></div><div id="albumList"></div></details>
+<dialog id="tripPlayerDlg"><video id="tripPlayer" controls preload="metadata" style="max-width:80vw;max-height:70vh"></video><div><button onclick="closeTripPlayer()">Close</button></div></dialog>
 {% endblock %}
-{% block scripts %}<script>initAlbums();</script>{% endblock %}
+{% block scripts %}<script>initDayTrips();</script>{% endblock %}

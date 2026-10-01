@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ..config import get_settings
 from ..media import checksum as sampled_checksum
+from ..storage import require_storage
 from .base import ProgressCb, RemoteEntry, UploadBackend, join_remote, make_probe
 
 # Leave a little headroom so we never fill the destination filesystem to 100%.
@@ -45,6 +46,7 @@ class LocalBackend(UploadBackend):
             raise NotADirectoryError(f"Destination root is not a directory: {root}")
         if not os.access(root, os.W_OK):
             raise PermissionError(f"Destination root is not writable: {root}")
+        require_storage(root)
         return root
 
     def _check_free_space(self, root: Path, required_bytes: int) -> None:

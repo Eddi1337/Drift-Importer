@@ -81,6 +81,8 @@ def _run_migrations() -> None:
 
         if "uploaded_clips" in tables:
             cols = _column_names(conn, "uploaded_clips")
+            if "full_verification_failed" not in cols:
+                conn.execute("ALTER TABLE uploaded_clips ADD COLUMN full_verification_failed BOOLEAN NOT NULL DEFAULT 0")
             if "upload_duration_s" not in cols:
                 conn.execute(
                     "ALTER TABLE uploaded_clips ADD COLUMN upload_duration_s FLOAT"
@@ -105,6 +107,8 @@ def _run_migrations() -> None:
 
         if "jobs" in tables:
             cols = _column_names(conn, "jobs")
+            if "result" not in cols:
+                conn.execute("ALTER TABLE jobs ADD COLUMN result TEXT")
             if "dismissed_at" not in cols:
                 conn.execute("ALTER TABLE jobs ADD COLUMN dismissed_at DATETIME")
             # Indexes for the jobs list (filter by status/dismissed, order by date).

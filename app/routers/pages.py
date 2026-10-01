@@ -17,6 +17,16 @@ def _page(request: Request, name: str, **ctx):
 
 @router.get("/", response_class=HTMLResponse)
 def gallery(request: Request):
+    return _page(request, "dashboard.html")
+
+
+@router.get("/import", response_class=HTMLResponse)
+def import_page(request: Request):
+    return _page(request, "import.html")
+
+
+@router.get("/library", response_class=HTMLResponse)
+def library(request: Request):
     return _page(request, "gallery.html")
 
 

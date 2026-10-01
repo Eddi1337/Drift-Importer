@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %} · Overview{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">CAMERA TO NAS</p><h1>Your footage, in order.</h1><p class="hint">Connect your Drift camera. Save the originals. Turn recording days into trips.</p></div><a class="button-link" href="/import">Import footage →</a></div>
+<div id="overviewError" role="alert"></div>
+<div id="overviewMetrics" class="metric-grid" aria-live="polite"><p class="hint">Loading system status…</p></div>
+<p id="hostOverview" class="hint"></p>
+<div class="overview-grid">
+  <section class="panel"><div class="row spread"><h2>Connected camera</h2><span class="status-pill" id="cameraStatus">Checking</span></div><div id="cameraOverview">Looking for your Drift camera…</div></section>
+  <section class="panel"><div class="row spread"><h2>NAS storage</h2><a href="/destinations">Manage</a></div><div id="nasOverview">Checking storage…</div></section>
+</div>
+<section class="panel"><div class="row spread"><h2>Current activity</h2><a href="/jobs">View jobs →</a></div><div id="overviewActivity" aria-live="polite">Checking the queue…</div></section>
+<div class="workflow-steps">
+  <a href="/import"><span class="step-number">01</span><h3>Import &amp; verify</h3><p>Stream every camera video to the NAS, then check the complete files match.</p></a>
+  <a href="/trips"><span class="step-number">02</span><h3>Create a trip</h3><p>Pick a recording day or several days. Join the clips in recording order.</p></a>
+  <a href="/trips#finishedMovies"><span class="step-number">03</span><h3>Watch your movies</h3><p>Find finished trip videos in their own area on the NAS.</p></a>
+</div>
+{% endblock %}
+{% block scripts %}<script>initWorkflowOverview();</script>{% endblock %}

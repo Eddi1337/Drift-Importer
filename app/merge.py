@@ -29,7 +29,7 @@ def check_compatible(paths: Sequence[Path]) -> None:
         if not p.exists():
             raise MergeError(f"Missing file: {p}")
         info = probe(p)
-        signatures.append((info["codec"], info["width"], info["height"]))
+        signatures.append((info["codec"], info["width"], info["height"], info.get("stream_signature")))
     first = signatures[0]
     for p, sig in zip(paths, signatures):
         if sig != first:
@@ -48,6 +48,7 @@ def build_concat_command(
         "-f", "concat",
         "-safe", "0",
         "-i", str(list_file),
+        "-map", "0",
         "-c", "copy",
         str(output),
     ]
@@ -73,7 +74,8 @@ def merge_clips(
     """Merge clips in the given order. Returns ffmpeg result info."""
     check_compatible(paths)
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
+    # Keep even the concat manifest beside the NAS output, never in /tmp on SD.
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, dir=output.parent) as tf:
         list_file = Path(tf.name)
     try:
         write_concat_list(paths, list_file)
@@ -102,6 +104,10 @@ def merge_clips(
                 proc.kill()
                 _, stderr = proc.communicate()
                 raise MergeError("ffmpeg concat timed out after one hour")
+            except BaseException:
+                proc.kill()
+                proc.communicate()
+                raise
             if proc.returncode != 0:
                 raise MergeError(f"ffmpeg concat failed: {stderr[-2000:]}")
             progress(1.0)

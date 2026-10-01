@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %} · Import{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">01 / SAVE YOUR ORIGINALS</p><h1>Import &amp; verify</h1><p class="hint">Keep the camera connected until transfers and verification finish.</p></div><a href="/library">Browse individual clips →</a></div>
+<section class="panel">
+  <div class="workflow-controls"><label>Camera<select id="workflowCamera" onchange="refreshVerification()"></select></label><label>NAS destination<select id="workflowDestination" onchange="refreshVerification()"></select></label></div>
+  <div id="importSummary" class="hint" aria-live="polite">Looking for a camera…</div>
+  <div class="row action-row"><button id="importCameraButton" onclick="startCameraWorkflow('import')" disabled>Import all videos to NAS</button><button id="verifyCameraButton" class="ghost" onclick="startCameraWorkflow('verify')" disabled>Verify all NAS copies</button></div>
+  <p class="hint">Includes normal and EVENT recordings. Completed uploads are reused; interrupted transfers can resume.</p>
+</section>
+<section class="panel"><div class="row spread"><h2>Transfer activity</h2><a href="/jobs">Job controls →</a></div><div id="importActivity" aria-live="polite"></div></section>
+<section class="panel"><h2>Verification report</h2><p class="hint">Verify reads every byte of each camera video and its NAS copy using SHA-256. This is a snapshot of the camera at the time shown; run it again after recording or importing more footage.</p><div id="verificationReport" aria-live="polite">No verification run selected.</div></section>
+{% endblock %}
+{% block scripts %}<script>initWorkflowImport();</script>{% endblock %}
