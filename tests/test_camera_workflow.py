@@ -190,6 +190,8 @@ def test_multiday_trip_uses_archived_copies_after_camera_removed(setup, monkeypa
     b, source_b, archived_b = add_clip(maker, camera, nas, "b.mp4", day="2026-09-30", content=b"b")
     source_a.unlink()
     source_b.unlink()
+    with maker() as session:
+        assert all(day["ready"] for day in workflow.trip_suggestions(session, 1))
     class Manager:
         def enqueue(self, kind, description, payload):
             with maker() as session:

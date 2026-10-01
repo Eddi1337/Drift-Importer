@@ -110,7 +110,7 @@ def trip_suggestions(session, destination_id: int) -> list[dict]:
         result.append({
             "day": day, "clip_count": len(items), "duration_s": sum(m.duration_s or 0 for m in items),
             "size_bytes": sum(m.size_bytes for m in items), "archived_count": available,
-            "ready": not storage_error and available == len(items) and len(items) >= 2,
+            "ready": not storage_error and available == len(items),
             "status": "complete" if completed else (job.status if job and job.status in ACTIVE_STATES else "suggested"),
             "job_id": job.id if job else None, "error": storage_error or (job.error if job and job.status == "error" else None),
             "movie_id": output.id if completed else None,

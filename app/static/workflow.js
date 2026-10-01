@@ -1,5 +1,5 @@
 // The main camera-to-NAS flow. No frameworks or thumbnail work on these pages.
-const workflowState = { days: new Set(), verification: null, busy: false };
+const workflowState = { days: new Set(), clipCounts: {}, verification: null, busy: false };
 
 function workflowError(message) { toast(message, 7000); }
 function numberOrDash(value, suffix = '') { return value == null ? '—' : `${value}${suffix}`; }
@@ -117,6 +117,7 @@ async function loadDaySuggestions() {
   const el = document.getElementById('daySuggestions');
   if (!dest) { el.textContent = 'Add a mounted NAS destination, then import footage to discover recording days.'; return; }
   const days = await api.get(`/api/trips/suggestions?destination_id=${dest}`);
+  workflowState.clipCounts = Object.fromEntries(days.map(day => [day.day, day.clip_count]));
   for (const selected of workflowState.days) {
     if (!days.some(d => d.day === selected && d.ready)) workflowState.days.delete(selected);
   }
@@ -125,7 +126,7 @@ async function loadDaySuggestions() {
   for (const day of days) {
     const row = document.createElement('div');
     row.className = 'day-row';
-    row.innerHTML = `<label class="day-choice"><input type="checkbox" ${workflowState.days.has(day.day) ? 'checked' : ''} ${!day.ready ? 'disabled' : ''}><span><strong>${esc(day.day)}</strong><small>${day.clip_count} clips · ${day.duration_s ? fmtDur(day.duration_s) : 'Duration unknown'} · ${fmtBytes(day.size_bytes)}</small></span></label><div class="day-status"><span class="status-pill">${esc(day.status)}</span><small>${day.archived_count} / ${day.clip_count} on NAS</small></div><button ${!day.ready || ['queued', 'running', 'paused'].includes(day.status) ? 'disabled' : ''}>${day.status === 'complete' ? 'Create again' : 'Create day movie'}</button>${day.error ? `<p class="error-text day-error">${esc(day.error)}</p>` : ''}`;
+    row.innerHTML = `<label class="day-choice"><input type="checkbox" ${workflowState.days.has(day.day) ? 'checked' : ''} ${!day.ready ? 'disabled' : ''}><span><strong>${esc(day.day)}</strong><small>${day.clip_count} clips · ${day.duration_s ? fmtDur(day.duration_s) : 'Duration unknown'} · ${fmtBytes(day.size_bytes)}</small></span></label><div class="day-status"><span class="status-pill">${esc(day.status)}</span><small>${day.archived_count} / ${day.clip_count} on NAS</small></div><button ${!day.ready || day.clip_count < 2 || ['queued', 'running', 'paused'].includes(day.status) ? 'disabled' : ''}>${day.status === 'complete' ? 'Create again' : 'Create day movie'}</button>${day.clip_count < 2 ? '<small class="hint">Select with another day to combine at least two clips.</small>' : ''}${day.error ? `<p class="error-text day-error">${esc(day.error)}</p>` : ''}`;
     row.querySelector('input').onchange = event => {
       if (event.target.checked) workflowState.days.add(day.day); else workflowState.days.delete(day.day);
       updateDaySelection();
@@ -137,8 +138,9 @@ async function loadDaySuggestions() {
 }
 
 function updateDaySelection() {
-  document.getElementById('combineDaysButton').disabled = !workflowState.days.size || workflowState.busy;
-  document.getElementById('selectedDaysCount').textContent = `${workflowState.days.size} days selected`;
+  const clips = [...workflowState.days].reduce((n, day) => n + (workflowState.clipCounts[day] || 0), 0);
+  document.getElementById('combineDaysButton').disabled = clips < 2 || workflowState.busy;
+  document.getElementById('selectedDaysCount').textContent = `${workflowState.days.size} days · ${clips} clips selected`;
 }
 function createSelectedDayTrip() { createDayMovie([...workflowState.days], document.getElementById('dayTripName').value); }
 async function createDayMovie(days, name = '') {
