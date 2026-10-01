@@ -62,16 +62,25 @@ def nas_destination(session, destination_id: int) -> Destination:
 
 
 def archived_copy(session, item: MediaItem, destination_id: int) -> Path | None:
+    return archived_copies(session, [item], destination_id).get(item.id)
+
+
+def archived_copies(session, items, destination_id: int) -> dict[int, Path]:
+    """Read the ledger once, without loading ORM relationship trees per clip."""
     dest = nas_destination(session, destination_id)
-    if not item.checksum:
-        return None
-    row = session.query(UploadedClip).filter_by(
-        destination_id=destination_id, checksum=item.checksum, status="done"
-    ).first()
-    path = archive_path(Path(dest.base_path), row.remote_path if row else None)
-    if path and path.is_file() and path.stat().st_size == item.size_bytes:
-        return path
-    return None
+    copies = dict(session.query(UploadedClip.checksum, UploadedClip.remote_path).filter(
+        UploadedClip.destination_id == destination_id, UploadedClip.status == "done",
+        UploadedClip.full_verification_failed.is_(False),
+    ).all())
+    available = {}
+    for item in items:
+        path = archive_path(Path(dest.base_path), copies.get(item.checksum))
+        try:
+            if path and path.is_file() and path.stat().st_size == item.size_bytes:
+                available[item.id] = path
+        except OSError:
+            continue
+    return available
 
 
 def recording_days(session) -> dict[str, list[MediaItem]]:
@@ -100,11 +109,13 @@ def trip_suggestions(session, destination_id: int) -> list[dict]:
     for job in session.query(Job).filter(Job.kind == "trip").order_by(Job.id):
         jobs[json.loads(job.payload or "{}").get("signature")] = job
     result = []
-    for day, items in reversed(list(recording_days(session).items())):
+    days = recording_days(session)
+    available_ids = {} if storage_error else archived_copies(session, [m for items in days.values() for m in items], destination_id)
+    for day, items in reversed(list(days.items())):
         signature = manifest(items, destination_id)
         movie = movies.get(signature)
         output = session.get(MediaItem, movie.media_id) if movie else None
-        available = 0 if storage_error else sum(archived_copy(session, item, destination_id) is not None for item in items)
+        available = sum(item.id in available_ids for item in items)
         completed = bool(output and not storage_error and Path(output.path).is_file())
         job = jobs.get(signature)
         result.append({
@@ -128,7 +139,8 @@ def queue_trip(session, days: list[str], destination_id: int, name: str = "") ->
     items = [item for day in days for item in all_days[day]]
     if len(items) < 2:
         raise ValueError("A trip needs at least two clips")
-    missing = [m.filename for m in items if archived_copy(session, m, destination_id) is None]
+    available = archived_copies(session, items, destination_id)
+    missing = [m.filename for m in items if m.id not in available]
     if missing:
         raise ValueError(f"Import to the NAS first: {len(missing)} original clips are unavailable")
     signature = manifest(items, destination_id)
@@ -249,7 +261,8 @@ def handle_trip(job_id: int, payload: dict, ctx) -> None:
             items = [session.get(MediaItem, mid) for mid in payload["media_ids"]]
             if any(item is None for item in items) or manifest(items, dest.id) != payload["signature"]:
                 raise RuntimeError("Trip inputs changed; refresh recording days and create again")
-            paths = [archived_copy(session, item, dest.id) for item in items]
+            available = archived_copies(session, items, dest.id)
+            paths = [available.get(item.id) for item in items]
             if any(path is None for path in paths):
                 raise RuntimeError("An original NAS clip is missing or incomplete. Import again first.")
             expected = [(m.size_bytes, m.checksum) for m in items]

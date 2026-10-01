@@ -169,6 +169,8 @@ The deploy host is the **`DEPLOY_HOST`** variable (default `ed@drift-pi.local`),
 read by `deploy/deploy-to-pi.sh`. The main workflow explicitly targets this
 hostname; manual deployments can override it. Point
 it at any Docker host with the deploy SSH key authorised to deploy elsewhere.
+The runner must resolve `drift-pi.local`. If mDNS does not cross LAN segments,
+provide a LAN DNS entry or a runner `/etc/hosts` entry for the Pi's reserved IP.
 
 ### Runner / credentials provisioning
 
