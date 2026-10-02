@@ -31,10 +31,11 @@
       Home Assistant API token
       <input id="sHaToken" type="password" placeholder="Long-lived access token">
     </label>
+    <label class="inline span-2"><input type="checkbox" id="sHaClearToken"> Remove the saved Home Assistant token</label>
   </div>
   <div class="panel inset">
     <h3>Home Assistant integration</h3>
-    <p class="hint">If configured, Drift-Import publishes upload progress into Home Assistant as sensor states. The entity prefix becomes sensor names such as <code>sensor.drift_import_uploads</code> and <code>sensor.drift_import_job_123</code>. Leave these fields blank if you do not want HA updates.</p>
+    <p class="hint">Publishes progress for uploads, imports, verification and trip creation to <code>sensor.drift_import_progress</code>. Show a dashboard progress bar when <code>binary_sensor.drift_import_active</code> is on. Updates arrive every 5 seconds while work runs; the card hides when work stops. The saved token is encrypted and never returned to the browser. Clear the URL or remove the token to disable updates.</p>
   </div>
   <div class="panel inset">
     <h3>Default upload destinations</h3>

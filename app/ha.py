@@ -1,6 +1,6 @@
 """Home Assistant state publishing.
 
-Drift exposes only a small, overall picture to HA — overall upload progress,
+Drift exposes only a small, overall picture to HA — overall task progress,
 status, and whether the camera is connected — not one entity per job. The
 helpers here also let us clean up the legacy per-job/uploads entities that
 older versions used to publish.
@@ -13,6 +13,7 @@ from typing import Optional
 import httpx
 
 from .models import AppSettings
+from .settings_store import get_ha_token
 
 log = logging.getLogger("drift.ha")
 
@@ -34,14 +35,14 @@ def _base_url(settings: AppSettings) -> str:
 
 def _headers(settings: AppSettings) -> dict:
     return {
-        "Authorization": f"Bearer {settings.ha_token}",
+        "Authorization": f"Bearer {get_ha_token(settings)}",
         "Content-Type": "application/json",
     }
 
 
-def entity_id(settings: AppSettings, entity_suffix: str) -> str:
+def entity_id(settings: AppSettings, entity_suffix: str, domain: str = "sensor") -> str:
     prefix = _slug(settings.ha_entity_prefix or "drift_import")
-    return f"sensor.{prefix}_{_slug(entity_suffix)}"
+    return f"{domain}.{prefix}_{_slug(entity_suffix)}"
 
 
 def publish_state(
@@ -49,26 +50,31 @@ def publish_state(
     entity_suffix: str,
     state: str | int | float,
     attributes: Optional[dict] = None,
-) -> None:
+    *,
+    domain: str = "sensor",
+) -> bool:
     if not _configured(settings):
-        return
-    url = f"{_base_url(settings)}/api/states/{entity_id(settings, entity_suffix)}"
+        return False
+    full_entity_id = entity_id(settings, entity_suffix, domain)
+    url = f"{_base_url(settings)}/api/states/{full_entity_id}"
     payload = {"state": state, "attributes": attributes or {}}
     try:
         with httpx.Client(timeout=10) as client:
             resp = client.post(url, headers=_headers(settings), json=payload)
             resp.raise_for_status()
+        return True
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 401:
             log.error(
                 "Home Assistant rejected the configured API token while publishing %s; "
                 "create a new long-lived access token and update Drift settings",
-                entity_id(settings, entity_suffix),
+                full_entity_id,
             )
         else:
-            log.exception("Failed to publish HA state for %s", entity_id(settings, entity_suffix))
+            log.exception("Failed to publish HA state for %s", full_entity_id)
     except Exception:  # noqa: BLE001
-        log.exception("Failed to publish HA state for %s", entity_id(settings, entity_suffix))
+        log.exception("Failed to publish HA state for %s", full_entity_id)
+    return False
 
 
 def delete_entity(settings: AppSettings, full_entity_id: str) -> bool:

@@ -104,10 +104,9 @@ def jobs_overview(session) -> dict:
 
     run_start = current_run_start(session)
     if run_start is not None:
-        # This is the general-purpose progress figure for the web UI.  Unlike
-        # the HA upload sensor below, it includes imports, thumbnails and movie
-        # creation, so the on-screen bar never appears frozen while ffmpeg is
-        # doing useful work.
+        # The web UI and HA task sensor include imports, verification,
+        # thumbnails and movie creation; the upload-only counters below remain
+        # available for transfer-specific views.
         work_running, work_queued, work_paused, work_terminal = (
             session.query(
                 func.coalesce(func.sum(case((Job.status == "running", 1), else_=0)), 0),

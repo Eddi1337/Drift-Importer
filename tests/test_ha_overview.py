@@ -1,6 +1,8 @@
 import datetime as dt
+from contextlib import contextmanager
 
 import httpx
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -64,8 +66,7 @@ def test_overview_progress_counts_only_upload_jobs():
     assert o["completed_in_run"] == 0
     assert o["total_in_run"] == 2
     assert o["percent"] == 12
-    # The browser bar includes every background job, so imports and thumbnails
-    # visibly advance even though the HA sensor deliberately remains upload-only.
+    # The all-work bar includes imports and thumbnails as well as uploads.
     assert o["work_percent"] == 26
 
 
@@ -160,3 +161,89 @@ def test_ha_publish_logs_actionable_message_for_rejected_token(monkeypatch, capl
     ha.publish_state(settings, "progress", 0)
 
     assert "create a new long-lived access token" in caplog.text
+
+
+@pytest.mark.parametrize("kind", ["upload", "import", "verify", "trip", "thumbnail"])
+def test_publisher_counts_all_task_types_and_exposes_running_gate(monkeypatch, kind):
+    from app import ha_publish
+    from app.models import AppSettings
+
+    session = _session()
+    base = dt.datetime.utcnow()
+    session.add_all([
+        Job(kind=kind, status="running", progress=0.5, created_at=base, description="Current task"),
+        Job(kind="upload", status="queued", created_at=base + dt.timedelta(seconds=1)),
+    ])
+    session.commit()
+
+    @contextmanager
+    def scope():
+        yield session
+
+    monkeypatch.setattr(ha_publish, "session_scope", scope)
+    monkeypatch.setattr(ha_publish, "get_app_settings", lambda s: AppSettings(
+        ha_base_url="http://ha.local:8123", ha_token="test", ha_entity_prefix="drift_import"))
+    monkeypatch.setattr(ha_publish, "camera_status", lambda: (True, "Camera"))
+    calls = {}
+
+    def publish(prefs, suffix, state, attributes, **kwargs):
+        calls[suffix] = (state, attributes, kwargs)
+        return True
+
+    monkeypatch.setattr(ha_publish.ha, "publish_state", publish)
+    publisher = HAPublisher()
+    publisher._pruned = True
+    publisher._tick()
+    assert calls["progress"][0] == 25
+    assert calls["progress"][1]["task_kinds"] == [kind]
+    assert calls["progress"][1]["task_detail"] == "Current task"
+    assert calls["active"][0] == "on"
+    assert calls["active"][2]["domain"] == "binary_sensor"
+
+    # A queue alone, a paused task, or completed tasks must hide the card.
+    for status in ["queued", "paused", "done"]:
+        for job in session.query(Job).all():
+            job.status = status
+        session.commit()
+        publisher._tick()
+        assert calls["active"][0] == "off"
+
+    # Network failure must leave the snapshot dirty so the next tick retries.
+    publisher._last_published = None
+    monkeypatch.setattr(ha_publish.ha, "publish_state", lambda *a, **k: False)
+    publisher._tick()
+    assert publisher._last_published is None
+
+
+def test_ha_token_is_encrypted_masked_and_preserved_when_settings_saved(tmp_path, monkeypatch):
+    from app import config, crypto, ha
+    from app.models import AppSettings
+    from app.routers.api import AppSettingsReq, update_settings
+    from app.settings_store import app_settings_dict, get_app_settings, get_ha_token
+
+    monkeypatch.setenv("DRIFT_DATA_DIR", str(tmp_path))
+    config.get_settings.cache_clear()
+    crypto._fernet.cache_clear()
+    try:
+        session = _session()
+        session.add(AppSettings(id=1, ha_token="legacy-test-token"))
+        session.commit()
+        prefs = get_app_settings(session)
+        session.commit()
+        assert prefs.ha_token.startswith("fernet:")
+        assert "legacy-test-token" not in prefs.ha_token
+        assert get_ha_token(prefs) == "legacy-test-token"
+        assert app_settings_dict(prefs)["ha_token"] == ""
+        assert app_settings_dict(prefs)["ha_token_configured"] is True
+        assert ha._headers(prefs)["Authorization"] == "Bearer legacy-test-token"
+        encrypted = prefs.ha_token
+        update_settings(AppSettingsReq(ha_base_url="http://ha.local:8123"), session)
+        assert prefs.ha_token == encrypted
+        result = update_settings(AppSettingsReq(ha_token="replacement-test-token"), session)
+        assert result["ha_token"] == ""
+        assert get_ha_token(prefs) == "replacement-test-token"
+        update_settings(AppSettingsReq(clear_ha_token=True), session)
+        assert prefs.ha_token is None
+    finally:
+        config.get_settings.cache_clear()
+        crypto._fernet.cache_clear()

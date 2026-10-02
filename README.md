@@ -40,6 +40,25 @@ SFTP, or a local/NAS path).
   local/NAS path. Per-destination upload status, "test connection", and
   per-destination remote path templating (e.g. `{year}/{month:02d}`).
 - **Background jobs** with progress, cancel, and persistence across restarts.
+- **Home Assistant progress** — one overall percentage for uploads, imports,
+  verification and trip movies, refreshed every five seconds. A native horizontal
+  bar appears only while tasks run, and hides for idle, queued-only or paused
+  work. The token is encrypted with the existing data-directory secret key and
+  is never returned by the settings API.
+
+### Home Assistant dashboard
+
+Set the Home Assistant URL (including `:8123` where needed), token and optional
+entity prefix in Settings. Add [the native progress card](deploy/home-assistant-progress.yaml)
+to your Home view. It uses `sensor.drift_import_progress` and
+`binary_sensor.drift_import_active`; `sensor.drift_import_camera` reports the
+attached camera. The percentage measures completion of the current task batch,
+including terminated tasks; the Import page's verification report remains the
+source of truth for successful camera backups. Tap the card to open Pi Jobs.
+
+Blank token input keeps the saved credential; use **Remove the saved Home
+Assistant token** to disconnect it. Existing plaintext credentials are migrated
+once, and transient publish failures retry on the next tick.
 
 ## Design notes for the Pi Zero 2 W (512 MB RAM)
 

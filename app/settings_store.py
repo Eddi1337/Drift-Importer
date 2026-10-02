@@ -5,6 +5,23 @@ from typing import Iterable
 
 from .database import session_scope
 from .models import AppSettings, utcnow
+from .crypto import encrypt, decrypt
+
+
+def get_ha_token(settings: AppSettings) -> str:
+    token = settings.ha_token or ""
+    return decrypt(token[7:]) if token.startswith("fernet:") else token
+
+
+def set_ha_token(settings: AppSettings, token: str) -> None:
+    settings.ha_token = "fernet:" + encrypt(token) if token else None
+
+
+def _protect_ha_token(settings: AppSettings) -> AppSettings:
+    # Migrate legacy plaintext once, using the existing destination secret key.
+    if settings.ha_token and not settings.ha_token.startswith("fernet:"):
+        set_ha_token(settings, settings.ha_token)
+    return settings
 
 
 def _parse_ids(raw: str) -> list[int]:
@@ -27,7 +44,7 @@ def get_app_settings(session=None) -> AppSettings:
             settings = AppSettings(id=1)
             session.add(settings)
             session.flush()
-        return settings
+        return _protect_ha_token(settings)
 
     with session_scope() as s:
         settings = s.get(AppSettings, 1)
@@ -35,7 +52,7 @@ def get_app_settings(session=None) -> AppSettings:
             settings = AppSettings(id=1)
             s.add(settings)
             s.flush()
-        return settings
+        return _protect_ha_token(settings)
 
 
 def app_settings_dict(settings: AppSettings) -> dict:
@@ -44,7 +61,7 @@ def app_settings_dict(settings: AppSettings) -> dict:
         "auto_upload_on_import": settings.auto_upload_on_import,
         "default_destination_ids": _parse_ids(settings.default_destination_ids),
         "ha_base_url": settings.ha_base_url or "",
-        "ha_token": settings.ha_token or "",
+        "ha_token": "",
         "ha_token_configured": bool(settings.ha_token),
         "ha_entity_prefix": settings.ha_entity_prefix or "drift_import",
     }

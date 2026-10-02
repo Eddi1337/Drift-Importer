@@ -1530,6 +1530,7 @@ class AppSettingsReq(BaseModel):
     default_destination_ids: List[int] = []
     ha_base_url: str = ""
     ha_token: str = ""
+    clear_ha_token: bool = False
     ha_entity_prefix: str = "drift_import"
 
 
@@ -1551,7 +1552,11 @@ def update_settings(req: AppSettingsReq, session: Session = Depends(get_session)
     settings.auto_upload_on_import = req.auto_upload_on_import
     settings.default_destination_ids = encode_destination_ids(req.default_destination_ids)
     settings.ha_base_url = req.ha_base_url.strip() or None
-    settings.ha_token = req.ha_token.strip() or None
+    from ..settings_store import set_ha_token
+    if req.clear_ha_token:
+        set_ha_token(settings, "")
+    elif req.ha_token.strip():
+        set_ha_token(settings, req.ha_token.strip())
     settings.ha_entity_prefix = req.ha_entity_prefix.strip() or "drift_import"
     touch_settings(settings)
     session.commit()

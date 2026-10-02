@@ -2389,7 +2389,10 @@ async function loadSettingsPage() {
   document.getElementById("sAutoUpload").checked = !!settings.auto_upload_on_import;
   document.getElementById("sHaPrefix").value = settings.ha_entity_prefix || "drift_import";
   document.getElementById("sHaUrl").value = settings.ha_base_url || "";
-  document.getElementById("sHaToken").value = settings.ha_token || "";
+  document.getElementById("sHaToken").value = "";
+  document.getElementById("sHaToken").placeholder = settings.ha_token_configured
+    ? "Token saved · leave blank to keep it" : "Long-lived access token";
+  document.getElementById("sHaClearToken").checked = false;
   renderSettingsDestinations(dests, settings.default_destination_ids || []);
   loadUploadLedger();
   loadAppLogs();
@@ -2423,12 +2426,13 @@ async function saveSettings() {
     default_destination_ids: selectedDestinations,
     ha_base_url: document.getElementById("sHaUrl").value.trim(),
     ha_token: document.getElementById("sHaToken").value.trim(),
+    clear_ha_token: document.getElementById("sHaClearToken").checked,
     ha_entity_prefix: document.getElementById("sHaPrefix").value.trim() || "drift_import",
   };
   await api.put("/api/settings", body);
   await loadSettings();
   toast("Settings saved");
-  loadUploadLedger();
+  loadSettingsPage();
 }
 
 async function loadUploadLedger() {

@@ -1,0 +1,31 @@
+# Add to a Home Assistant dashboard (native tile + bar gauge; no HACS card).
+type: conditional
+conditions:
+  - condition: state
+    entity: binary_sensor.drift_import_active
+    state: "on"
+  - condition: state
+    entity: sensor.drift_import_progress
+    state_not:
+      - unknown
+      - unavailable
+card:
+  type: tile
+  entity: sensor.drift_import_progress
+  name: Drift camera · NAS tasks
+  icon: mdi:camera-gopro
+  color: cyan
+  state_content:
+    - state
+    - task_summary
+  features_position: bottom
+  features:
+    - type: bar-gauge
+      min: 0
+      max: 100
+  tap_action:
+    action: url
+    url_path: http://drift-pi.local:8080/jobs
+grid_options:
+  columns: 12
+  rows: 2
