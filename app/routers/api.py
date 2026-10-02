@@ -82,6 +82,13 @@ def workflow_overview(session: Session = Depends(get_session)):
         except (OSError, RuntimeError) as exc:
             storage = {"available": False, "free_bytes": None, "total_bytes": None, "error": str(exc)}
         destinations.append({"id": dest.id, "name": dest.name, "base_path": dest.base_path, **storage})
+    return {"cameras": cameras, "destinations": destinations, "cpu": _cpu_payload(), "host": _host_payload(),
+            "network": _network_payload(), "jobs": jobs_overview(session),
+            "library": _build_upload_totals_query(session), "recording_days": len(workflow.recording_days(session))}
+
+
+def _host_payload() -> dict:
+    """Small kernel reads shared by Overview and Stats; no disk history writes."""
     host = {"memory_total_bytes": None, "memory_used_bytes": None, "uptime_s": None, "temperature_c": None}
     proc = Path("/host/proc") if Path("/host/proc/meminfo").exists() else Path("/proc")
     try:
@@ -95,9 +102,7 @@ def workflow_overview(session: Session = Depends(get_session)):
         host["temperature_c"] = round(float(Path("/sys/class/thermal/thermal_zone0/temp").read_text()) / 1000, 1)
     except (OSError, ValueError):
         pass
-    return {"cameras": cameras, "destinations": destinations, "cpu": _cpu_payload(), "host": host,
-            "network": _network_payload(), "jobs": jobs_overview(session),
-            "library": _build_upload_totals_query(session), "recording_days": len(workflow.recording_days(session))}
+    return host
 
 
 @router.post("/workflow/import")
@@ -466,6 +471,7 @@ def build_system_stats(
     network["tx_history"] = tx_hist
     return {
         "sampled_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "host": _host_payload(),
         "cpu": cpu,
         "network": network,
         "upload_timeline": build_upload_timeline(upload_rows or [], timeline_hours),

@@ -1998,34 +1998,55 @@ function initStats() {
   }, 5000);
 }
 
+function renderIfChanged(element, markup) {
+  if (element && element._driftMarkup !== markup) {
+    element.innerHTML = markup;
+    element._driftMarkup = markup;
+  }
+}
+
 async function loadStats(showLoading = true) {
   const overview = document.getElementById("statsOverview");
   const destinations = document.getElementById("statsDestinations");
-  const system = document.getElementById("systemStats");
   if (!overview || !destinations) return;
-  if (showLoading) {
-    overview.textContent = "Loading…";
-    destinations.textContent = "Loading…";
-    if (system) system.textContent = "Loading…";
+  if (appState.statsLoading) {
+    if (showLoading) appState.statsRefreshPending = true;
+    return;
   }
+  appState.statsLoading = true;
+  const refresh = document.getElementById("statsRefreshButton");
+  const status = document.getElementById("statsLastUpdated");
+  if (refresh) refresh.disabled = true;
   try {
     const hours = getTimelineMinutes() / 60;
     const stats = await api.get(`/api/stats?timeline_hours=${encodeURIComponent(hours)}`);
     const data = stats.overview || {};
-    overview.innerHTML = `
-      <div class="live-card"><div class="hint">Uploaded clips</div><div class="value">${data.uploaded_clip_count || 0}</div></div>
-      <div class="live-card"><div class="hint">Upload errors</div><div class="value">${data.error_clip_count || 0}</div></div>
-      <div class="live-card"><div class="hint">Pending / active</div><div class="value">${(data.pending_clip_count || 0) + (data.uploading_clip_count || 0)}</div></div>
-      <div class="live-card"><div class="hint">Uploaded size</div><div class="value">${fmtBytes(data.uploaded_bytes || 0)}</div></div>
-      <div class="live-card"><div class="hint">Average upload time</div><div class="value">${fmtDurationText(data.average_upload_duration_s)}</div></div>
-      <div class="live-card"><div class="hint">Average throughput</div><div class="value">${fmtBytes(data.average_throughput_bps || 0)}/s</div></div>
-    `;
+    const cards = [
+      ["Clips saved", data.uploaded_clip_count || 0, "Completed uploads", "↗"],
+      ["Footage saved", fmtBytes(data.uploaded_bytes || 0), "Transferred by Drift", "◷"],
+      ["Waiting or uploading", (data.pending_clip_count || 0) + (data.uploading_clip_count || 0), "Clips still in the queue", "⇄"],
+      ["Clips needing attention", data.error_clip_count || 0, "Check failed copies in Import", "!"],
+      ["Average transfer speed", `${fmtBytes(data.average_throughput_bps || 0)}/s`, "Across recorded uploads", "↗"],
+      ["Average time per clip", fmtDurationText(data.average_upload_duration_s), "Across recorded uploads", "◷"],
+    ];
+    renderIfChanged(overview, cards.map(([label, value, hint, symbol], i) => `<div class="live-card"><span class="metric-symbol" aria-hidden="true">${symbol}</span><div class="hint">${esc(label)}</div><div class="value ${i === 3 && data.error_clip_count ? 'needs-attention' : ''}">${esc(String(value))}</div><small>${esc(hint)}</small></div>`).join(''));
     renderSystemStats(stats.system || {});
     renderStatsDestinations(stats.destinations || []);
+    if (status) {
+      status.textContent = `Live · ${new Date(stats.system?.sampled_at || Date.now()).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'})}`;
+      status.className = "live-indicator ready";
+    }
   } catch (e) {
-    overview.textContent = "Unable to load stats: " + e.message;
-    destinations.textContent = "";
-    if (system) system.textContent = "";
+    if (status) { status.textContent = "Unable to refresh"; status.className = "live-indicator failed"; }
+    if (!overview._driftMarkup) overview.textContent = "Unable to load stats. Try Refresh.";
+    if (showLoading) toast("Unable to load stats: " + e.message, 5000);
+  } finally {
+    appState.statsLoading = false;
+    if (refresh) refresh.disabled = false;
+    if (appState.statsRefreshPending) {
+      appState.statsRefreshPending = false;
+      loadStats(false);
+    }
   }
 }
 
@@ -2144,6 +2165,9 @@ function renderSparkline(values, cls = "", opts = {}) {
 function renderUploadTimeline(timeline) {
   const points = timeline?.points || [];
   if (!points.length) return "<span class='hint'>No upload timeline data.</span>";
+  if (!points.some(p => p.uploaded_bytes || p.active_bytes || p.error_bytes)) {
+    return '<div class="quiet-state"><strong>No transfers in this window</strong><span>Completed uploads stay in your totals. Choose a longer history range to look further back.</span></div>';
+  }
   const first = points[0];
   const last = points[points.length - 1];
   const chart = renderTimeSeriesChart(
@@ -2153,11 +2177,11 @@ function renderUploadTimeline(timeline) {
       { label: "Errored", values: points.map(point => point.error_bytes || 0), cls: "error-line" },
     ],
     {
-      title: "Upload throughput by bucket",
+      title: "Footage transferred over time",
       cls: "upload-series",
       height: 170,
       format: fmtBytes,
-      yUnit: "bytes / bucket",
+      yUnit: "bytes per interval",
       xLabels: [fmtDateTime(first?.start) || "", fmtDateTime(last?.end) || ""],
     },
   );
@@ -2200,16 +2224,27 @@ function renderSystemStats(system) {
   const cpuHistory = (cpu.history || []).map(point => point.v);
   const rxHistory = (network.rx_history || []).map(point => point.v);
   const txHistory = (network.tx_history || []).map(point => point.v);
-  const windowLabel = `${getTimelineMinutes()}m ago`;
-  el.innerHTML = `
+  const minutes = getTimelineMinutes();
+  const windowLabel = minutes < 60 ? `${minutes}m ago` : `${minutes / 60}h ago`;
+  const host = system.host || {};
+  const memory = host.memory_total_bytes ? `${fmtBytes(host.memory_used_bytes)} / ${fmtBytes(host.memory_total_bytes)}` : "Unavailable";
+  const uptime = host.uptime_s == null ? "Unavailable" : host.uptime_s >= 86400 ? `${Math.floor(host.uptime_s / 86400)}d ${Math.floor(host.uptime_s % 86400 / 3600)}h` : `${Math.floor(host.uptime_s / 3600)}h ${Math.floor(host.uptime_s % 3600 / 60)}m`;
+  const cpuPercent = cpu.percent == null ? null : Math.max(0, Math.min(100, Number(cpu.percent)));
+  renderIfChanged(el, `
+    <div class="host-metrics">
+      <div class="host-metric"><span>Memory in use</span><strong>${memory}</strong><small>Pi RAM · used / total</small></div>
+      <div class="host-metric"><span>Temperature</span><strong>${host.temperature_c == null ? 'Unavailable' : `${host.temperature_c} °C`}</strong><small>Reported by the Pi</small></div>
+      <div class="host-metric"><span>Uptime</span><strong>${uptime}</strong><small>Since the Pi last started</small></div>
+    </div>
     <div class="system-grid">
       <div class="system-card">
         <div class="system-head">
-          <h3>CPU</h3>
+          <h3>Processor activity</h3>
           <span class="hint">${esc(cpu.cpu_count || "n/a")} cores</span>
         </div>
         <div class="system-visual">
-          ${renderGauge(cpu.percent, "current")}
+          <div class="cpu-reading"><strong>${cpuPercent == null ? '—' : `${cpuPercent.toFixed(1)}%`}</strong><span>of CPU capacity in use</span></div>
+          <div class="cpu-meter" role="meter" aria-label="CPU usage" aria-valuemin="0" aria-valuemax="100" ${cpuPercent == null ? 'aria-valuetext="Unavailable"' : `aria-valuenow="${cpuPercent}"`}><span style="width:${cpuPercent || 0}%"></span></div>
           ${renderSparkline(cpuHistory, "cpu-line", {
             title: "CPU trend",
             max: 100,
@@ -2227,7 +2262,7 @@ function renderSystemStats(system) {
       <div class="system-card">
         <div class="system-head">
           <h3>Network</h3>
-          <span class="hint">all non-loopback interfaces</span>
+          <span class="hint">Traffic across the Pi’s network connections</span>
         </div>
         <div class="network-graphs">
           <div>
@@ -2259,34 +2294,25 @@ function renderSystemStats(system) {
     <div class="filesystem-grid">
       ${filesystems.map(renderFilesystemBar).join("") || "<span class='hint'>No filesystem data available.</span>"}
     </div>
-  `;
+  `);
 }
 
 function renderFilesystemBar(fs) {
   const pct = fs.used_percent == null ? 0 : Math.max(0, Math.min(100, Number(fs.used_percent)));
-  const historyKey = fs.path || fs.label || "filesystem";
-  const history = pushNamedHistory("filesystems", historyKey, pct);
   return `<div class="fs-card">
     <div class="row spread">
       <div>
-        <strong>${esc(fs.label || fs.path || "Filesystem")}</strong>
+        <strong>${esc(({Root:"Pi SD card", Data:"Application data", Working:"Movie workspace", Thumbnails:"Video previews"})[fs.label] || fs.label || fs.path || "Filesystem")}</strong>
         <div class="hint" title="${esc(fs.path || "")}">${esc(fs.path || "")}</div>
       </div>
       <strong>${fs.used_percent == null ? "n/a" : `${pct.toFixed(1)}%`}</strong>
     </div>
     <div class="fs-bar"><span style="width:${pct}%"></span></div>
     <div class="metric-row">
-      <span>Used <strong>${fmtBytes(fs.used_bytes || 0)}</strong></span>
-      <span>Free <strong>${fmtBytes(fs.free_bytes || 0)}</strong></span>
-      <span>Total <strong>${fmtBytes(fs.total_bytes || 0)}</strong></span>
+      <span>Used <strong>${fs.used_bytes == null ? '—' : fmtBytes(fs.used_bytes)}</strong></span>
+      <span>Free <strong>${fs.free_bytes == null ? '—' : fmtBytes(fs.free_bytes)}</strong></span>
+      <span>Total <strong>${fs.total_bytes == null ? '—' : fmtBytes(fs.total_bytes)}</strong></span>
     </div>
-    ${renderSparkline(history, "fs-line", {
-      title: "Used space trend",
-      min: 0,
-      max: 100,
-      format: value => `${Math.round(value)}%`,
-      height: 98,
-    })}
     ${fs.error ? `<div class="hint">Usage unavailable: ${esc(fs.error)}</div>` : ""}
   </div>`;
 }
@@ -2298,7 +2324,7 @@ function renderStatsDestinations(rows) {
     el.innerHTML = "<span class='hint'>No destinations configured.</span>";
     return;
   }
-  el.innerHTML = rows.map(row => {
+  renderIfChanged(el, rows.map(row => {
     const storage = row.storage || {};
     return `<div class="usage-card">
       <div class="usage-head">
@@ -2321,12 +2347,15 @@ function renderStatsDestinations(rows) {
       ${renderDestinationTimeline(row.upload_timeline)}
       ${storage.error ? `<div class="hint">Storage check failed: ${esc(storage.error)}</div>` : ""}
     </div>`;
-  }).join("");
+  }).join(""));
 }
 
 function renderDestinationTimeline(timeline) {
   const points = timeline?.points || [];
   if (!points.length) return "<span class='hint'>No destination upload timeline data.</span>";
+  if (!points.some(p => p.uploaded_bytes || p.active_bytes || p.error_bytes)) {
+    return '<p class="hint">No transfers to this destination during the selected window.</p>';
+  }
   const first = points[0];
   const last = points[points.length - 1];
   return `<div class="destination-timeline">
@@ -2341,7 +2370,7 @@ function renderDestinationTimeline(timeline) {
         cls: "destination-series",
         height: 150,
         format: fmtBytes,
-        yUnit: "bytes / bucket",
+        yUnit: "bytes per interval",
         xLabels: [fmtDateTime(first?.start) || "", fmtDateTime(last?.end) || ""],
       },
     )}
@@ -2373,53 +2402,88 @@ function renderStoragePie(storage) {
 
 // ============================ SETTINGS ======================================
 
+function setSettingsStatus(text, kind = "", hint = text) {
+  const status = document.getElementById("settingsSaveStatus");
+  status.textContent = text;
+  status.className = `status-pill ${kind}`;
+  document.getElementById("settingsSaveHint").textContent = hint;
+}
+
+function updateAutomationPreview() {
+  const autoImport = document.getElementById("sAutoImport").checked;
+  const autoUpload = document.getElementById("sAutoUpload").checked;
+  document.getElementById("automationPreview").innerHTML = `<span>Connect camera</span><i>→</i><span>${autoImport ? 'Find videos automatically' : 'Start an import yourself'}</span><i>→</i><span>${autoUpload ? 'Save automatically' : 'Choose when to upload'}</span>`;
+}
+
 function initSettings() {
   ensureGlobalJobPolling();
+  const form = document.getElementById("settingsForm");
+  form.addEventListener("input", () => {
+    setSettingsStatus("Unsaved changes", "unsaved", "Save to apply your changes.");
+    updateAutomationPreview();
+  });
+  const ledger = document.getElementById("settingsLedgerSection");
+  const logs = document.getElementById("settingsLogsSection");
+  ledger.addEventListener("toggle", () => { if (ledger.open) loadUploadLedger().catch(e => toast(e.message)); });
+  logs.addEventListener("toggle", () => { if (logs.open) loadAppLogs(); });
   loadSettingsPage();
   clearInterval(appState.settingsPoller);
   appState.settingsPoller = setInterval(() => {
-    loadUploadLedger();
-    loadAppLogs(false);
-  }, 4000);
+    if (document.hidden) return;
+    if (ledger.open) loadUploadLedger().catch(e => toast(e.message));
+    if (logs.open) loadAppLogs(false);
+  }, 10000);
+  window.addEventListener('pagehide', () => clearInterval(appState.settingsPoller), {once:true});
 }
 
 async function loadSettingsPage() {
-  const [settings, dests] = await Promise.all([loadSettings(), api.get("/api/destinations")]);
-  document.getElementById("sAutoImport").checked = !!settings.auto_import_on_connect;
-  document.getElementById("sAutoUpload").checked = !!settings.auto_upload_on_import;
-  document.getElementById("sHaPrefix").value = settings.ha_entity_prefix || "drift_import";
-  document.getElementById("sHaUrl").value = settings.ha_base_url || "";
-  document.getElementById("sHaToken").value = "";
-  document.getElementById("sHaToken").placeholder = settings.ha_token_configured
-    ? "Token saved · leave blank to keep it" : "Long-lived access token";
-  document.getElementById("sHaClearToken").checked = false;
-  renderSettingsDestinations(dests, settings.default_destination_ids || []);
-  loadUploadLedger();
-  loadAppLogs();
+  const button = document.getElementById("settingsSaveButton");
+  button.disabled = true;
+  document.getElementById("settingsForm").inert = true;
+  try {
+    const [settings, dests] = await Promise.all([loadSettings(), api.get("/api/destinations")]);
+    document.getElementById("sAutoImport").checked = !!settings.auto_import_on_connect;
+    document.getElementById("sAutoUpload").checked = !!settings.auto_upload_on_import;
+    document.getElementById("sHaPrefix").value = settings.ha_entity_prefix || "drift_import";
+    document.getElementById("sHaUrl").value = settings.ha_base_url || "";
+    document.getElementById("sHaToken").value = "";
+    document.getElementById("sHaToken").placeholder = settings.ha_token_configured
+      ? "Token saved · leave blank to keep it" : "Paste a long-lived access token";
+    document.getElementById("sHaClearToken").checked = false;
+    document.getElementById("haSetupStatus").textContent = settings.ha_base_url && settings.ha_token_configured ? "Configured" : "Not set up";
+    renderSettingsDestinations(dests, settings.default_destination_ids || []);
+    updateAutomationPreview();
+    setSettingsStatus("All changes saved", "", "Your current settings are saved.");
+    button.disabled = false;
+  } catch (e) {
+    setSettingsStatus("Unable to load settings", "failed", "Reload the page to try again.");
+    toast("Unable to load settings: " + e.message, 5000);
+  } finally {
+    document.getElementById("settingsForm").inert = false;
+  }
 }
 
 function renderSettingsDestinations(dests, selectedIds) {
   const el = document.getElementById("settingsDestinations");
   if (!el) return;
   if (!dests.length) {
-    el.innerHTML = "<span class='hint'>No destinations configured yet.</span>";
+    el.innerHTML = '<div class="empty-state">No storage destinations yet. <a href="/destinations">Add a destination →</a></div>';
     return;
   }
   const set = new Set(selectedIds);
-  el.innerHTML = `<div class="check-list">${
-    dests.map(d => `
-      <label class="check-row choice-card">
-        <input type="checkbox" value="${d.id}" ${set.has(d.id) ? "checked" : ""}>
-        <span><b>${esc(d.name)}</b><small>[${esc(d.type)}]${d.enabled ? "" : " disabled"}</small></span>
-      </label>
-    `).join("")
-  }</div>`;
+  const names = {local:"NAS or local folder", nfs:"NAS folder", smb:"NAS folder", sftp:"SFTP server", nextcloud:"Nextcloud", rsync:"Remote server"};
+  el.innerHTML = `<div class="check-list">${dests.map(d => `
+    <label class="check-row choice-card">
+      <input type="checkbox" value="${d.id}" ${set.has(d.id) ? "checked" : ""} ${d.enabled ? '' : 'disabled'}>
+      <span><b>${esc(d.name)}</b><small>${esc(names[d.type] || d.type)}${d.is_default ? ' · Default' : ''}${d.enabled ? '' : ' · Disabled'}${d.base_path ? ` · ${esc(d.base_path)}` : ''}</small></span>
+    </label>`).join("")}</div>`;
 }
 
 async function saveSettings() {
-  const selectedDestinations = [...document.querySelectorAll("#settingsDestinations input:checked")]
-    .map(el => parseInt(el.value, 10))
-    .filter(n => !isNaN(n));
+  const form = document.getElementById("settingsForm");
+  if (!form.reportValidity() || form.inert) return;
+  const selectedDestinations = [...document.querySelectorAll("#settingsDestinations input:checked:not(:disabled)")]
+    .map(el => parseInt(el.value, 10)).filter(Number.isFinite);
   const body = {
     auto_import_on_connect: document.getElementById("sAutoImport").checked,
     auto_upload_on_import: document.getElementById("sAutoUpload").checked,
@@ -2429,10 +2493,24 @@ async function saveSettings() {
     clear_ha_token: document.getElementById("sHaClearToken").checked,
     ha_entity_prefix: document.getElementById("sHaPrefix").value.trim() || "drift_import",
   };
-  await api.put("/api/settings", body);
-  await loadSettings();
-  toast("Settings saved");
-  loadSettingsPage();
+  const button = document.getElementById("settingsSaveButton");
+  form.inert = true;
+  button.disabled = true;
+  button.textContent = "Saving…";
+  setSettingsStatus("Saving…", "", "Applying your changes to this Pi.");
+  try {
+    await api.put("/api/settings", body);
+    // Reload masked settings so the token field is blank again after saving.
+    await loadSettingsPage();
+    toast("Settings saved");
+  } catch (e) {
+    setSettingsStatus("Changes not saved", "failed", "Your changes are still here. Try saving again.");
+    toast("Unable to save settings: " + e.message, 5000);
+  } finally {
+    form.inert = false;
+    button.disabled = false;
+    button.textContent = "Save changes";
+  }
 }
 
 async function loadUploadLedger() {

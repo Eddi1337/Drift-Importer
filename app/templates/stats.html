@@ -1,35 +1,23 @@
 {% extends "base.html" %}
 {% block title %} · Stats{% endblock %}
 {% block content %}
-<section class="panel">
-  <div class="row spread">
-    <div>
-      <h2>Upload stats</h2>
-      <p class="hint">Persistent upload history and destination usage from the app database.</p>
-    </div>
-    <button class="ghost" onclick="loadStats()">Refresh</button>
-  </div>
-  <div id="statsOverview" class="live-grid">Loading…</div>
+<div class="page-heading stats-heading">
+  <div><p class="eyebrow">SYSTEM &amp; STORAGE</p><h1>A little Pi. A clear picture.</h1><p class="hint">Follow transfers, check your Pi, and see how much room is left.</p></div>
+  <div class="stats-refresh"><span id="statsLastUpdated" class="live-indicator" role="status">Connecting…</span><button id="statsRefreshButton" class="ghost" onclick="loadStats()">↻ Refresh</button></div>
+</div>
+<section class="panel stats-summary" aria-labelledby="transferTitle">
+  <div class="section-heading"><div><p class="eyebrow">THE BIG PICTURE</p><h2 id="transferTitle">Your transfers</h2></div><a href="/jobs">View jobs →</a></div>
+  <div id="statsOverview" class="live-grid stats-metrics"><p class="hint loading-placeholder">Loading transfer history…</p></div>
 </section>
-
-<section class="panel">
-  <div class="row spread">
-    <div>
-      <h2>System status</h2>
-      <p class="hint">Current CPU, network, and local filesystem usage from the host/container.</p>
-    </div>
-    <label class="timeline-control">
-      Last
-      <input id="timelineMinutes" type="number" min="5" max="1440" step="5" value="30" onchange="loadStats()">
-      minutes
-    </label>
+<section class="panel" id="piStatus" aria-labelledby="systemTitle">
+  <div class="section-heading"><div><p class="eyebrow">ON YOUR PI</p><h2 id="systemTitle">System health</h2><p class="hint">Live readings with recent CPU and network history.</p></div>
+    <label class="timeline-control">Show history for<select id="timelineMinutes" onchange="loadStats()"><option value="15">15 minutes</option><option value="30" selected>30 minutes</option><option value="60">1 hour</option><option value="360">6 hours</option><option value="1440">24 hours</option></select></label>
   </div>
-  <div id="systemStats">Loading…</div>
+  <div id="systemStats"><p class="hint loading-placeholder">Reading your Pi…</p></div>
 </section>
-
-<section class="panel">
-  <h2>Destination usage</h2>
-  <div id="statsDestinations">Loading…</div>
+<section class="panel" aria-labelledby="storageTitle">
+  <div class="section-heading"><div><p class="eyebrow">ROOM FOR THE NEXT TRIP</p><h2 id="storageTitle">Storage destinations</h2><p class="hint">Footage saved by Drift, available space, and transfer history.</p></div><a href="/destinations">Manage storage →</a></div>
+  <div id="statsDestinations"><p class="hint loading-placeholder">Checking destinations…</p></div>
 </section>
 {% endblock %}
 {% block scripts %}<script>initStats();</script>{% endblock %}
