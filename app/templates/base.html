@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Drift-Import{% block title %}{% endblock %}</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
 </head>
 <body class="page-{{ active|replace('.html', '') }}">
   <a href="#mainContent" class="skip-link">Skip to content</a>
@@ -32,8 +32,8 @@
     {% block content %}{% endblock %}
   </main>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js"></script>
-  <script src="/static/workflow.js"></script>
+  <script src="/static/app.js?v={{ asset_version }}"></script>
+  <script src="/static/workflow.js?v={{ asset_version }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

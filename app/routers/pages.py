@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from hashlib import sha256
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
@@ -9,6 +10,14 @@ from fastapi.templating import Jinja2Templates
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
+
+# Compute once at startup: every deployment gets matching styles and scripts,
+# even when a browser still has the previous static files in its cache.
+_static = Path(__file__).resolve().parent.parent / "static"
+templates.env.globals["asset_version"] = sha256(b"".join(
+    (_static / name).read_bytes()
+    for name in ("style.css", "app.js", "workflow.js", "favicon.svg")
+)).hexdigest()[:12]
 
 
 def _page(request: Request, name: str, **ctx):
