@@ -100,16 +100,24 @@ journalctl -u drift-import -f
 
 ### Auto-mounting the camera
 
-`./install.sh` installs a udev-triggered systemd mount for the Ghost XL card
-labelled `Drift Card`. It mounts safely at `/media/drift-camera` whenever the
-camera is connected, so the app's existing auto-import/upload settings can
+Both `./install.sh` and the GitHub Actions Docker deployment install a
+udev-triggered systemd mount for the Ghost XL card labelled `Drift Card`.
+It mounts read-only at `/media/drift-camera` whenever the camera is connected,
+so the app's existing auto-import/upload settings can
 start work without a desktop session. The app looks for a `DCIM` folder under
 each mounted volume, falling back to mounted folders that directly contain
 video files.
 
-If your card has a different filesystem label, change
-`deploy/99-drift-camera.rules` and `deploy/drift-camera-mount.service` to the
-same label before running the installer.
+The rule matches udev's normalised label `Drift_Card` and creates the stable
+`/dev/drift-camera` alias. The mount follows that alias when USB device names
+change, and detaches on unplug so old mounts cannot hide a reconnected card.
+The read-only mount protects recordings; timestamp edits to camera originals
+require a separately managed writable mount. Archived trip outputs remain on
+the NAS.
+
+If your card has a different filesystem label or camera USB ID, adjust
+`deploy/99-drift-camera.rules` before installing. To update only the camera
+mount on an existing Pi, run `sudo bash deploy/install-camera-mount.sh`.
 
 ### Mounting your NAS (recommended for the "local" destination)
 

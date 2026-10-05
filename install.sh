@@ -21,13 +21,9 @@ sudo "${APP_DIR}/.venv/bin/pip" install -r "${APP_DIR}/requirements.txt"
 
 echo ">> Installing systemd service…"
 sudo cp deploy/${SERVICE}.service /etc/systemd/system/${SERVICE}.service
-sudo cp deploy/drift-camera-mount.service /etc/systemd/system/drift-camera-mount.service
-sudo cp deploy/99-drift-camera.rules /etc/udev/rules.d/99-drift-camera.rules
-sudo mkdir -p /media/drift-camera
+sudo bash deploy/install-camera-mount.sh
 sudo chown -R pi:pi "${APP_DIR}"
 sudo systemctl daemon-reload
-sudo udevadm control --reload-rules
-sudo udevadm trigger --subsystem-match=block --action=add
 sudo systemctl enable "${SERVICE}"
 sudo systemctl restart "${SERVICE}"
 

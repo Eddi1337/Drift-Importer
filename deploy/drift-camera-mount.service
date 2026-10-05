@@ -1,12 +1,15 @@
 [Unit]
 Description=Mount the Drift camera card
-BindsTo=dev-disk-by\x2dlabel-Drift\x20Card.device
-After=dev-disk-by\x2dlabel-Drift\x20Card.device
-ConditionPathExists=/dev/disk/by-label/Drift\x20Card
+BindsTo=dev-drift\x2dcamera.device
+After=dev-drift\x2dcamera.device
+ConditionPathExists=/dev/drift-camera
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStartPre=/usr/bin/mkdir -p /media/drift-camera
-ExecStart=/usr/bin/mount -t exfat -o rw,nosuid,nodev,noexec,uid=0,gid=0,umask=022 /dev/disk/by-label/Drift\x20Card /media/drift-camera
-ExecStop=/usr/bin/umount /media/drift-camera
+ExecStart=/usr/local/libexec/drift-camera-mount
+# Detach a removed card even if a scanner still has an old file open. New
+# readers then see an empty mountpoint until the next camera connection.
+ExecStop=/usr/bin/umount -l /media/drift-camera
+TimeoutStartSec=30
+TimeoutStopSec=15

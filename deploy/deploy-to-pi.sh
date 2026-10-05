@@ -35,6 +35,9 @@ echo ">> Deploying ${HARBOR_REGISTRY}/drift-import/drift-import:${IMAGE_TAG} to 
 retry "${SSH[@]}" "$DEPLOY_HOST" "mkdir -p ~/${DEPLOY_DIR}"
 retry scp -i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
   deploy/docker-compose.pi.yml "$DEPLOY_HOST:~/${DEPLOY_DIR}/docker-compose.yml"
+retry scp -i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+  deploy/drift-camera-mount.service deploy/99-drift-camera.rules \
+  deploy/drift-camera-mount.sh deploy/install-camera-mount.sh "$DEPLOY_HOST:~/${DEPLOY_DIR}/"
 
 {
 # Send credentials over encrypted stdin, rather than remote command arguments.
@@ -43,6 +46,7 @@ printf 'export HARBOR_REGISTRY=%q HARBOR_ROBOT_USER=%q HARBOR_ROBOT_TOKEN=%q IMA
 cat <<'REMOTE'
 set -euo pipefail
 cd ~/${DEPLOY_DIR}
+sudo -n bash ./install-camera-mount.sh
 umask 077
 cat > .env <<EOF
 HARBOR_REGISTRY=${HARBOR_REGISTRY}

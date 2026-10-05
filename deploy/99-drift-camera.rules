@@ -1,3 +1,4 @@
-# Mount the Drift Ghost XL's removable card through a systemd service.  Matching
-# the filesystem label, rather than /dev/sdX, avoids races with other USB disks.
-ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", ENV{ID_FS_LABEL}=="Drift Card", TAG+="systemd", ENV{SYSTEMD_WANTS}+="drift-camera-mount.service"
+# udev normalises the exFAT label "Drift Card" to ID_FS_LABEL=Drift_Card.
+# Use a stable alias so systemd tracks reconnects without escaped label paths
+# or assumptions about whether the camera appears as sda1 or sdb1.
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", ENV{ID_BUS}=="usb", ENV{ID_VENDOR_ID}=="1271", ENV{ID_MODEL_ID}=="012f", ENV{ID_FS_TYPE}=="exfat", ENV{ID_FS_LABEL}=="Drift_Card", SYMLINK+="drift-camera", TAG+="systemd", ENV{SYSTEMD_ALIAS}+="/dev/drift-camera", ENV{SYSTEMD_WANTS}+="drift-camera-mount.service"
