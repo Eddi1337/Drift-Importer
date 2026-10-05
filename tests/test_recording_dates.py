@@ -217,7 +217,7 @@ def test_confirm_waits_for_running_upload(setup):
         with pytest.raises(ValueError,match='finish uploading'): dates.confirm_plan(s,plan['plan_id'])
         assert s.get(RecordingDate,id).status=='review'
 
-@pytest.mark.parametrize('indexed',[True,False])
+@pytest.mark.parametrize('indexed',[True,False,'error'])
 def test_verified_nas_move_preserves_source_and_can_retry(setup,monkeypatch,indexed):
     maker,camera,nas=setup
     id,path=scan(setup)
@@ -226,7 +226,7 @@ def test_verified_nas_move_preserves_source_and_can_retry(setup,monkeypatch,inde
     with maker() as s:
         item=index(s,path,'device')
         if indexed:
-            s.add(UploadedClip(destination_id=1,source_media_id=item.id,checksum=item.checksum,filename=old.name,size_bytes=len(before),status='done',remote_path=str(old)))
+            s.add(UploadedClip(destination_id=1,source_media_id=item.id,checksum=item.checksum,filename=old.name,size_bytes=len(before),status='error' if indexed=='error' else 'done',remote_path=str(old)))
             s.add(UploadState(media_id=item.id,destination_id=1,status='done',remote_path=str(old)))
         s.commit()
     monkeypatch.setattr(tasks,'import_one',index)
@@ -345,3 +345,23 @@ def test_reused_camera_path_does_not_preview_an_unrelated_old_backup(setup):
     plan=preview(setup,[id])
     assert plan['entries'][0]['moves']==[]
     assert old.read_bytes()==b'previous recording'
+
+
+def test_missing_old_backup_can_be_reuploaded_after_date_confirmation(setup,monkeypatch):
+    maker,camera,nas=setup
+    id,path=scan(setup)
+    old=nas/'2026/09'/path.name
+    with maker() as s:
+        item=index(s,path,'device')
+        s.add(UploadedClip(destination_id=1,source_media_id=item.id,checksum=item.checksum,filename=old.name,size_bytes=path.stat().st_size,status='done',remote_path=str(old)))
+        s.commit()
+    monkeypatch.setattr(tasks,'import_one',index)
+    plan=preview(setup,[id])
+    with maker() as s: job=dates.confirm_plan(s,plan['plan_id'])['job_id']
+    dates.correction_job(job,{'plan_id':plan['plan_id'],'camera_root':str(camera)},Context())
+    with maker() as s:
+        assert s.get(RecordingDate,id).status=='confirmed'
+        ledger=s.query(UploadedClip).one()
+        assert ledger.status=='error' and ledger.full_verification_failed
+        assert dates.approved_paths(s,[path])==[path]
+        assert tasks._media_ids_needing_upload([ledger.source_media_id],[1])==[ledger.source_media_id]

@@ -537,8 +537,14 @@ def correction_job(job_id, payload, ctx):
                 if full_hash(path, ctx) != digest:
                     continue
                 with session_scope() as session:
-                    ledger = UploadedClip(destination_id=dest.id, source_media_id=item_id, checksum=cs, filename=path.name, size_bytes=row.size_bytes, status="done", remote_path=str(path), bytes_uploaded=row.size_bytes)
-                    session.add(ledger)
+                    ledger = session.query(UploadedClip).filter_by(destination_id=dest.id, checksum=cs).first()
+                    if ledger is None:
+                        ledger = UploadedClip(destination_id=dest.id, checksum=cs)
+                        session.add(ledger)
+                    ledger.source_media_id, ledger.filename = item_id, path.name
+                    ledger.size_bytes = ledger.bytes_uploaded = row.size_bytes
+                    ledger.status, ledger.remote_path = "done", str(path)
+                    ledger.full_verification_failed, ledger.last_error = False, None
                     session.flush()
                     new = archive_path(root, str(root / render_remote_dir(dest.path_template, local(row.corrected_time)) / path.name))
                     if new is None:
@@ -554,6 +560,15 @@ def correction_job(job_id, payload, ctx):
                 source, target = archive_path(root, move["old"]), archive_path(root, move["new"])
                 if not source or not target:
                     raise RuntimeError("Archive path escaped the NAS")
+                if not source.exists() and not target.exists():
+                    with session_scope() as session:
+                        ledger = session.get(UploadedClip, move["ledger_id"])
+                        ledger.status, ledger.full_verification_failed = "error", True
+                        ledger.last_error = "Original NAS copy missing; re-upload to the confirmed date folder"
+                        for state in session.query(UploadState).filter_by(destination_id=dest.id, media_id=item_id):
+                            state.status, state.error = "error", ledger.last_error
+                    ctx.log(f"Missing NAS original for {entry['path']}; marked for upload after date confirmation")
+                    continue
                 digest = digest or full_hash(Path(row.path), ctx)
                 safe_move(source, target, digest, ctx)
                 os.utime(target, (utc(row.corrected_time).timestamp(), utc(row.corrected_time).timestamp()))
