@@ -42,6 +42,7 @@ from ..streaming import stream_file
 from ..sysmon import get_monitor
 from ..tasks import enqueue_device_import, enqueue_upload_jobs
 from .. import workflow
+from .. import date_review
 
 router = APIRouter()
 
@@ -114,10 +115,14 @@ def workflow_import(req: CameraWorkflowReq, session: Session = Depends(get_sessi
         paths = workflow.scan_videos(root)
         if not paths:
             raise ValueError("No camera videos found")
+        ready = date_review.approved_paths(session, paths)
+        if not ready:
+            date_review.queue_check(root)
+            raise ValueError("Recording dates need checking. Review and confirm them in Import before uploading.")
         job_id, count = enqueue_device_import(root, paths=[str(p) for p in paths], auto_upload=True,
                                              destination_ids=[dest.id], dedup=True, group_uploads_by_month=True,
                                              fingerprint_on_import=True)
-        return {"job_id": job_id, "file_count": count}
+        return {"job_id": job_id, "file_count": count, "held_count": len(paths) - len(ready)}
     except (ValueError, OSError, RuntimeError) as exc:
         raise HTTPException(409, str(exc)) from exc
 
@@ -1620,6 +1625,11 @@ class UploadReq(BaseModel):
 def start_upload(req: UploadReq, session: Session = Depends(get_session)):
     if not req.media_ids:
         raise HTTPException(400, "No media selected")
+    try:
+        for item in session.query(MediaItem).filter(MediaItem.id.in_(req.media_ids)):
+            date_review.require_approved(session, item)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     job_ids = enqueue_upload_jobs(req.media_ids, req.destination_ids)
     return {"job_ids": job_ids, "job_id": job_ids[0] if job_ids else None}
 
@@ -1636,7 +1646,9 @@ class TimestampReq(BaseModel):
 
 
 @router.post("/timestamp")
-def start_timestamp(req: TimestampReq):
+def start_timestamp(req: TimestampReq, session: Session = Depends(get_session)):
+    if any(date_review.is_camera_video(Path(m.path)) and m.source == "device" for m in session.query(MediaItem).filter(MediaItem.id.in_(req.media_ids))):
+        raise HTTPException(409, "Use Import → Recording dates to preview corrections and move NAS copies. Camera originals stay read-only.")
     if req.mode == "set" and not req.absolute:
         raise HTTPException(400, "mode=set requires 'absolute'")
     job_id = get_manager().enqueue(
@@ -1878,3 +1890,74 @@ def cancel_job(job_id: int):
 def dismiss_job(job_id: int):
     get_manager().dismiss(job_id)
     return {"dismissed": job_id}
+
+
+class DateCheckReq(BaseModel):
+    camera_root: str
+
+
+class DatePreviewReq(DateCheckReq):
+    recording_ids: List[int]
+    anchor_id: Optional[int] = None
+    anchor_time: str = ""
+    anchor_end: bool = True
+    keep_recorded_dates: bool = False
+    destination_id: int
+    metadata_copy: bool = True
+    reuse_offset: bool = False
+
+
+@router.get("/recording-dates")
+def recording_date_review(camera_root: str, session: Session = Depends(get_session)):
+    return date_review.review_data(session, camera_root)
+
+
+@router.post("/recording-dates/check")
+def check_recording_dates(req: DateCheckReq):
+    try:
+        return {"job_id": date_review.queue_check(Path(req.camera_root))}
+    except (ValueError, RuntimeError, OSError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/recording-dates/preview")
+def preview_recording_dates(req: DatePreviewReq, session: Session = Depends(get_session)):
+    try:
+        root = workflow.camera_root(req.camera_root)
+        return date_review.make_preview(session, str(root), req.recording_ids, req.anchor_id,
+                                        req.anchor_time, req.anchor_end, req.keep_recorded_dates,
+                                        req.destination_id, req.metadata_copy, req.reuse_offset)
+    except (ValueError, RuntimeError, OSError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+class ConfirmDatesReq(BaseModel):
+    plan_id: int
+
+
+@router.post("/recording-dates/confirm")
+def confirm_recording_dates(req: ConfirmDatesReq, session: Session = Depends(get_session)):
+    try:
+        return date_review.confirm_plan(session, req.plan_id)
+    except (ValueError, RuntimeError, OSError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+class ClockSyncReq(BaseModel):
+    camera_ip: str
+
+
+@router.post("/camera-clock/sync")
+def sync_camera_clock(req: ClockSyncReq):
+    import ipaddress
+    import httpx
+    try:
+        address = ipaddress.ip_address(req.camera_ip.strip())
+        if address.version != 4 or not address.is_private or address.is_loopback or address.is_unspecified:
+            raise ValueError("Enter the camera's private IPv4 address")
+        now = date_review.local(date_review.utcnow())
+        response = httpx.get(f"http://{address}/cgi-bin/foream_remote_control", params={"set_time": now.strftime("%Y-%m-%d_%H:%M:%S")}, timeout=10, follow_redirects=False, trust_env=False)
+        response.raise_for_status()
+        return {"sent_time": now.isoformat(), "message": "Clock-setting request sent. Check a new test recording; existing videos were not changed."}
+    except (ValueError, httpx.HTTPError) as exc:
+        raise HTTPException(409, "Camera clock could not be set. Check its Wi-Fi connection and supported firmware. " + str(exc)[:180]) from exc

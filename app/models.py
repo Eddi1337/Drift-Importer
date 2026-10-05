@@ -283,3 +283,54 @@ class SystemSample(Base):
     rx_bytes_per_s: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     tx_bytes_per_s: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     load_1m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+
+class RecordingDate(Base):
+    """An immutable camera-file observation plus a separately confirmed date."""
+    __tablename__ = "recording_dates"
+    __table_args__ = (UniqueConstraint("path", "size_bytes", "mtime_ns"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    camera_root: Mapped[str] = mapped_column(String(1024), index=True)
+    path: Mapped[str] = mapped_column(String(1024), index=True)
+    relative_path: Mapped[str] = mapped_column(String(1024))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    mtime_ns: Mapped[int] = mapped_column(Integer)
+    original_time: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    corrected_time: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    duration_s: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    time_source: Mapped[str] = mapped_column(String(32), default="metadata")
+    status: Mapped[str] = mapped_column(String(32), default="review")
+    reasons: Mapped[str] = mapped_column(Text, default="[]")
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    correction_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    metadata_copy: Mapped[bool] = mapped_column(Boolean, default=True)
+    reuse_offset: Mapped[bool] = mapped_column(Boolean, default=False)
+    first_seen: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class CameraDateCheck(Base):
+    __tablename__ = "camera_date_checks"
+    camera_root: Mapped[str] = mapped_column(String(1024), primary_key=True)
+    observed_ids: Mapped[str] = mapped_column(Text, default="[]")
+    checked_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class DateCorrection(Base):
+    __tablename__ = "date_corrections"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="preview")
+    job_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class CorrectedArchive(Base):
+    """Derived metadata copy; the original upload ledger remains byte-exact."""
+    __tablename__ = "corrected_archives"
+    __table_args__ = (UniqueConstraint("recording_id", "destination_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    recording_id: Mapped[int] = mapped_column(ForeignKey("recording_dates.id"))
+    destination_id: Mapped[int] = mapped_column(ForeignKey("destinations.id"))
+    corrected_time: Mapped[dt.datetime] = mapped_column(DateTime)
+    original_path: Mapped[str] = mapped_column(String(1024))
+    corrected_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)

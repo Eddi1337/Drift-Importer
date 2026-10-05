@@ -209,6 +209,10 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
                 )
                 import_options = {"verify_checksum": True} if payload.get("fingerprint_on_import") else {}
                 item = import_one(s, path, source=payload.get("source", "device"), **import_options)
+                from .date_review import observation, APPROVED
+                date = observation(s, path) if item.source == "device" else None
+                if date and date.status in APPROVED:
+                    item.capture_time = date.corrected_time or date.original_time
                 item_id = item.id
             if item_id in seen_ids:
                 ctx.set_progress((i + 1) / total, f"Already indexed {path.name}")
@@ -431,6 +435,8 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
             local_path_obj = Path(item.path)
             if _needs_metadata_refresh(item, local_path_obj):
                 _refresh_metadata_from_file(item, local_path_obj)
+            from .date_review import require_approved, local, utc
+            date = require_approved(s, item)
             local_size = item.size_bytes or local_path_obj.stat().st_size
             if not item.checksum:
                 item.checksum = checksum(local_path_obj)
@@ -491,10 +497,10 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
             if payload.get("content_names"):
                 filename = f"{Path(filename).stem}_{item.checksum[:16]}{Path(filename).suffix}"
             checksum_value = item.checksum
-            remote_dir = render_remote_dir(dest.path_template, item.capture_time)
+            remote_dir = render_remote_dir(dest.path_template, local(item.capture_time) if item.capture_time else None)
             # Stamp the remote file with the capture time so its date matches the
             # {year}/{month} folder it lands in, not the moment it was uploaded.
-            capture_mtime = item.capture_time.timestamp() if item.capture_time else None
+            capture_mtime = utc(item.capture_time).timestamp() if item.capture_time else None
             dest_detached = dest  # used only for read-only backend config below
             backend = get_backend(dest_detached)
             dest_name = dest.name
@@ -581,6 +587,14 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
         throughput_bps = None
         with ctx.upload_semaphore:
             try:
+                # A date correction may have run while this upload waited for
+                # its slot. Never send a precomputed old folder after that.
+                with session_scope() as session:
+                    current = session.get(MediaItem, mid)
+                    require_approved(session, current)
+                    current_mtime = utc(current.capture_time).timestamp() if current.capture_time else None
+                    if current_mtime != capture_mtime:
+                        raise RuntimeError("Recording date changed while queued; retry this upload")
                 log.info(
                     "Starting upload media=%s destination=%s file=%s bytes=%s offset=%s",
                     mid,
@@ -673,6 +687,9 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                 if result_status == "done":
                     clip.full_verification_failed = False
                 clip.updated_at = utcnow()
+        if result_status == "done" and date and date.corrected_time and dest.type in ("local", "nfs", "smb"):
+            from .date_review import queue_metadata
+            queue_metadata(date.id, did, result_remote)
         done += 1
         ctx.set_progress(done / total)
 
@@ -754,6 +771,10 @@ def enqueue_device_import(
     if paths:
         requested = {str(Path(p)) for p in paths}
         found = [p for p in found if p in requested]
+    if auto_upload:
+        from .date_review import approved_paths
+        with session_scope() as session:
+            found = [str(p) for p in approved_paths(session, [Path(p) for p in found])]
     if not found:
         return None, 0
     if dedup and _import_already_queued(root_str):
@@ -869,6 +890,15 @@ def _media_ids_needing_upload(
     return needed
 
 
+def _date_ready_ids(media_ids):
+    from .date_review import approved_paths
+    with session_scope() as session:
+        items = session.query(MediaItem).filter(MediaItem.id.in_(media_ids)).all()
+        paths = {str(p) for p in approved_paths(session, [Path(m.path) for m in items if m.source == "device" and not m.derived])}
+        ready = {m.id for m in items if m.derived or m.source != "device" or m.path in paths}
+        return [mid for mid in media_ids if mid in ready]
+
+
 def enqueue_upload_jobs(
     media_ids: list[int],
     destination_ids: list[int] | None = None,
@@ -876,6 +906,7 @@ def enqueue_upload_jobs(
     content_names: bool = False,
 ) -> list[int]:
     media_ids = list(dict.fromkeys(media_ids))
+    media_ids = _date_ready_ids(media_ids)
     media_ids = _media_ids_needing_upload(media_ids, destination_ids)
     if not media_ids:
         return []
@@ -906,6 +937,7 @@ def enqueue_upload_jobs_by_month(
     content_names: bool = False,
 ) -> list[int]:
     media_ids = list(dict.fromkeys(media_ids))
+    media_ids = _date_ready_ids(media_ids)
     media_ids = _media_ids_needing_upload(media_ids, destination_ids)
     if not media_ids:
         return []

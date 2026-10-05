@@ -1738,3 +1738,15 @@ input[type=checkbox], input[type=radio] { min-height:0; }
   .panel { padding:1.2rem; }
   .page-heading h1 { font-size:2rem; }
 }
+
+.date-review form { margin-top:20px; }
+.date-range { margin-top:16px; }
+.date-review .check-row { align-items:flex-start; margin:16px 0; line-height:1.5; }
+.date-review .check-row input { flex:0 0 auto; margin-top:4px; }
+.date-preview { margin-top:24px; padding:20px; background:var(--panel-strong); border:1px solid var(--line); border-radius:16px; }
+.date-preview td { white-space:nowrap; }
+.date-preview details { margin:16px 0; }
+.date-move { display:grid; grid-template-columns:1fr auto 1fr; gap:12px; padding:12px 0; border-bottom:1px solid var(--line); }
+.date-move code { overflow-wrap:anywhere; font-size:12px; }
+.date-review [hidden] { display:none !important; }
+@media(max-width:640px) { .date-move { grid-template-columns:1fr; gap:5px; } .date-preview {padding:14px;} .date-review .section-heading {align-items:flex-start;flex-direction:column;} }

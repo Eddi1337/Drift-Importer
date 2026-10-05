@@ -84,11 +84,16 @@ def archived_copies(session, items, destination_id: int) -> dict[int, Path]:
 
 
 def recording_days(session) -> dict[str, list[MediaItem]]:
+    from .date_review import local, approved_paths
     days = {}
-    for item in session.query(MediaItem).filter(
+    items = session.query(MediaItem).filter(
         MediaItem.kind == "video", MediaItem.derived.is_(False), MediaItem.capture_time.is_not(None)
-    ).order_by(MediaItem.capture_time, MediaItem.filename, MediaItem.id):
-        days.setdefault(item.capture_time.date().isoformat(), []).append(item)
+    ).order_by(MediaItem.capture_time, MediaItem.filename, MediaItem.id).all()
+    ready = {str(p) for p in approved_paths(session, [Path(m.path) for m in items if m.source == "device"])}
+    for item in items:
+        if item.source == "device" and item.path not in ready:
+            continue
+        days.setdefault(local(item.capture_time).date().isoformat(), []).append(item)
     return days
 
 
@@ -289,7 +294,7 @@ def handle_trip(job_id: int, payload: dict, ctx) -> None:
                 raise RuntimeError(f"Archived clip does not match the import: {path.name}")
         with tempfile.TemporaryDirectory(prefix="trip-", dir=tmp_root) as scratch:
             partial = Path(scratch) / "movie.mp4"
-            merge_clips(paths, partial, progress=lambda p: ctx.set_progress(p * .9, f"Combining trip: {round(p * 100)}%"))
+            merge_clips(paths, partial, creation_time=first_capture, progress=lambda p: ctx.set_progress(p * .9, f"Combining trip: {round(p * 100)}%"))
             ctx.set_progress(.92, "Checking and publishing trip to NAS")
             require_storage(root)
             if [_fingerprint(path) for path in paths] != before:

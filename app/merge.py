@@ -7,6 +7,7 @@ re-encoding (which would be very slow on this hardware).
 """
 from __future__ import annotations
 
+import datetime as dt
 import subprocess
 import tempfile
 from pathlib import Path
@@ -40,7 +41,7 @@ def check_compatible(paths: Sequence[Path]) -> None:
 
 
 def build_concat_command(
-    paths: Sequence[Path], output: Path, list_file: Path, report_progress: bool = False
+    paths: Sequence[Path], output: Path, list_file: Path, report_progress: bool = False, creation_time: Optional[dt.datetime] = None
 ) -> List[str]:
     settings = get_settings()
     command = [
@@ -52,6 +53,10 @@ def build_concat_command(
         "-c", "copy",
         str(output),
     ]
+    if creation_time is not None:
+        when = creation_time.replace(tzinfo=dt.timezone.utc) if creation_time.tzinfo is None else creation_time.astimezone(dt.timezone.utc)
+        stamp = when.isoformat().replace("+00:00", "Z")
+        command[-1:-1] = ["-metadata", f"creation_time={stamp}", "-metadata:s", f"creation_time={stamp}"]
     if report_progress:
         # ffmpeg's machine-readable progress is much more reliable than trying
         # to parse its human-oriented status line.
@@ -69,7 +74,7 @@ def write_concat_list(paths: Sequence[Path], list_file: Path) -> None:
 
 
 def merge_clips(
-    paths: Sequence[Path], output: Path, progress: Optional[Callable[[float], None]] = None
+    paths: Sequence[Path], output: Path, progress: Optional[Callable[[float], None]] = None, creation_time: Optional[dt.datetime] = None
 ) -> Dict:
     """Merge clips in the given order. Returns ffmpeg result info."""
     check_compatible(paths)
@@ -81,7 +86,7 @@ def merge_clips(
         write_concat_list(paths, list_file)
         total_duration = sum(float(probe(path).get("duration_s") or 0) for path in paths)
         if progress and total_duration > 0:
-            cmd = build_concat_command(paths, output, list_file, report_progress=True)
+            cmd = build_concat_command(paths, output, list_file, report_progress=True, creation_time=creation_time)
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             last_progress = -1.0
             try:
@@ -112,7 +117,7 @@ def merge_clips(
                 raise MergeError(f"ffmpeg concat failed: {stderr[-2000:]}")
             progress(1.0)
         else:
-            cmd = build_concat_command(paths, output, list_file)
+            cmd = build_concat_command(paths, output, list_file, creation_time=creation_time)
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
             if res.returncode != 0:
                 raise MergeError(f"ffmpeg concat failed: {res.stderr[-2000:]}")

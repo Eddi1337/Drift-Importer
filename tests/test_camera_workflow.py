@@ -206,7 +206,8 @@ def test_multiday_trip_uses_archived_copies_after_camera_removed(setup, monkeypa
         assert duplicate["job_id"] == result["job_id"]
         payload = json.loads(session.get(Job, result["job_id"]).payload)
         assert payload["media_ids"] == [a, b]
-    def merge(paths, output, progress=None):
+    def merge(paths, output, progress=None, creation_time=None):
+        assert creation_time == dt.datetime(2026, 9, 29, 9)
         assert paths == [archived_a, archived_b]
         assert output.is_relative_to(nas / ".drift/tmp")
         output.write_bytes(b"ab")

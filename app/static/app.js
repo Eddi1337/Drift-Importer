@@ -2412,7 +2412,7 @@ function setSettingsStatus(text, kind = "", hint = text) {
 function updateAutomationPreview() {
   const autoImport = document.getElementById("sAutoImport").checked;
   const autoUpload = document.getElementById("sAutoUpload").checked;
-  document.getElementById("automationPreview").innerHTML = `<span>Connect camera</span><i>→</i><span>${autoImport ? 'Find videos automatically' : 'Start an import yourself'}</span><i>→</i><span>${autoUpload ? 'Save automatically' : 'Choose when to upload'}</span>`;
+  document.getElementById("automationPreview").innerHTML = `<span>Connect camera</span><i>→</i><span>${autoImport ? 'Find videos automatically' : 'Start an import yourself'}</span><i>→</i><span>${autoUpload ? 'Check dates → Save automatically' : 'Choose when to upload'}</span>`;
 }
 
 function initSettings() {

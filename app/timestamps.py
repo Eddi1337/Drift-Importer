@@ -15,6 +15,17 @@ from pathlib import Path
 from .config import get_settings
 
 
+def metadata_copy(source: Path, output: Path, when: dt.datetime) -> None:
+    """Write a separate MP4 with UTC dates on every track, without encoding."""
+    stamp = (when.replace(tzinfo=dt.timezone.utc) if when.tzinfo is None else when.astimezone(dt.timezone.utc)).isoformat()
+    cmd = [get_settings().ffmpeg, "-v", "error", "-n", "-i", str(source),
+           "-map", "0", "-c", "copy", "-map_metadata", "0",
+           "-metadata", f"creation_time={stamp}", "-metadata:s", f"creation_time={stamp}", str(output)]
+    result = subprocess.run(cmd, capture_output=True, timeout=1800)
+    if result.returncode or not output.is_file() or output.stat().st_size == 0:
+        raise RuntimeError("Could not create metadata-corrected video: " + result.stderr.decode(errors="replace")[-500:])
+
+
 def shift_datetime(base: dt.datetime, *, days=0, hours=0, minutes=0, seconds=0) -> dt.datetime:
     return base + dt.timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
 

@@ -18,6 +18,7 @@ from .database import init_db, session_scope
 from .jobs import get_manager
 from . import tasks  # noqa: F401  (registers job handlers)
 from . import workflow  # noqa: F401
+from . import date_review  # noqa: F401
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))

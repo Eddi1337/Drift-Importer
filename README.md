@@ -235,3 +235,39 @@ The GUI is driven by a JSON API under `/api` (FastAPI auto-docs at `/docs`):
 `/api/destinations`, `/api/upload`, `/api/timestamp`, `/api/merge`,
 `/api/albums`, `/api/jobs`, …
 ```
+
+### Camera clock checks and historical date corrections
+
+Import checks Drift `NNNMEDIA/DVRxxxxx.MP4` recording order numerically, including
+folder rollover, and holds uploads if counters move backwards, timestamps regress,
+metadata is missing, or the latest newly seen ride does not end on the connection
+day or previous day in Europe/London. These are plausibility checks: USB connection
+time cannot identify an exact recording time. Historical footage needs review.
+Checks read MP4 movie headers with small seeks, without decoding or copying videos.
+
+On **Import → Recording dates**, choose a folder (or all DCIM folders), select the
+first and last video, and provide a known start or end time. A constant offset
+preserves real recording breaks. Split ranges at any clock reset. Preview shows
+corrected dates and matching NAS paths; nothing moves until the preview is confirmed.
+The optional reusable offset applies to subsequent recordings only when sequence,
+clock and recent-ride checks pass. A reset stops this reuse.
+
+Confirmed jobs move existing originals into the corrected destination folders,
+requiring full camera/NAS SHA-256 equality and refusing to overwrite other files.
+The move journal and upload ledger support retry after interruption. Older
+unindexed copies are also matched by filename and full hash in the original date
+folder; unrelated files are left alone. Clips no longer present on the camera, or
+copies stored in other layouts, require a separate archive review.
+
+Camera files stay read-only. Original NAS backups retain their video bytes and
+embedded metadata; an adjacent `.dates.json` records the confirmed correction.
+With **Create metadata-corrected copies** enabled, ffmpeg stream-copies the original
+into `Corrected/YYYY/MM`, updates container and stream creation times, validates
+streams/duration/date, and publishes the result. Scratch files remain in
+`/mnt/NAS/.drift/tmp`; this requires extra NAS space, but no re-encoding or video
+writes to the Pi SD card. Trip grouping and new trip metadata use confirmed dates.
+Failed corrections remain held; retry their job after resolving the reported error.
+
+For future rides, the advanced clock button can send the Pi's current UK time to
+a supported Drift camera reachable over Wi-Fi. It cannot set the clock through
+USB mass storage. Check a new recording afterwards; firmware support varies.

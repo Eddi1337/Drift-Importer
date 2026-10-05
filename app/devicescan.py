@@ -48,6 +48,7 @@ class DeviceMonitor:
         # path is forgotten when the device disconnects, so a reconnect imports
         # again, but a steady connection only triggers once.
         self._auto_imported: set[str] = set()
+        self._date_seen: dict[str, tuple] = {}
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="drift-devices", daemon=True)
@@ -80,9 +81,25 @@ class DeviceMonitor:
             with self._lock:
                 self._cache = cache
                 self._scanned = True
+            self._maybe_date_check(cache)
             self._maybe_auto_import(cache)
         except Exception:  # noqa: BLE001
             log.exception("Device scan failed")
+
+    def _maybe_date_check(self, devices: list[dict]) -> None:
+        from .date_review import queue_check
+        roots = sorted({d["path"] for d in devices}, key=len)
+        roots = [root for root in roots if not any(root != parent and Path(root).is_relative_to(Path(parent)) for parent in roots)]
+        self._date_seen = {root: value for root, value in self._date_seen.items() if root in roots}
+        for root in roots:
+            matching = [d for d in devices if d["path"] == root]
+            signature = tuple((d["file_count"], d["free_bytes"]) for d in matching)
+            if self._date_seen.get(root) != signature:
+                try:
+                    queue_check(Path(root))
+                    self._date_seen[root] = signature
+                except Exception:
+                    log.exception("Could not schedule camera date check")
 
     def _maybe_auto_import(self, devices: list[dict]) -> None:
         """Auto-import each connected device once per connection, server-side."""
@@ -101,14 +118,17 @@ class DeviceMonitor:
         # Imported lazily: tasks imports devices, and importing it at module load
         # would create a cycle through the job handlers.
         from .tasks import enqueue_device_import
+        from .workflow import scan_videos
 
         for dcim in pending:
             try:
                 job_id, count = enqueue_device_import(
                     Path(dcim),
+                    paths=[str(p) for p in scan_videos(Path(dcim))],
                     auto_upload=auto_upload,
                     destination_ids=dest_ids,
                     dedup=True,
+                    fingerprint_on_import=True,
                 )
             except Exception:  # noqa: BLE001
                 log.exception("Auto-import failed for %s", dcim)
