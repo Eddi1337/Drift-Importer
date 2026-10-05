@@ -17,7 +17,7 @@ from .config import get_settings
 
 def metadata_copy(source: Path, output: Path, when: dt.datetime) -> None:
     """Write a separate MP4 with UTC dates on every track, without encoding."""
-    stamp = (when.replace(tzinfo=dt.timezone.utc) if when.tzinfo is None else when.astimezone(dt.timezone.utc)).isoformat()
+    stamp = (when.replace(tzinfo=dt.timezone.utc) if when.tzinfo is None else when.astimezone(dt.timezone.utc)).replace(microsecond=0).isoformat()
     cmd = [get_settings().ffmpeg, "-v", "error", "-n", "-i", str(source),
            "-map", "0", "-c", "copy", "-map_metadata", "0",
            "-metadata", f"creation_time={stamp}", "-metadata:s", f"creation_time={stamp}", str(output)]

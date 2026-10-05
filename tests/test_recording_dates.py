@@ -16,7 +16,7 @@ from sqlalchemy.pool import StaticPool
 
 from app import date_review as dates, tasks, workflow
 from app.database import Base
-from app.models import CameraDateCheck, DateCorrection, Destination, Job, MediaItem, RecordingDate, UploadedClip, UploadState
+from app.models import CameraDateCheck, CorrectedArchive, DateCorrection, Destination, Job, MediaItem, RecordingDate, UploadedClip, UploadState
 from app.media import checksum
 
 UTC = dt.timezone.utc
@@ -259,24 +259,41 @@ def test_wrong_nas_bytes_and_collision_never_deleted(tmp_path):
     assert target.read_bytes()==b'original'
 
 @pytest.mark.skipif(not shutil.which('ffmpeg') or not shutil.which('ffprobe'),reason='ffmpeg integration runs in CI and on the Pi')
-def test_metadata_copy_keeps_video_packets_and_changes_all_creation_tags(tmp_path):
+def test_metadata_copy_keeps_video_packets_and_changes_all_creation_tags(tmp_path,setup):
     from app.timestamps import metadata_copy
     from app.media import probe
     from app.merge import merge_clips
     source=tmp_path/'original.mp4'; corrected=tmp_path/'corrected.mp4'
     subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=size=64x64:rate=10','-f','lavfi','-i','sine=frequency=400','-t','1','-c:v','libx264','-c:a','aac','-metadata','creation_time=2026-09-20T14:45:55Z',str(source)],check=True)
     original_hash=hashlib.sha256(source.read_bytes()).hexdigest()
-    when=dt.datetime(2026,10,4,17)
+    when=dt.datetime(2026,10,4,17,0,0,651708)
     metadata_copy(source,corrected,when)
-    assert probe(corrected)['capture_time']==when
+    assert probe(corrected)['capture_time']==when.replace(microsecond=0)
     assert probe(corrected)['stream_signature']==probe(source)['stream_signature']
+    tags=json.loads(subprocess.run(['ffprobe','-v','error','-show_streams','-of','json',str(corrected)],capture_output=True,text=True,check=True).stdout)
+    assert all(dt.datetime.fromisoformat(stream['tags']['creation_time'].replace('Z','+00:00')).replace(tzinfo=None)==when.replace(microsecond=0) for stream in tags['streams'])
     def packet_hash(path):
         return subprocess.run(['ffmpeg','-v','error','-i',str(path),'-map','0','-c','copy','-f','hash','-hash','sha256','-'],capture_output=True,check=True).stdout
     assert packet_hash(source)==packet_hash(corrected)
     assert hashlib.sha256(source.read_bytes()).hexdigest()==original_hash
     trip=tmp_path/'trip.mp4'
     merge_clips([source,source],trip,creation_time=when)
-    assert probe(trip)['capture_time']==when and probe(trip)['duration_s']>=2
+    assert probe(trip)['capture_time']==when.replace(microsecond=0) and probe(trip)['duration_s']>=2
+    maker,camera,nas=setup
+    original=nas/'2026/09/original.mp4'; original.parent.mkdir(parents=True); shutil.copyfile(source,original)
+    with maker() as s:
+        recording=RecordingDate(camera_root=str(camera),path=str(camera/'DCIM/107MEDIA/DVR00935.MP4'),relative_path='DCIM/107MEDIA/DVR00935.MP4',size_bytes=original.stat().st_size,mtime_ns=0,original_time=dt.datetime(2026,9,20,14,45,55),corrected_time=when,status='confirmed',metadata_copy=True)
+        s.add(recording);s.commit();rid=recording.id
+    dates.publish_metadata_copy(rid,1,original,Context())
+    with maker() as s:
+        stored=s.query(CorrectedArchive).one();published=Path(stored.corrected_path)
+        assert published.is_relative_to(nas/'Corrected/2026/10')
+        assert stored.corrected_time==when
+    assert packet_hash(published)==packet_hash(source)
+    assert probe(published)['capture_time']==when.replace(microsecond=0)
+    assert list((nas/'.drift/tmp').iterdir())==[]
+    dates.publish_metadata_copy(rid,1,original,Context()) # idempotent publication
+    assert hashlib.sha256(original.read_bytes()).hexdigest()==original_hash
 
 
 def test_correction_resumes_after_nas_publication_interrupted(setup,monkeypatch):
@@ -304,3 +321,27 @@ def test_correction_resumes_after_nas_publication_interrupted(setup,monkeypatch)
     dates.correction_job(job,payload,Context())
     with maker() as s: assert s.get(RecordingDate,id).status=='confirmed'
     assert new.read_bytes()==path.read_bytes()
+
+
+def test_event_recordings_are_checked_and_held_with_bad_clock(setup):
+    maker,camera,nas=setup
+    movie(camera/'EVENT/E_DVR00908.MP4',dt.datetime(2026,9,20,14,45,55))
+    dates.scan_job(1,{'camera_root':str(camera),'connected_at':NOW.isoformat()},Context())
+    with maker() as s:
+        data=dates.review_data(s,str(camera))
+        assert data['total']==data['held']==1
+        assert data['files'][0]['folder']=='EVENT'
+        assert dates.approved_paths(s,[camera/'EVENT/E_DVR00908.MP4'])==[]
+
+
+def test_reused_camera_path_does_not_preview_an_unrelated_old_backup(setup):
+    maker,camera,nas=setup
+    id,path=scan(setup)
+    old=nas/'2026/08'/path.name;old.parent.mkdir(parents=True);old.write_bytes(b'previous recording')
+    with maker() as s:
+        item=index(s,path,'device');item.checksum=checksum(old);item.size_bytes=path.stat().st_size
+        s.add(UploadedClip(destination_id=1,source_media_id=item.id,checksum=item.checksum,filename=old.name,size_bytes=old.stat().st_size,status='done',remote_path=str(old)))
+        s.commit()
+    plan=preview(setup,[id])
+    assert plan['entries'][0]['moves']==[]
+    assert old.read_bytes()==b'previous recording'

@@ -243,7 +243,7 @@ folder rollover, and holds uploads if counters move backwards, timestamps regres
 metadata is missing, or the latest newly seen ride does not end on the connection
 day or previous day in Europe/London. These are plausibility checks: USB connection
 time cannot identify an exact recording time. Historical footage needs review.
-Checks read MP4 movie headers with small seeks, without decoding or copying videos.
+Normal recordings and `EVENT/E_DVRxxxxx.MP4` are both checked. Checks read MP4 movie headers with small seeks, without decoding or copying videos.
 
 On **Import → Recording dates**, choose a folder (or all DCIM folders), select the
 first and last video, and provide a known start or end time. A constant offset
@@ -263,7 +263,8 @@ Camera files stay read-only. Original NAS backups retain their video bytes and
 embedded metadata; an adjacent `.dates.json` records the confirmed correction.
 With **Create metadata-corrected copies** enabled, ffmpeg stream-copies the original
 into `Corrected/YYYY/MM`, updates container and stream creation times, validates
-streams/duration/date, and publishes the result. Scratch files remain in
+streams/duration/date, and publishes the result. MP4 creation-time fields have
+whole-second precision; the correction record retains fractional clip-end offsets. Scratch files remain in
 `/mnt/NAS/.drift/tmp`; this requires extra NAS space, but no re-encoding or video
 writes to the Pi SD card. Trip grouping and new trip metadata use confirmed dates.
 Failed corrections remain held; retry their job after resolving the reported error.

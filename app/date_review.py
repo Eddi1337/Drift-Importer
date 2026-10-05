@@ -62,7 +62,7 @@ def sequence_key(path: Path):
 
 
 def is_camera_video(path: Path):
-    return bool(re.fullmatch(r"DVR\d+\.(?:MP4|MOV)", path.name, re.I)) and (
+    return bool(re.fullmatch(r"(?:E_)?DVR\d+\.(?:MP4|MOV)", path.name, re.I)) and (
         sequence_key(path) is not None or any(p.name.upper() == "EVENT" for p in path.parents)
     )
 
@@ -177,7 +177,7 @@ def analyse(rows, new_ids, connected_at, previous_rows=()):
     new_ordered = [r for r in ordered if r.id in new_ids]
     prior_keys = [sequence_key(Path(r.path)) for r in previous_rows if sequence_key(Path(r.path))]
     reused = {r.id for r in new_ordered if prior_keys and sequence_key(Path(r.path)) <= max(prior_keys)}
-    latest = ordered[-1] if ordered else None
+    latest = ordered[-1] if ordered else max((r for r in rows if r.original_time), key=lambda r: utc(r.original_time), default=None)
     latest_end = (utc(latest.original_time) + dt.timedelta(seconds=latest.duration_s or 0)) if latest and latest.original_time else None
     recent = latest_end and local(latest_end).date() in (today, today - dt.timedelta(days=1)) and latest_end <= now + dt.timedelta(minutes=5)
     # A confirmed offset can carry forward, but only across increasing counters,
@@ -280,6 +280,7 @@ def review_data(session, root: str):
 
 def make_preview(session, root, ids, anchor_id, anchor_time, anchor_end, keep, destination_id, metadata_copy, reuse_offset):
     from .workflow import nas_destination
+    from .media import checksum
     if not ids or len(ids) != len(set(ids)):
         raise ValueError("Select a recording range")
     rows = session.query(RecordingDate).filter(RecordingDate.id.in_(ids), RecordingDate.camera_root == root).all()
@@ -310,6 +311,10 @@ def make_preview(session, root, ids, anchor_id, anchor_time, anchor_end, keep, d
             raise ValueError("Corrected times must be plausible past recording times")
         item = session.query(MediaItem).filter_by(path=row.path).first()
         ledgers = session.query(UploadedClip).filter_by(destination_id=dest.id, checksum=item.checksum, status="done").all() if item else []
+        # A reused DVR path must not relocate an older recording whose ledger
+        # belonged to the previous camera file at that path.
+        if ledgers and (item.size_bytes != row.size_bytes or checksum(Path(row.path)) != item.checksum):
+            ledgers = []
         moves = []
         for ledger in ledgers:
             source = archive_path(nas, ledger.remote_path)
@@ -445,7 +450,7 @@ def publish_metadata_copy(row_id, destination_id, original, ctx):
         before = fingerprint(original)
         metadata_copy(original, output, when)
         info = probe(output)
-        if fingerprint(original) != before or info.get("stream_signature") != expected.get("stream_signature") or not info.get("duration_s") or abs(info["duration_s"] - (expected.get("duration_s") or 0)) > 1 or info.get("capture_time") != when:
+        if fingerprint(original) != before or info.get("stream_signature") != expected.get("stream_signature") or not info.get("duration_s") or abs(info["duration_s"] - (expected.get("duration_s") or 0)) > 1 or info.get("capture_time") != when.replace(microsecond=0):
             raise RuntimeError("Corrected metadata copy failed validation")
         if ctx.is_cancelled():
             raise JobCancelled()

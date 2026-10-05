@@ -55,7 +55,7 @@ def build_concat_command(
     ]
     if creation_time is not None:
         when = creation_time.replace(tzinfo=dt.timezone.utc) if creation_time.tzinfo is None else creation_time.astimezone(dt.timezone.utc)
-        stamp = when.isoformat().replace("+00:00", "Z")
+        stamp = when.replace(microsecond=0).isoformat().replace("+00:00", "Z")
         command[-1:-1] = ["-metadata", f"creation_time={stamp}", "-metadata:s", f"creation_time={stamp}"]
     if report_progress:
         # ffmpeg's machine-readable progress is much more reliable than trying
