@@ -1924,9 +1924,13 @@ def check_recording_dates(req: DateCheckReq):
 def preview_recording_dates(req: DatePreviewReq, session: Session = Depends(get_session)):
     try:
         root = workflow.camera_root(req.camera_root)
-        return date_review.make_preview(session, str(root), req.recording_ids, req.anchor_id,
-                                        req.anchor_time, req.anchor_end, req.keep_recorded_dates,
-                                        req.destination_id, req.metadata_copy, req.reuse_offset)
+        preview = date_review.make_preview(session, str(root), req.recording_ids, req.anchor_id,
+                                           req.anchor_time, req.anchor_end, req.keep_recorded_dates,
+                                           req.destination_id, req.metadata_copy, req.reuse_offset)
+        # Confirmation arrives in a separate request/session. Publish the plan
+        # before returning its ID; flush alone is rolled back on session close.
+        session.commit()
+        return preview
     except (ValueError, RuntimeError, OSError) as exc:
         raise HTTPException(409, str(exc)) from exc
 

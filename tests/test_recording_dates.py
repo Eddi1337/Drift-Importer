@@ -165,6 +165,62 @@ def preview(setup,ids,anchor=None,when='2026-10-04T18:00:00',end=False,metadata=
         return result
 
 
+def test_http_preview_survives_request_and_confirmation_resumes_auto_upload(setup, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app import database
+    from app.models import AppSettings
+    from app.routers.api import router
+
+    maker, camera, _ = setup
+    recording_id, path = scan(setup)
+    # Use the production dependency: closing each request's session must not
+    # discard a preview. An auto-committing test dependency hides this failure.
+    monkeypatch.setattr(database, 'SessionLocal', maker)
+    monkeypatch.setattr(tasks, 'import_one', index)
+    enqueued = []
+    monkeypatch.setattr(tasks, 'get_manager_enqueue',
+                        lambda kind, payload, description='': enqueued.append((kind, payload)) or 42)
+    with maker() as session:
+        session.add(AppSettings(id=1, auto_upload_on_import=True))
+        session.commit()
+    app = FastAPI()
+    app.include_router(router, prefix='/api')
+    with TestClient(app) as client:
+        response = client.post('/api/recording-dates/preview', json={
+            'camera_root': str(camera), 'recording_ids': [recording_id],
+            'anchor_id': recording_id, 'anchor_time': '2026-10-04T18:00:00',
+            'anchor_end': False, 'destination_id': 1, 'metadata_copy': False,
+        })
+        assert response.status_code == 200, response.text
+        plan_id = response.json()['plan_id']
+        response = client.post('/api/recording-dates/confirm', json={'plan_id': plan_id})
+        assert response.status_code == 200, response.text
+        job_id = response.json()['job_id']
+        assert client.post('/api/recording-dates/confirm', json={'plan_id': plan_id}).json() == {'job_id': job_id}
+
+    with maker() as session:
+        assert session.get(DateCorrection, plan_id).status == 'confirmed'
+        job = session.get(Job, job_id)
+        assert job.kind == 'date_correction' and job.status == 'queued'
+        payload = json.loads(job.payload)
+        row = session.get(RecordingDate, recording_id)
+        assert row.status == 'applying' and row.corrected_time is None
+
+    dates.correction_job(job_id, payload, Context())
+    with maker() as session:
+        assert session.get(DateCorrection, plan_id).status == 'done'
+        row = session.get(RecordingDate, recording_id)
+        assert row.status == 'confirmed'
+        assert row.corrected_time == dt.datetime(2026, 10, 4, 17)
+        assert dates.review_data(session, str(camera))['held'] == 0
+    assert len(enqueued) == 1
+    kind, payload = enqueued[0]
+    assert kind == 'import' and payload['paths'] == [str(path)]
+    assert payload['auto_upload'] and payload['fingerprint_on_import']
+    assert payload['destination_ids'] == [1]
+
+
 def test_preview_preserves_breaks_and_requires_fresh_confirmation(setup):
     maker,camera,nas=setup
     a,_=scan(setup,908)
