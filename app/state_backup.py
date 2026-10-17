@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sqlite3
 import tempfile
 import threading
@@ -12,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from .config import get_settings
-from .storage import require_storage
+from .storage import filesystem_type, require_storage
 
 log = logging.getLogger("drift.state_backup")
 
@@ -75,8 +76,9 @@ class StateBackup:
         """Atomically replace the NAS snapshot only after a consistent backup.
 
         SQLite's backup API includes committed WAL data without copying or
-        checkpointing the live database. Temporary files are created on the
-        guarded NAS itself, so an unavailable mount cannot fill the SD card.
+        checkpointing the live database. SQLite works only in private tmpfs;
+        the resulting standalone file is streamed to a guarded NAS temporary
+        file and atomically published. SQLite locking never runs over NFS.
         """
         with self._lock:
             return self._snapshot()
@@ -94,6 +96,41 @@ class StateBackup:
             raise RuntimeError("Cannot snapshot app state without its secret key")
         if not self.settings.db_path.is_file():
             raise RuntimeError("Cannot snapshot app state without its database")
+        if (
+            self.settings.require_nas_mount
+            and filesystem_type(Path("/tmp")) != "tmpfs"
+        ):
+            raise RuntimeError("State snapshot staging requires /tmp to be mounted as tmpfs")
+
+        # The Pi's /tmp is a bounded RAM filesystem. Use an explicit path, not
+        # TMPDIR, so a host environment cannot redirect staging onto its SD.
+        with tempfile.TemporaryDirectory(prefix="drift-state-", dir="/tmp") as staging:
+            staged_database = Path(staging) / "drift.db"
+            self._sqlite_snapshot(staged_database)
+            return self._publish(staged_database, root, state_dir, key)
+
+    def _sqlite_snapshot(self, path: Path) -> None:
+        deadline = time.monotonic() + 120.0
+
+        def progress(_status, _remaining, _total):
+            if time.monotonic() > deadline:
+                raise TimeoutError("SQLite state snapshot exceeded its time limit")
+            # Yield between small page batches on the Pi while uploads run.
+            time.sleep(0.01)
+
+        source_uri = self.settings.db_path.resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(source_uri, uri=True, timeout=5.0)) as source:
+            with closing(sqlite3.connect(path, timeout=5.0)) as destination:
+                destination.execute("PRAGMA synchronous=FULL")
+                source.backup(destination, pages=64, progress=progress, sleep=0.05)
+                destination.execute("PRAGMA journal_mode=DELETE")
+                if destination.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                    raise RuntimeError("SQLite state snapshot failed its integrity check")
+        path.chmod(0o600)
+
+    def _publish(self, staged_database: Path, root: Path, state_dir: Path, key: bytes) -> Path:
+        if self.settings.secret_key_path.read_bytes() != key:
+            raise RuntimeError("App key changed during snapshot; recovery copy preserved")
 
         # Recheck immediately before writes, including on later periodic runs.
         root = require_storage(self.settings.nas_root)
@@ -113,27 +150,14 @@ class StateBackup:
 
         fd, name = tempfile.mkstemp(prefix=".drift.db-", suffix=".tmp", dir=state_dir)
         temporary = Path(name)
-        os.close(fd)
         key_temporary: Path | None = None
         try:
-            deadline = time.monotonic() + 120.0
-
-            def progress(_status, _remaining, _total):
-                if time.monotonic() > deadline:
-                    raise TimeoutError("SQLite state snapshot exceeded its time limit")
-                # Yield between small page batches on the Pi while uploads run.
-                time.sleep(0.01)
-
-            source_uri = self.settings.db_path.resolve().as_uri() + "?mode=ro"
-            with closing(sqlite3.connect(source_uri, uri=True, timeout=5.0)) as source:
-                with closing(sqlite3.connect(temporary, timeout=5.0)) as destination:
-                    destination.execute("PRAGMA synchronous=FULL")
-                    source.backup(destination, pages=64, progress=progress, sleep=0.05)
-                    destination.execute("PRAGMA journal_mode=DELETE")
-                    if destination.execute("PRAGMA quick_check").fetchone() != ("ok",):
-                        raise RuntimeError("SQLite state snapshot failed its integrity check")
-            temporary.chmod(0o600)
-            with temporary.open("rb") as snapshot_file:
+            # This is an ordinary sequential copy, not a SQLite database opened
+            # on NFS. No NAS SQLite journal, locks, WAL, or shared-memory file.
+            with os.fdopen(fd, "wb") as snapshot_file:
+                with staged_database.open("rb") as source_file:
+                    shutil.copyfileobj(source_file, snapshot_file, length=256 * 1024)
+                snapshot_file.flush()
                 os.fsync(snapshot_file.fileno())
 
             if self.settings.secret_key_path.read_bytes() != key:
@@ -160,10 +184,6 @@ class StateBackup:
             for candidate in (temporary, key_temporary):
                 if candidate is not None:
                     candidate.unlink(missing_ok=True)
-            # SQLite should use a standalone DELETE-journal DB, but remove any
-            # unpublished sidecars after an interrupted backup too.
-            for suffix in ("-journal", "-wal", "-shm"):
-                Path(str(temporary) + suffix).unlink(missing_ok=True)
 
 
 @lru_cache

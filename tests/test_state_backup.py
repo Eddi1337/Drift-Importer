@@ -22,6 +22,7 @@ def setup(tmp_path, monkeypatch):
         db_path=local / "drift.db",
         secret_key_path=local / "secret.key",
         nas_root=nas,
+        require_nas_mount=False,
         state_backup_interval_s=0,
     )
     settings.secret_key_path.write_bytes(Fernet.generate_key())
@@ -98,6 +99,27 @@ def test_failed_publication_preserves_previous_good_database(setup, monkeypatch)
     assert sorted(p.name for p in path.parent.iterdir()) == ["drift.db", "secret.key"]
 
 
+def test_failed_nas_stream_preserves_previous_good_database(setup, monkeypatch):
+    _settings, connection, backup = setup
+    connection.execute("INSERT INTO records VALUES ('previous backup')")
+    connection.commit()
+    path = backup.snapshot()
+    first = path.read_bytes()
+    connection.execute("INSERT INTO records VALUES ('latest commit')")
+    connection.commit()
+
+    def failed_stream(source, destination, length):
+        destination.write(source.read(100))
+        raise OSError("NAS stream interrupted")
+
+    monkeypatch.setattr(state_backup.shutil, "copyfileobj", failed_stream)
+    with pytest.raises(OSError, match="stream interrupted"):
+        backup.snapshot()
+    assert path.read_bytes() == first
+    assert values(path) == [("previous backup",)]
+    assert sorted(p.name for p in path.parent.iterdir()) == ["drift.db", "secret.key"]
+
+
 def test_missing_mount_guard_fails_before_creating_anything(setup, monkeypatch):
     settings, _connection, backup = setup
 
@@ -118,6 +140,39 @@ def test_real_storage_guard_rejects_an_sd_card_fallback(setup, monkeypatch):
     with pytest.raises(RuntimeError, match="not a mounted NAS"):
         backup.snapshot()
     assert list(settings.nas_root.iterdir()) == []
+
+
+def test_staging_refuses_an_sd_card_tmp_directory(setup, monkeypatch):
+    settings, _connection, backup = setup
+    settings.require_nas_mount = True
+    monkeypatch.setattr(state_backup, "filesystem_type", lambda _root: "ext4")
+    with pytest.raises(RuntimeError, match="/tmp.*tmpfs"):
+        backup.snapshot()
+    assert list(settings.nas_root.iterdir()) == []
+
+
+def test_sqlite_snapshot_is_staged_in_tmp_and_never_opened_on_nas(setup, monkeypatch):
+    settings, connection, backup = setup
+    settings.require_nas_mount = True
+    monkeypatch.setattr(state_backup, "filesystem_type", lambda _root: "tmpfs")
+    connection.execute("INSERT INTO records VALUES ('committed')")
+    connection.commit()
+    original_connect = sqlite3.connect
+    opened = []
+
+    def connect(path, *args, **kwargs):
+        opened.append(path)
+        return original_connect(path, *args, **kwargs)
+
+    monkeypatch.setattr(state_backup.sqlite3, "connect", connect)
+    path = backup.snapshot()
+    assert len(opened) == 2
+    assert opened[0] == settings.db_path.resolve().as_uri() + "?mode=ro"
+    staging = Path(opened[1])
+    assert staging.is_relative_to(Path("/tmp"))
+    assert not staging.is_relative_to(settings.nas_root)
+    assert not staging.parent.exists()
+    assert values(path) == [("committed",)]
 
 
 def test_symlink_outside_nas_cannot_create_local_snapshot(setup, tmp_path):
