@@ -18,6 +18,13 @@ SFTP, or a local/NAS path).
   New imports fingerprint camera files again and add a content suffix to uploaded
   filenames, so recycled camera counters and identically named EVENT/DCIM clips
   cannot overwrite a different recording.
+- **Back up first, review dates later** — every camera video is saved even when
+  its timestamp is uncertain. Questionable dates go to `Holding` on the NAS,
+  with filename/recording-order best guesses, confidence and reasons in the
+  Import page. Review the NAS video, adjust a suggested time, and preview before
+  applying corrected dates and metadata. Saved backups remain reviewable after
+  unplugging the camera. Original backups retain their exact bytes; optional
+  metadata-corrected copies are stored separately.
 - **Suggested trips** — every indexed recording day appears on Trips. Create a
   day movie or select several days for one movie in recording order. This uses
   completed NAS copies, so the camera can be unplugged after offload. Finished
@@ -238,17 +245,32 @@ The GUI is driven by a JSON API under `/api` (FastAPI auto-docs at `/docs`):
 
 ### Camera clock checks and historical date corrections
 
-Import checks Drift `NNNMEDIA/DVRxxxxx.MP4` recording order numerically, including
-folder rollover, and holds uploads if counters move backwards, timestamps regress,
-metadata is missing, or the latest newly seen ride does not end on the connection
-day or previous day in Europe/London. These are plausibility checks: USB connection
-time cannot identify an exact recording time. Historical footage needs review.
-Normal recordings and `EVENT/E_DVRxxxxx.MP4` are both checked. Checks read MP4 movie headers with small seeks, without decoding or copying videos.
+Import backs up every video, including recordings whose dates need review.
+It checks Drift `NNNMEDIA/DVRxxxxx.MP4` recording order numerically, including
+folder rollover, for backwards counters, regressing timestamps, missing metadata
+and newly seen rides ending outside the connection day or previous day in
+Europe/London. Normal recordings and `EVENT/E_DVRxxxxx.MP4` are both checked.
+Checks read MP4 movie headers with small seeks, without decoding videos.
+
+Recordings with uncertain dates upload to
+`Holding/<camera-label>/<camera-relative-folder>/<stem>_<content-hash>.MP4` on
+the NAS. The relative folder and content suffix keep different DCIM/EVENT clips
+and recycled filenames separate. These original backups preserve every byte.
+Date uncertainty never blocks the backup; it only delays filing that recording
+under an approved date. Existing completed backups are reused.
 
 On **Import → Recording dates**, choose a folder (or all DCIM folders), select the
-first and last video, and provide a known start or end time. A constant offset
-preserves real recording breaks. Split ranges at any clock reset. Preview shows
-corrected dates and matching NAS paths; nothing moves until the preview is confirmed.
+first and last video, and provide a known start or end time. Each selected video
+shows its current date, suggested date, confidence, reason and NAS backup state.
+**Watch NAS copy** opens a saved video for review, including after the camera is
+unplugged. **Use best guess in editable time** fills the selected anchor time;
+adjust it before previewing. Suggestions use available neighbouring recordings
+and sequence evidence; a USB connection time alone does not establish the exact
+recording time, and no guess is automatically approved.
+
+A constant offset preserves real recording breaks. Split ranges at any clock
+reset. Preview shows corrected dates and matching NAS paths; nothing moves until
+the preview is confirmed.
 The optional reusable offset applies to subsequent recordings only when sequence,
 clock and recent-ride checks pass. A reset stops this reuse.
 
@@ -256,8 +278,9 @@ Confirmed jobs move existing originals into the corrected destination folders,
 requiring full camera/NAS SHA-256 equality and refusing to overwrite other files.
 The move journal and upload ledger support retry after interruption. Older
 unindexed copies are also matched by filename and full hash in the original date
-folder; unrelated files are left alone. Clips no longer present on the camera, or
-copies stored in other layouts, require a separate archive review.
+folder; unrelated files are left alone. Saved Holding and indexed NAS originals
+can be reviewed and corrected with the camera unplugged. A clip still awaiting
+backup needs the camera connected.
 
 Camera files stay read-only. Original NAS backups retain their video bytes and
 embedded metadata; an adjacent `.dates.json` records the confirmed correction.

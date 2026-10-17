@@ -192,6 +192,7 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
     new_ids: List[int] = []
     known_ids: List[int] = []
     seen_ids: set[int] = set()
+    observations = []
     ctx.log(f"Preparing to index and fingerprint {len(paths)} media files")
     for i, p in enumerate(paths):
         path = Path(p)
@@ -211,9 +212,12 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
                 item = import_one(s, path, source=payload.get("source", "device"), **import_options)
                 from .date_review import observation, APPROVED
                 date = observation(s, path) if item.source == "device" else None
+                if date:
+                    date.checksum = item.checksum
                 if date and date.status in APPROVED:
                     item.capture_time = date.corrected_time or date.original_time
                 item_id = item.id
+                observations.append((str(path), path.stat().st_size, path.stat().st_mtime_ns, item.checksum))
             if item_id in seen_ids:
                 ctx.set_progress((i + 1) / total, f"Already indexed {path.name}")
                 continue
@@ -237,6 +241,14 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
             log.exception("Failed to index %s", path)
             ctx.set_progress((i + 1) / total, f"Failed {path.name}")
     all_ids = new_ids + known_ids
+    # A startup date scan can finish after the first imports. Link every
+    # immutable observation, including EVENT files deduplicated to another
+    # MediaItem, so their NAS backups remain reviewable after unplugging.
+    from .models import RecordingDate
+    with session_scope() as session:
+        for path, size, mtime, cs in observations:
+            session.query(RecordingDate).filter_by(path=path, size_bytes=size, mtime_ns=mtime).update(
+                {RecordingDate.checksum: cs}, synchronize_session=False)
     # Thumbnails as a follow-up so import returns fast. Only queue the items that
     # don't already have a thumbnail on disk: a device re-import (e.g. the camera
     # was reconnected) would otherwise regenerate every thumbnail, burning ffmpeg
@@ -383,6 +395,17 @@ def handle_merge(job_id: int, payload: dict, ctx: JobContext) -> None:
 
 # --- upload -----------------------------------------------------------------
 
+def holding_directory(path: Path, date=None) -> str:
+    """Stable source folders plus a content-named file survive reused counters."""
+    if date is not None:
+        root, relative = Path(date.camera_root), Path(date.relative_path)
+    else:
+        marker = next((p for p in path.parents if p.name.upper() in ("DCIM", "EVENT")), None)
+        root = marker.parent if marker else path.parent
+        relative = path.relative_to(root)
+    return str(Path("Holding") / (root.name or "camera") / relative.parent)
+
+
 @handler("upload")
 def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
     """Upload media items to one or more destinations.
@@ -435,11 +458,19 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
             local_path_obj = Path(item.path)
             if _needs_metadata_refresh(item, local_path_obj):
                 _refresh_metadata_from_file(item, local_path_obj)
-            from .date_review import require_approved, local, utc
-            date = require_approved(s, item)
+            from .date_review import APPROVED, is_camera_video, observation, local, utc
+            camera_video = item.source == "device" and not item.derived and is_camera_video(local_path_obj)
+            date = observation(s, local_path_obj) if camera_video else None
+            if date and date.status == "applying":
+                raise RuntimeError("Recording date correction is running; retry this backup after it finishes")
+            holding = camera_video and (date is None or date.status not in APPROVED)
+            if date and not holding:
+                item.capture_time = date.corrected_time or date.original_time
             local_size = item.size_bytes or local_path_obj.stat().st_size
             if not item.checksum:
                 item.checksum = checksum(local_path_obj)
+            if date:
+                date.checksum = item.checksum
             state = (
                 s.query(UploadState)
                 .filter(UploadState.media_id == mid, UploadState.destination_id == did)
@@ -494,10 +525,10 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
             clip.last_error = None
             local_path = item.path
             filename = item.filename
-            if payload.get("content_names"):
+            if payload.get("content_names") or camera_video:
                 filename = f"{Path(filename).stem}_{item.checksum[:16]}{Path(filename).suffix}"
             checksum_value = item.checksum
-            remote_dir = render_remote_dir(dest.path_template, local(item.capture_time) if item.capture_time else None)
+            remote_dir = holding_directory(local_path_obj, date) if holding else render_remote_dir(dest.path_template, local(item.capture_time) if item.capture_time else None)
             # Stamp the remote file with the capture time so its date matches the
             # {year}/{month} folder it lands in, not the moment it was uploaded.
             capture_mtime = utc(item.capture_time).timestamp() if item.capture_time else None
@@ -591,7 +622,14 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                 # its slot. Never send a precomputed old folder after that.
                 with session_scope() as session:
                     current = session.get(MediaItem, mid)
-                    require_approved(session, current)
+                    current_date = observation(session, Path(current.path)) if camera_video else None
+                    current_holding = camera_video and (current_date is None or current_date.status not in APPROVED)
+                    if current_date and current_date.status == "applying":
+                        raise RuntimeError("Recording date correction is running; retry this backup")
+                    if current_holding != holding:
+                        raise RuntimeError("Recording date changed while queued; retry this backup")
+                    if current_date and not current_holding:
+                        current.capture_time = current_date.corrected_time or current_date.original_time
                     current_mtime = utc(current.capture_time).timestamp() if current.capture_time else None
                     if current_mtime != capture_mtime:
                         raise RuntimeError("Recording date changed while queued; retry this upload")
@@ -687,9 +725,16 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                 if result_status == "done":
                     clip.full_verification_failed = False
                 clip.updated_at = utcnow()
-        if result_status == "done" and date and date.corrected_time and dest.type in ("local", "nfs", "smb"):
+        if result_status == "done" and not holding and date and date.corrected_time and dest.type in ("local", "nfs", "smb"):
             from .date_review import queue_metadata
             queue_metadata(date.id, did, result_remote)
+        elif result_status == "done" and holding and date and dest.type in ("local", "nfs", "smb"):
+            from .date_review import write_audit
+            from .storage import archive_path, require_storage
+            nas = require_storage(Path(dest.base_path))
+            original = archive_path(nas, result_remote)
+            if original is not None:
+                write_audit(nas, original, date)
         done += 1
         ctx.set_progress(done / total)
 
@@ -771,10 +816,6 @@ def enqueue_device_import(
     if paths:
         requested = {str(Path(p)) for p in paths}
         found = [p for p in found if p in requested]
-    if auto_upload:
-        from .date_review import approved_paths
-        with session_scope() as session:
-            found = [str(p) for p in approved_paths(session, [Path(p) for p in found])]
     if not found:
         return None, 0
     if dedup and _import_already_queued(root_str):
@@ -891,11 +932,18 @@ def _media_ids_needing_upload(
 
 
 def _date_ready_ids(media_ids):
-    from .date_review import approved_paths
+    """Only an active correction pauses a backup; uncertain dates go to Holding."""
+    from .date_review import observation
     with session_scope() as session:
         items = session.query(MediaItem).filter(MediaItem.id.in_(media_ids)).all()
-        paths = {str(p) for p in approved_paths(session, [Path(m.path) for m in items if m.source == "device" and not m.derived])}
-        ready = {m.id for m in items if m.derived or m.source != "device" or m.path in paths}
+        ready = set()
+        for item in items:
+            try:
+                date = observation(session, Path(item.path)) if item.source == "device" and not item.derived else None
+            except OSError:
+                date = None
+            if date is None or date.status != "applying":
+                ready.add(item.id)
         return [mid for mid in media_ids if mid in ready]
 
 

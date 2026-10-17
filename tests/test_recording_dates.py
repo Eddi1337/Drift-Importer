@@ -248,16 +248,18 @@ def test_stale_preview_and_clock_reset_range_rejected(setup):
     with pytest.raises(ValueError,match='clock reset'): preview(setup,[a,b])
 
 
-def test_queued_upload_cannot_bypass_gate_and_trip_days_exclude_held(setup,monkeypatch):
+def test_held_dates_can_back_up_but_trip_days_exclude_held(setup,monkeypatch):
     maker,camera,nas=setup
     id,path=scan(setup)
     with maker() as s:
         item=index(s,path,'device'); item.capture_time=dt.datetime(2026,9,20,14,45,55); s.commit(); mid=item.id
         assert workflow.recording_days(s)=={}
     monkeypatch.setattr(tasks,'probe',lambda p:{'duration_s':300,'codec':'h264','width':1920,'height':1080,'capture_time':dt.datetime(2026,9,20,14,45,55)})
-    assert tasks.enqueue_upload_jobs([mid],[1])==[]
-    with pytest.raises(ValueError,match='Dates need'): tasks.handle_upload(1,{'media_ids':[mid],'destination_ids':[1]},Context())
-    assert list(nas.iterdir())==[]
+    monkeypatch.setattr(tasks, 'get_manager_enqueue', lambda *args, **kwargs: 42)
+    assert tasks.enqueue_upload_jobs([mid],[1])==[42]
+    tasks.handle_upload(1,{'media_ids':[mid],'destination_ids':[1]},Context())
+    held = list((nas/'Holding').rglob('*.MP4'))
+    assert len(held) == 1 and held[0].read_bytes() == path.read_bytes()
     with maker() as s:
         s.get(RecordingDate,id).status='confirmed'; s.get(RecordingDate,id).corrected_time=dt.datetime(2026,10,3,23,30)
         item=s.get(MediaItem,mid); item.capture_time=dt.datetime(2026,10,3,23,30); s.commit()

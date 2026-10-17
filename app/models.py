@@ -295,6 +295,7 @@ class RecordingDate(Base):
     relative_path: Mapped[str] = mapped_column(String(1024))
     size_bytes: Mapped[int] = mapped_column(Integer)
     mtime_ns: Mapped[int] = mapped_column(Integer)
+    checksum: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     original_time: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
     corrected_time: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
     duration_s: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

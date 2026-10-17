@@ -237,7 +237,7 @@ def test_multiday_trip_uses_archived_copies_after_camera_removed(setup, monkeypa
 def test_new_workflow_pages_render():
     from app.main import app
     client = TestClient(app)
-    for path, title in [("/", "Your footage, in order."), ("/import", "Import &amp; verify"), ("/trips", "Suggested recording days")]:
+    for path, title in [("/", "Your footage, in order."), ("/import", "Back up &amp; review"), ("/trips", "Suggested recording days")]:
         response = client.get(path)
         assert response.status_code == 200
         assert title in response.text

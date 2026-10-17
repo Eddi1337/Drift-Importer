@@ -61,6 +61,8 @@ def _run_migrations() -> None:
     conn = sqlite3.connect(db_path)
     try:
         tables = _table_names(conn)
+        if "recording_dates" in tables and "checksum" not in _column_names(conn, "recording_dates"):
+            conn.execute("ALTER TABLE recording_dates ADD COLUMN checksum VARCHAR(64)")
         if "upload_states" in tables:
             cols = _column_names(conn, "upload_states")
             if "bytes_uploaded" not in cols:

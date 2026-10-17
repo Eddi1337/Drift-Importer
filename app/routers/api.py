@@ -28,10 +28,12 @@ from ..models import (
     Album,
     AlbumItem,
     AppSettings,
+    CameraDateCheck,
     Destination,
     Job,
     JobLog,
     MediaItem,
+    RecordingDate,
     SystemSample,
     Tag,
     UploadedClip,
@@ -116,9 +118,8 @@ def workflow_import(req: CameraWorkflowReq, session: Session = Depends(get_sessi
         if not paths:
             raise ValueError("No camera videos found")
         ready = date_review.approved_paths(session, paths)
-        if not ready:
+        if len(ready) != len(paths):
             date_review.queue_check(root)
-            raise ValueError("Recording dates need checking. Review and confirm them in Import before uploading.")
         job_id, count = enqueue_device_import(root, paths=[str(p) for p in paths], auto_upload=True,
                                              destination_ids=[dest.id], dedup=True, group_uploads_by_month=True,
                                              fingerprint_on_import=True)
@@ -1625,11 +1626,6 @@ class UploadReq(BaseModel):
 def start_upload(req: UploadReq, session: Session = Depends(get_session)):
     if not req.media_ids:
         raise HTTPException(400, "No media selected")
-    try:
-        for item in session.query(MediaItem).filter(MediaItem.id.in_(req.media_ids)):
-            date_review.require_approved(session, item)
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
     job_ids = enqueue_upload_jobs(req.media_ids, req.destination_ids)
     return {"job_ids": job_ids, "job_id": job_ids[0] if job_ids else None}
 
@@ -1908,8 +1904,34 @@ class DatePreviewReq(DateCheckReq):
 
 
 @router.get("/recording-dates")
-def recording_date_review(camera_root: str, session: Session = Depends(get_session)):
-    return date_review.review_data(session, camera_root)
+def recording_date_review(camera_root: str, destination_id: Optional[int] = None, session: Session = Depends(get_session)):
+    return date_review.review_data(session, camera_root, destination_id)
+
+
+@router.get("/recording-dates/cameras")
+def saved_date_cameras(session: Session = Depends(get_session)):
+    connected = {str(p) for p in workflow.camera_roots()}
+    cameras = []
+    for check in session.query(CameraDateCheck).order_by(CameraDateCheck.checked_at.desc()):
+        ids = json.loads(check.observed_ids or "[]")
+        statuses = session.query(RecordingDate.status).filter(RecordingDate.id.in_(ids)).all() if ids else []
+        cameras.append({"path": check.camera_root, "label": Path(check.camera_root).name,
+                        "connected": check.camera_root in connected, "total": len(statuses),
+                        "pending_review": sum(status not in date_review.APPROVED for (status,) in statuses)})
+    return cameras
+
+
+@router.get("/recording-dates/file")
+def stream_review_recording(recording_id: int, destination_id: int, request: Request,
+                            session: Session = Depends(get_session)):
+    row = session.get(RecordingDate, recording_id)
+    if row is None:
+        raise HTTPException(404, "Recording not found")
+    try:
+        target = date_review.recording_source(session, row, destination_id, prefer_archive=True)
+        return stream_file(request, target)
+    except (ValueError, OSError, RuntimeError) as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post("/recording-dates/check")
@@ -1923,7 +1945,7 @@ def check_recording_dates(req: DateCheckReq):
 @router.post("/recording-dates/preview")
 def preview_recording_dates(req: DatePreviewReq, session: Session = Depends(get_session)):
     try:
-        root = workflow.camera_root(req.camera_root)
+        root = Path(req.camera_root)
         preview = date_review.make_preview(session, str(root), req.recording_ids, req.anchor_id,
                                            req.anchor_time, req.anchor_end, req.keep_recorded_dates,
                                            req.destination_id, req.metadata_copy, req.reuse_offset)

@@ -1,15 +1,15 @@
 {% extends "base.html" %}
 {% block title %} · Import{% endblock %}
 {% block content %}
-<div class="page-heading"><div><p class="eyebrow">01 / SAVE YOUR ORIGINALS</p><h1>Import &amp; verify</h1><p class="hint">Keep the camera connected until transfers and verification finish.</p></div><a href="/library">Browse individual clips →</a></div>
+<div class="page-heading"><div><p class="eyebrow">01 / SAVE YOUR ORIGINALS</p><h1>Back up &amp; review</h1><p class="hint">Keep the camera connected until backup and verification finish. Review saved recordings whenever you like.</p></div><a href="/library">Browse individual clips →</a></div>
 <section class="panel">
-  <div class="workflow-controls"><label>Camera<select id="workflowCamera" onchange="invalidateDatePreview(); refreshVerification();"></select></label><label>NAS destination<select id="workflowDestination" onchange="invalidateDatePreview(); refreshVerification();"></select></label></div>
+  <div class="workflow-controls"><label>Camera<select id="workflowCamera" onchange="changeWorkflowSelection()"></select></label><label>NAS destination<select id="workflowDestination" onchange="changeWorkflowSelection()"></select></label></div>
   <div id="importSummary" class="hint" aria-live="polite">Looking for a camera…</div>
-  <div class="row action-row"><button id="importCameraButton" onclick="startCameraWorkflow('import')" disabled>Import videos with checked dates</button><button id="verifyCameraButton" class="ghost" onclick="startCameraWorkflow('verify')" disabled>Verify all NAS copies</button></div>
-  <p class="hint">Includes normal and EVENT recordings. Completed uploads are reused; interrupted transfers can resume.</p>
+  <div class="row action-row"><button id="importCameraButton" onclick="startCameraWorkflow('import')" disabled>Back up every video to NAS</button><button id="verifyCameraButton" class="ghost" onclick="startCameraWorkflow('verify')" disabled>Verify all NAS copies</button></div>
+  <p class="hint">Includes normal and EVENT recordings. Videos with uncertain dates are backed up to Holding on the NAS for review. Completed backups are reused; interrupted transfers can resume.</p>
 </section>
 <section class="panel date-review" aria-labelledby="datesTitle">
-  <div class="section-heading"><div><p class="eyebrow">CHECK BEFORE SAVING</p><h2 id="datesTitle">Recording dates</h2><p class="hint">Folder numbers and DVR counters establish recording order. Newly seen rides should end on the connection day or previous day.</p></div><button id="checkDatesButton" class="ghost" onclick="checkRecordingDates()">Check dates again</button></div>
+  <div class="section-heading"><div><p class="eyebrow">REVIEW AFTER BACKUP</p><h2 id="datesTitle">Recording dates &amp; Holding</h2><p class="hint">Folder numbers, DVR counters and neighbouring recordings help suggest dates. A best guess needs your review before it changes metadata or dated folders.</p></div><button id="checkDatesButton" class="ghost" onclick="checkRecordingDates()">Check dates again</button></div>
   <div id="dateReviewStatus" role="status">Checking recording dates…</div>
   <form id="dateReviewForm" onsubmit="event.preventDefault(); previewRecordingDates();" oninput="invalidateDatePreview();">
     <div class="form-grid settings-grid date-range">
@@ -20,16 +20,18 @@
     </div>
     <p id="dateRangeSummary" class="hint"></p>
     <div id="dateAnchorFields" class="form-grid settings-grid">
-      <label>Known point in the ride<select id="dateAnchor"><option value="last_end">End of the last selected video</option><option value="first_start">Start of the first selected video</option></select></label>
-      <label>Actual date and time · UK<input id="dateActual" type="datetime-local" step="1"><small class="hint">Enter a known recording time. The connection day is a check, not a guess at the exact time.</small></label>
+      <label>Known point in the ride<select id="dateAnchor" onchange="updateDateGuess()"><option value="last_end">End of the last selected video</option><option value="first_start">Start of the first selected video</option></select></label>
+      <label>Actual date and time · UK<input id="dateActual" type="datetime-local" step="1"><small class="hint">Enter a known recording time, or use the suggested time below and adjust it.</small></label>
     </div>
+    <div id="dateGuessControls" class="date-guess"><p id="dateGuessSummary" class="hint"></p><button id="dateUseGuessButton" type="button" class="ghost" onclick="useRecordingDateGuess()" disabled>Use best guess in editable time</button></div>
     <label class="check-row"><input id="dateMetadataCopy" type="checkbox" checked><span>Create metadata-corrected copies on the NAS. Originals stay byte-for-byte intact.</span></label>
     <label class="check-row"><input id="dateReuseOffset" type="checkbox"><span>Reuse this confirmed clock offset for later recordings that pass the sequence and ride-day checks.</span></label>
     <p class="hint">Existing matching NAS originals will move to the corrected date folders. Recording breaks are preserved. Older sessions can be corrected in separate ranges.</p>
     <button id="datePreviewButton" type="submit" disabled>Preview dates &amp; NAS moves</button>
   </form>
+  <div id="dateReviewFiles" aria-live="polite"></div>
   <div id="datePreview" aria-live="polite"></div>
-  <div class="row action-row"><button id="dateConfirmButton" onclick="confirmRecordingDates()" disabled hidden>Confirm these dates &amp; NAS moves</button><a href="/jobs">Correction job progress →</a></div>
+  <div class="row action-row"><button id="dateConfirmButton" onclick="confirmRecordingDates()" disabled hidden>Apply reviewed dates &amp; metadata</button><a href="/jobs">Correction job progress →</a></div>
   <details class="settings-advanced"><summary>Check the camera clock for future rides</summary><p class="hint">The camera must be reachable over Wi-Fi. USB storage access alone cannot set its clock. Existing videos will not change.</p><form onsubmit="event.preventDefault(); syncCameraClock();"><label>Camera Wi-Fi IP address<input id="cameraClockIp" placeholder="Camera's private IPv4 address" required></label><button type="submit" class="ghost">Send current UK time to camera</button></form><p id="cameraClockResult" role="status"></p></details>
 </section>
 

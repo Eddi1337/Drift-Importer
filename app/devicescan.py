@@ -103,7 +103,8 @@ class DeviceMonitor:
 
     def _maybe_auto_import(self, devices: list[dict]) -> None:
         """Auto-import each connected device once per connection, server-side."""
-        current = {d["dcim_path"] for d in devices if d.get("dcim_path")}
+        roots = sorted({d["path"] for d in devices if d.get("dcim_path")}, key=len)
+        current = {root for root in roots if not any(root != parent and Path(root).is_relative_to(Path(parent)) for parent in roots)}
         # Forget disconnected devices so a reconnect imports again.
         self._auto_imported &= current
         pending = current - self._auto_imported

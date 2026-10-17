@@ -218,6 +218,114 @@ def analyse(rows, new_ids, connected_at, previous_rows=()):
         row.reasons = json.dumps(reasons)
 
 
+def date_suggestions(rows, connected_at):
+    """Advisory dates from recording order; never authorise a date or upload.
+
+    A filename gives order, not a wall-clock date. Absolute dates therefore
+    need an approved neighbour, or a clearly labelled connection-time guess.
+    Clock resets split calibration runs so offsets cannot leak across them.
+    """
+    now = utc(connected_at or utcnow())
+    suggestions = {}
+    ordered = sorted((r for r in rows if sequence_key(Path(r.path))), key=lambda r: sequence_key(Path(r.path)))
+
+    def effective(row):
+        return utc(row.corrected_time or row.original_time) if row.corrected_time or row.original_time else None
+
+    def plausible(value):
+        return value and value.year >= 2000 and value <= now + dt.timedelta(minutes=5)
+
+    def suggest(row, value, confidence, reason, anchors=()):
+        if row.status in APPROVED or row.status == "applying" or not plausible(value):
+            return
+        suggestions[row.id] = {"suggested_time": iso(value), "suggested_local_time": local(value).isoformat(), "suggestion_confidence": confidence, "suggestion_reason": reason, "suggestion_anchor_ids": [r.id for r in anchors]}
+
+    # Consecutive observed filenames can bound a bad timestamp using the
+    # durations either side. Counter gaps are not evidence of uninterrupted
+    # recording, and folder rollover is only recognised at counter 0/1.
+    def adjacent(left, right):
+        a, b = sequence_key(Path(left.path)), sequence_key(Path(right.path))
+        return (a[0] == b[0] and b[1] == a[1] + 1) or (b[0] == a[0] + 1 and b[1] in (0, 1))
+
+    anchor_indices = [i for i, r in enumerate(ordered) if r.status in APPROVED and plausible(effective(r))]
+    for left_index, right_index in zip(anchor_indices, anchor_indices[1:]):
+        between = ordered[left_index:right_index + 1]
+        if len(between) < 3 or not all(adjacent(a, b) for a, b in zip(between, between[1:])):
+            continue
+        left, right = between[0], between[-1]
+        if any(r.duration_s is None or r.duration_s <= 0 for r in between[:-1]):
+            continue
+        available = (effective(right) - effective(left)).total_seconds()
+        duration = sum(r.duration_s for r in between[:-1])
+        if available < duration - 2:
+            continue
+        spare = max(0, available - duration)
+        # A long unrecorded pause cannot locate the intervening clips well.
+        if spare > 12 * 3600:
+            continue
+        gap = spare / (len(between) - 1)
+        when = effective(left)
+        for before, row in zip(between, between[1:-1]):
+            when += dt.timedelta(seconds=before.duration_s + gap)
+            original_order_ok = all(a.original_time and b.original_time and utc(a.original_time) <= utc(b.original_time) + dt.timedelta(seconds=2) for a, b in zip(between, between[1:]))
+            # Stable metadata is a better source for pauses than even spacing;
+            # only interpolate when a timestamp actually breaks the order.
+            if not original_order_ok:
+                suggest(row, when, "medium" if spare <= 2 else "low", f"Bounded by approved {Path(left.path).name} and {Path(right.path).name}; consecutive filenames and clip durations place this recording here" + (". Unrecorded pauses are spread evenly; review the time." if spare > 2 else ". Review before confirming."), (left, right))
+
+    segments = []
+    for row in ordered:
+        previous = segments[-1][-1] if segments else None
+        if previous is None or not previous.original_time or not row.original_time or utc(row.original_time) < utc(previous.original_time) - dt.timedelta(seconds=2):
+            segments.append([])
+        segments[-1].append(row)
+    for segment in segments:
+        anchors = [r for r in segment if r.status in APPROVED and r.original_time and plausible(effective(r)) and r.time_source == "metadata"]
+        for index, row in enumerate(segment):
+            if row.id in suggestions or row.original_time is None or row.time_source != "metadata":
+                continue
+            before = [a for a in anchors if sequence_key(Path(a.path)) < sequence_key(Path(row.path))]
+            after = [a for a in anchors if sequence_key(Path(a.path)) > sequence_key(Path(row.path))]
+            neighbours = ([before[-1]] if before else []) + ([after[0]] if after else [])
+            if neighbours:
+                offsets = [effective(a) - utc(a.original_time) for a in neighbours]
+                if len(offsets) == 2 and abs((offsets[0] - offsets[1]).total_seconds()) > 2:
+                    # Two approved dates disagree: never choose one silently.
+                    continue
+                offset = offsets[0]
+                names = " and ".join(Path(a.path).name for a in neighbours)
+                suggest(row, utc(row.original_time) + offset, "high" if len(neighbours) == 2 else "medium", f"Uses the camera-clock offset from approved {names} in the same increasing filename/timestamp run. Assumes the clock kept that offset; review before confirming.", neighbours)
+            elif segment is segments[-1] and segment[-1].original_time and segment[-1].duration_s:
+                last = segment[-1]
+                offset = now - (utc(last.original_time) + dt.timedelta(seconds=last.duration_s))
+                suggest(row, utc(row.original_time) + offset, "low", f"Assumes the newest recording, {Path(last.path).name}, ended when the camera was connected. Preserves timestamp gaps within this filename run; the camera may have been connected later than filming.")
+
+    # EVENT counters are not a separate chronological sequence. Only associate
+    # an event with one unambiguous DVR counter and matching header evidence.
+    by_counter = {}
+    for row in ordered:
+        by_counter.setdefault(sequence_key(Path(row.path))[1], []).append(row)
+    for row in rows:
+        if sequence_key(Path(row.path)):
+            continue
+        match = re.fullmatch(r"(?:E_)?DVR(\d+)\.(?:MP4|MOV)", Path(row.path).name, re.I)
+        matches = by_counter.get(int(match[1]), []) if match else []
+        if len(matches) != 1:
+            continue
+        anchor = matches[0]
+        if not row.original_time or not anchor.original_time or row.duration_s is None or anchor.duration_s is None or abs((utc(row.original_time) - utc(anchor.original_time)).total_seconds()) > 2 or abs(row.duration_s - anchor.duration_s) > 2:
+            continue
+        if anchor.status in APPROVED:
+            suggest(row, effective(anchor), "high", f"Matches the unique {Path(anchor.path).name} counter, recording timestamp and duration; uses its approved date.", (anchor,))
+        elif anchor.id in suggestions:
+            guess = suggestions[anchor.id]
+            suggest(row, utc(dt.datetime.fromisoformat(guess["suggested_time"])), "medium" if guess["suggestion_confidence"] == "high" else guess["suggestion_confidence"], f"Matches the unique {Path(anchor.path).name} counter, recording timestamp and duration. Shares that recording's unconfirmed suggestion: {guess['suggestion_reason']}", (anchor,))
+    for row in rows:
+        if row.id not in suggestions and row.original_time:
+            suggest(row, utc(row.original_time), "low", "No reliable filename neighbour establishes a corrected date. This is the camera's original timestamp; verify its day and time before confirming.")
+    return suggestions
+
+
 @handler("date_scan")
 def scan_job(job_id, payload, ctx):
     from .workflow import camera_root, scan_videos
@@ -265,7 +373,54 @@ def scan_job(job_id, payload, ctx):
     ctx.set_progress(1, f"Dates checked: {len(rows) - held} ready, {held} need review")
 
 
-def review_data(session, root: str):
+def recording_source(session, row, destination_id=None, *, prefer_archive=False):
+    """Return the unchanged camera file, or its recorded original on the NAS.
+
+    Filenames alone never identify an archive. Offline review needs a completed
+    ledger entry for the indexed media checksum, the exact observation's size
+    and (when present) its original movie header. A replaced attached card file
+    fails closed instead of silently selecting a different recording.
+    """
+    from .media import checksum
+    path = Path(row.path)
+    expected_checksum = getattr(row, "checksum", None)
+    if path.is_file() and not prefer_archive:
+        if fingerprint(path) != (row.size_bytes, row.mtime_ns):
+            raise ValueError("Camera file changed; run Check dates again")
+        if not expected_checksum:
+            # Older observations predate the checksum column. Capture identity
+            # while the immutable camera observation is still available.
+            row.checksum = checksum(path)
+        return path
+    item = session.query(MediaItem).filter_by(checksum=expected_checksum).first() if expected_checksum else session.query(MediaItem).filter_by(path=row.path).first()
+    if item is None or item.size_bytes != row.size_bytes or not item.checksum:
+        raise ValueError("Recording is unavailable; attach the camera or finish its NAS backup")
+    latest = session.query(RecordingDate).filter_by(path=row.path).order_by(RecordingDate.id.desc()).first()
+    if not expected_checksum and latest is not None and latest.id != row.id:
+        raise ValueError("This camera path was reused; check the current recording observation")
+    expected_checksum = expected_checksum or item.checksum
+    query = session.query(UploadedClip).filter_by(checksum=expected_checksum, status="done", full_verification_failed=False)
+    if destination_id is not None:
+        query = query.filter_by(destination_id=destination_id)
+    for ledger in query.order_by(UploadedClip.id.desc()):
+        dest = session.get(Destination, ledger.destination_id)
+        if not dest or not dest.enabled or dest.type not in ("local", "nfs", "smb") or ledger.size_bytes != row.size_bytes:
+            continue
+        root = require_storage(Path(dest.base_path))
+        original = archive_path(root, ledger.remote_path)
+        if original is None or not original.is_file() or original.stat().st_size != row.size_bytes:
+            continue
+        if checksum(original) != expected_checksum:
+            continue
+        if row.time_source == "metadata" and row.original_time:
+            when, duration = mp4_clock(original)
+            if when is None or utc(when) != utc(row.original_time) or (row.duration_s is not None and (duration is None or abs(duration - row.duration_s) > 1)):
+                continue
+        return original
+    raise ValueError("Original NAS backup is missing or does not match this recording; attach the camera")
+
+
+def review_data(session, root: str, destination_id=None):
     check = session.get(CameraDateCheck, root)
     ids = json.loads(check.observed_ids) if check else []
     rows = session.query(RecordingDate).filter(RecordingDate.id.in_(ids)).all() if ids else []
@@ -274,8 +429,40 @@ def review_data(session, root: str):
     relevant = [j for j in jobs if json.loads(j.payload or "{}").get("camera_root") == root]
     active = next((j for j in relevant if j.status in ACTIVE_STATES), None)
     failure = next((j for j in relevant if j.status in ("error", "cancelled")), None) if not active and any(r.status == "applying" for r in rows) else None
+    suggestions = date_suggestions(rows, check.checked_at if check else None)
+    items = {m.path: m for m in session.query(MediaItem).filter(MediaItem.path.in_([r.path for r in rows]))} if rows else {}
+    checksums = {getattr(row, "checksum", None) for row in rows} | {item.checksum for item in items.values() if item.checksum}
+    checksums.discard(None)
+    ledger_query = session.query(UploadedClip).filter(UploadedClip.checksum.in_(checksums)) if checksums else []
+    if destination_id is not None and checksums:
+        ledger_query = ledger_query.filter_by(destination_id=destination_id)
+    ledgers = {}
+    for ledger in ledger_query:
+        current = ledgers.get(ledger.checksum)
+        if current is None or (ledger.status == "done", ledger.id) > (current.status == "done", current.id):
+            ledgers[ledger.checksum] = ledger
+    roots = {}
+    for dest in session.query(Destination).filter(Destination.type.in_(("local", "nfs", "smb")), Destination.enabled.is_(True)):
+        try:
+            roots[dest.id] = require_storage(Path(dest.base_path))
+        except (OSError, RuntimeError):
+            pass
+    files = []
+    for row in rows:
+        item = items.get(row.path)
+        cs = getattr(row, "checksum", None) or (item.checksum if item and item.size_bytes == row.size_bytes else None)
+        ledger = ledgers.get(cs)
+        archived = archive_path(roots[ledger.destination_id], ledger.remote_path) if ledger and ledger.destination_id in roots else None
+        backed_up = False
+        try:
+            backed_up = bool(ledger and ledger.status == "done" and not ledger.full_verification_failed and ledger.size_bytes == row.size_bytes and archived and archived.is_file() and archived.stat().st_size == row.size_bytes)
+            camera_available = Path(row.path).is_file() and fingerprint(Path(row.path)) == (row.size_bytes, row.mtime_ns)
+        except OSError:
+            camera_available = False
+        holding = bool(backed_up and archived.relative_to(roots[ledger.destination_id]).parts[0] == "Holding")
+        files.append({"id": row.id, "path": row.relative_path, "folder": str(Path(row.relative_path).parent), "sequence": sequence_key(Path(row.path)), "recorded_time": iso(row.original_time), "effective_time": iso(row.corrected_time or row.original_time), "local_time": local(row.corrected_time or row.original_time).isoformat() if row.original_time or row.corrected_time else None, "duration_s": row.duration_s, "status": row.status, "reasons": json.loads(row.reasons or "[]"), "revision": row.revision, "holding_path": str(archived) if holding else None, "backup_path": str(archived) if backed_up else None, "backup_status": "done" if backed_up else ("missing" if ledger and ledger.status == "done" else ledger.status if ledger else "pending"), "backed_up": backed_up, "camera_available": camera_available, "suggested_time": None, "suggested_local_time": None, "suggestion_confidence": None, "suggestion_reason": None, "suggestion_anchor_ids": [], **suggestions.get(row.id, {})})
     # Flags can change at confirmation without reading thousands of files again.
-    return {"failure": {"id": failure.id, "error": failure.error or failure.status} if failure else None, "timezone": "Europe/London", "checked_at": iso(check.checked_at) if check else None, "job": {"id": active.id, "status": active.status, "detail": active.detail, "progress": active.progress} if active else None, "total": len(rows), "held": sum(r.status not in APPROVED for r in rows), "files": [{"id": r.id, "path": r.relative_path, "folder": str(Path(r.relative_path).parent), "sequence": sequence_key(Path(r.path)), "recorded_time": iso(r.original_time), "effective_time": iso(r.corrected_time or r.original_time), "local_time": local(r.corrected_time or r.original_time).isoformat() if r.original_time else None, "duration_s": r.duration_s, "status": r.status, "reasons": json.loads(r.reasons), "revision": r.revision} for r in rows]}
+    return {"failure": {"id": failure.id, "error": failure.error or failure.status} if failure else None, "timezone": "Europe/London", "checked_at": iso(check.checked_at) if check else None, "job": {"id": active.id, "status": active.status, "detail": active.detail, "progress": active.progress} if active else None, "camera_available": any(f["camera_available"] for f in files), "total": len(rows), "held": sum(r.status not in APPROVED for r in rows), "files": files}
 
 
 def make_preview(session, root, ids, anchor_id, anchor_time, anchor_end, keep, destination_id, metadata_copy, reuse_offset):
@@ -304,17 +491,14 @@ def make_preview(session, root, ids, anchor_id, anchor_time, anchor_end, keep, d
         delta = target - basis
     entries = []
     for row in rows:
-        if row.original_time is None or fingerprint(Path(row.path)) != (row.size_bytes, row.mtime_ns):
-            raise ValueError("Camera file changed or is unavailable; run Check dates again")
+        original = recording_source(session, row, dest.id)
+        if row.original_time is None:
+            raise ValueError("A recording date is unavailable; choose a known time")
+        cs = checksum(original)
         when = (row.corrected_time or row.original_time) + delta
         if utc(when) > utcnow() + dt.timedelta(minutes=5) or when.year < 2000:
             raise ValueError("Corrected times must be plausible past recording times")
-        item = session.query(MediaItem).filter_by(path=row.path).first()
-        ledgers = session.query(UploadedClip).filter_by(destination_id=dest.id, checksum=item.checksum, status="done").all() if item else []
-        # A reused DVR path must not relocate an older recording whose ledger
-        # belonged to the previous camera file at that path.
-        if ledgers and (item.size_bytes != row.size_bytes or checksum(Path(row.path)) != item.checksum):
-            ledgers = []
+        ledgers = session.query(UploadedClip).filter_by(destination_id=dest.id, checksum=cs, status="done").all()
         moves = []
         for ledger in ledgers:
             source = archive_path(nas, ledger.remote_path)
@@ -330,7 +514,7 @@ def make_preview(session, root, ids, anchor_id, anchor_time, anchor_end, keep, d
         candidates = []
         if old_folder and old_folder.is_dir():
             candidates = [str(p) for p in old_folder.glob(Path(row.path).stem + "*." + Path(row.path).suffix.lstrip(".")) if p.is_file() and (p.name == Path(row.path).name or re.fullmatch(re.escape(Path(row.path).stem) + r"_[0-9a-f]{16}\.MP4", p.name, re.I))]
-        entries.append({"id": row.id, "revision": row.revision, "path": row.relative_path, "old_time": iso(row.corrected_time or row.original_time), "new_time": iso(when), "moves": moves, "candidates": candidates, "candidate_moves": [{"old": p, "new": str(nas / render_remote_dir(dest.path_template, local(when)) / Path(p).name)} for p in candidates]})
+        entries.append({"id": row.id, "revision": row.revision, "path": row.relative_path, "checksum": cs, "old_time": iso(row.corrected_time or row.original_time), "new_time": iso(when), "moves": moves, "candidates": candidates, "candidate_moves": [{"old": p, "new": str(nas / render_remote_dir(dest.path_template, local(when)) / Path(p).name)} for p in candidates]})
     plan = {"camera_root": root, "destination_id": dest.id, "base_path": str(nas), "path_template": dest.path_template, "metadata_copy": metadata_copy, "reuse_offset": reuse_offset, "entries": entries}
     correction = DateCorrection(plan=json.dumps(plan))
     session.add(correction)
@@ -349,14 +533,23 @@ def confirm_plan(session, plan_id):
             raise ValueError("Create a fresh correction preview")
         plan = json.loads(correction.plan)
         selected_paths = {session.get(RecordingDate, e["id"]).path for e in plan["entries"]}
-        selected_media = {m.id for m in session.query(MediaItem).filter(MediaItem.path.in_(selected_paths))}
+        selected_checksums = {e.get("checksum") for e in plan["entries"]} - {None}
+        selected_media = {m.id for m in session.query(MediaItem).filter(
+            MediaItem.path.in_(selected_paths) | MediaItem.checksum.in_(selected_checksums))}
         for job in session.query(Job).filter_by(kind="upload", status="running"):
             if selected_media.intersection(json.loads(job.payload or "{}").get("media_ids", [])):
                 raise ValueError("Wait for the selected files to finish uploading, then confirm this preview again")
         for entry in plan["entries"]:
             row = session.get(RecordingDate, entry["id"])
-            if row is None or row.revision != entry["revision"] or row.status == "applying" or fingerprint(Path(row.path)) != (row.size_bytes, row.mtime_ns):
+            if row is None or row.revision != entry["revision"] or row.status == "applying":
                 raise ValueError("The preview is stale; preview this correction again")
+            try:
+                original = recording_source(session, row, plan["destination_id"])
+                from .media import checksum
+                if entry.get("checksum") and checksum(original) != entry["checksum"]:
+                    raise ValueError("Recording changed")
+            except (OSError, ValueError, RuntimeError) as exc:
+                raise ValueError("The preview is stale; preview this correction again") from exc
             row.status = "applying"
         correction.status = "confirmed"
         job = Job(kind="date_correction", description=f"Correct dates and NAS folders for {len(plan['entries'])} clips", payload=json.dumps({"plan_id": plan_id, "camera_root": plan["camera_root"]}))
@@ -400,7 +593,7 @@ def safe_move(source: Path, target: Path, expected_hash: str, ctx):
 
 
 def write_audit(root, original, row):
-    value = {"camera_path": row.relative_path, "original_creation_time": iso(row.original_time), "corrected_creation_time": iso(row.corrected_time or row.original_time), "timezone": "Europe/London", "original_bytes_preserved": True, "correction_id": row.correction_id}
+    value = {"camera_path": row.relative_path, "original_creation_time": iso(row.original_time), "corrected_creation_time": iso(row.corrected_time) if row.status not in APPROVED and row.status != "applying" else iso(row.corrected_time or row.original_time), "date_status": row.status, "date_warnings": json.loads(row.reasons or "[]"), "timezone": "Europe/London", "original_bytes_preserved": True, "correction_id": row.correction_id}
     path = original.with_name(original.name + ".dates.json")
     if not path.resolve().is_relative_to(root):
         raise RuntimeError("Audit path resolves outside the NAS")
@@ -510,10 +703,18 @@ def correction_job(job_id, payload, ctx):
                 row = session.get(RecordingDate, entry["id"])
                 if row.revision != entry["revision"] and row.correction_id != correction.id:
                     raise RuntimeError("A recording was corrected after this preview")
-                if fingerprint(Path(row.path)) != (row.size_bytes, row.mtime_ns):
-                    raise RuntimeError("Camera file changed; correction stopped")
-                item = import_one(session, Path(row.path), source="device", verify_checksum=True)
+                original = recording_source(session, row, dest.id)
+                if original == Path(row.path):
+                    item = import_one(session, original, source="device", verify_checksum=True)
+                else:
+                    from .media import checksum
+                    item = session.query(MediaItem).filter_by(checksum=checksum(original)).first()
+                    if item is None:
+                        raise RuntimeError("Indexed NAS original is unavailable")
                 item_id, cs = item.id, item.checksum
+                if entry.get("checksum") and cs != entry["checksum"]:
+                    raise RuntimeError("Recording changed after the correction preview")
+                row.checksum = cs
                 row.corrected_time = dt.datetime.fromisoformat(entry["new_time"]).replace(tzinfo=None)
                 row.correction_id = correction.id
                 row.metadata_copy, row.reuse_offset = plan["metadata_copy"], plan["reuse_offset"]
@@ -533,7 +734,7 @@ def correction_job(job_id, payload, ctx):
                 path = archive_path(root, candidate)
                 if not path or not path.is_file() or path.stat().st_size != row.size_bytes:
                     continue
-                digest = digest or full_hash(Path(row.path), ctx)
+                digest = digest or full_hash(original, ctx)
                 if full_hash(path, ctx) != digest:
                     continue
                 with session_scope() as session:
@@ -569,7 +770,7 @@ def correction_job(job_id, payload, ctx):
                             state.status, state.error = "error", ledger.last_error
                     ctx.log(f"Missing NAS original for {entry['path']}; marked for upload after date confirmation")
                     continue
-                digest = digest or full_hash(Path(row.path), ctx)
+                digest = digest or full_hash(original, ctx)
                 safe_move(source, target, digest, ctx)
                 os.utime(target, (utc(row.corrected_time).timestamp(), utc(row.corrected_time).timestamp()))
                 with session_scope() as session:
@@ -581,6 +782,8 @@ def correction_job(job_id, payload, ctx):
                 if source != target and source.exists():
                     source.unlink()
                 publish_metadata_copy(row.id, dest.id, target, ctx)
+                if source != target:
+                    source.with_name(source.name + ".dates.json").unlink(missing_ok=True)
             with session_scope() as session:
                 row = session.get(RecordingDate, entry["id"])
                 row.status, row.reasons = "confirmed", "[]"
@@ -593,5 +796,5 @@ def correction_job(job_id, payload, ctx):
     from .tasks import enqueue_device_import
     with session_scope() as session:
         prefs = get_app_settings(session)
-        if prefs.auto_upload_on_import:
+        if prefs.auto_upload_on_import and Path(plan["camera_root"]).is_dir():
             enqueue_device_import(Path(plan["camera_root"]), paths=[str(session.get(RecordingDate, e["id"]).path) for e in plan["entries"]], auto_upload=True, destination_ids=[plan["destination_id"]], fingerprint_on_import=True)

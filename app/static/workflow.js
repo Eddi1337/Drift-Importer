@@ -52,18 +52,36 @@ function initWorkflowImport() {
   ensureGlobalJobPolling();
   pollWorkflow(async () => {
     const data = await api.get('/api/workflow/overview');
-    setOptions('workflowCamera', data.cameras, 'path', c => `${c.label} · ${c.video_count} videos`);
+    const savedCameras = await api.get('/api/recording-dates/cameras');
+    const cameras = [...data.cameras];
+    for (const saved of savedCameras) {
+      if (!cameras.some(camera => camera.path === saved.path)) cameras.push({...saved, connected:false});
+    }
+    workflowState.importOverview = data;
+    workflowState.reviewCameras = cameras;
+    setOptions('workflowCamera', cameras, 'path', c => `${c.label} · ${c.video_count ?? c.total} videos${c.connected === false ? ' · camera unplugged' : ''}`);
     setOptions('workflowDestination', data.destinations, 'id', d => `${d.name}${d.available ? '' : ' (offline)'}`);
-    const camera = data.cameras.find(c => c.path === document.getElementById('workflowCamera').value);
-    const dest = data.destinations.find(d => String(d.id) === document.getElementById('workflowDestination').value);
-    const dates = await loadRecordingDates();
-    const ready = camera && !camera.error && camera.video_count && dest?.available;
-    document.getElementById('importCameraButton').disabled = !ready || workflowState.busy || dates.total <= dates.held || !!dates.job;
-    document.getElementById('verifyCameraButton').disabled = !ready || workflowState.busy;
-    document.getElementById('importSummary').textContent = !camera ? 'Connect your Drift camera over USB.' : !dest ? 'Add a mounted NAS destination first.' : `${camera.video_count} videos · ${fmtBytes(camera.video_bytes)} on camera → ${dest.name}${dest.available ? ` · ${fmtBytes(dest.free_bytes)} free` : ` · ${dest.error}`}`;
+    updateWorkflowImportReadiness();
+    await loadRecordingDates();
     document.getElementById('importActivity').innerHTML = activityMarkup(data.jobs);
     await refreshVerification();
   }, 10000);
+}
+function updateWorkflowImportReadiness() {
+  const data = workflowState.importOverview;
+  if (!data) return;
+  const camera = data.cameras.find(c=>c.path===document.getElementById('workflowCamera').value);
+  const dest = data.destinations.find(d=>String(d.id)===document.getElementById('workflowDestination').value);
+  const ready = camera && !camera.error && camera.video_count && dest?.available;
+  document.getElementById('importCameraButton').disabled = !ready || workflowState.busy;
+  document.getElementById('verifyCameraButton').disabled = !ready || workflowState.busy;
+  document.getElementById('importSummary').textContent = !camera ? workflowState.reviewCameras.length ? 'Camera unplugged. Saved NAS copies are available for date review below; reconnect the camera to back up or verify more videos.' : 'Connect your Drift camera over USB.' : !dest ? 'Add a mounted NAS destination first.' : `${camera.video_count} videos · ${fmtBytes(camera.video_bytes)} on camera → ${dest.name}${dest.available ? ` · ${fmtBytes(dest.free_bytes)} free` : ` · ${dest.error}`}`;
+}
+async function changeWorkflowSelection() {
+  invalidateDatePreview();
+  updateWorkflowImportReadiness();
+  try { await loadRecordingDates(); await refreshVerification(); }
+  catch(e) { workflowError(e.message); }
 }
 
 async function startCameraWorkflow(action) {
@@ -76,11 +94,11 @@ async function startCameraWorkflow(action) {
       camera_root: document.getElementById('workflowCamera').value,
       destination_id: Number(document.getElementById('workflowDestination').value),
     });
-    toast(`${action === 'verify' ? 'Full verification' : `Import of ${result.file_count} videos`} queued · job ${result.job_id}`, 5000);
-    if (result.held_count) toast(`${result.held_count} recordings are held for date review.`,5000);
+    toast(`${action === 'verify' ? 'Full verification' : `Backup of ${result.file_count} videos`} queued · job ${result.job_id}`, 5000);
+    if (result.held_count) toast(`${result.held_count} recordings will be backed up to Holding for date review.`,5000);
     if (action === 'verify') await refreshVerification();
   } catch (e) { workflowError(e.message); }
-  finally { workflowState.busy = false; }
+  finally { workflowState.busy = false; updateWorkflowImportReadiness(); }
 }
 
 async function refreshVerification() {
@@ -180,7 +198,7 @@ function closeTripPlayer() {
   document.getElementById('tripPlayerDlg').close();
 }
 
-const dateReviewState = {files:[], selected:[], plan:null, signature:'', root:'', busy:false};
+const dateReviewState = {files:[], selected:[], plan:null, signature:'', root:'', busy:false, page:0};
 function invalidateDatePreview() {
   dateReviewState.plan = null;
   document.getElementById('datePreview').replaceChildren();
@@ -195,19 +213,80 @@ function resetDateReview() {
 function dateLabel(iso) {
   return iso ? new Date(iso).toLocaleString('en-GB', {timeZone:'Europe/London', hour12:false}) : 'Unknown';
 }
+function dateInputValue(iso) {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return '';
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone:'Europe/London', year:'numeric', month:'2-digit', day:'2-digit',
+    hour:'2-digit', minute:'2-digit', second:'2-digit', hourCycle:'h23',
+  }).formatToParts(date).map(part=>[part.type,part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`;
+}
+function recordingDateGuess() {
+  const selected = dateReviewState.selected;
+  const end = document.getElementById('dateAnchor').value === 'last_end';
+  const file = end ? selected.at(-1) : selected[0];
+  if (!file?.suggested_time || (end && file.duration_s == null)) return null;
+  const time = new Date(file.suggested_time).getTime() + (end ? file.duration_s * 1000 : 0);
+  return Number.isFinite(time) ? {file,time:new Date(time).toISOString(),end} : null;
+}
+function updateDateGuess() {
+  const keep = document.getElementById('dateMethod').value === 'keep';
+  document.getElementById('dateGuessControls').hidden = keep;
+  const guess = recordingDateGuess();
+  document.getElementById('dateUseGuessButton').disabled = !guess;
+  document.getElementById('dateGuessSummary').textContent = guess ? `Best guess for the ${guess.end ? 'end' : 'start'} of ${guess.file.path.split('/').at(-1)}: ${dateLabel(guess.time)} UK · ${guess.file.suggestion_confidence || 'low'} confidence. ${guess.file.suggestion_reason || ''} Check this against what you remember.` : 'No supported best guess for this point. Enter a known time, or choose another range or anchor.';
+}
+function useRecordingDateGuess() {
+  const guess = recordingDateGuess();
+  if (!guess) return;
+  document.getElementById('dateActual').value = dateInputValue(guess.time);
+  invalidateDatePreview();
+  document.getElementById('dateActual').focus();
+  toast('Suggested time filled in. Adjust it if needed, then preview before applying.');
+}
+function renderDateReviewFiles() {
+  const files = dateReviewState.selected;
+  const el = document.getElementById('dateReviewFiles');
+  if (!files.length) { el.replaceChildren(); return; }
+  const pageSize = 50;
+  const pages = Math.ceil(files.length / pageSize);
+  dateReviewState.page = Math.max(0, Math.min(dateReviewState.page, pages - 1));
+  const start = dateReviewState.page * pageSize;
+  const destination = document.getElementById('workflowDestination').value;
+  el.innerHTML = `<div class="date-files"><div class="row spread"><h3>Selected recordings</h3><span class="hint">${start + 1}–${Math.min(start + pageSize,files.length)} of ${files.length} · UK time</span></div><div class="table-scroll"><table><thead><tr><th>Video &amp; backup</th><th>Current time</th><th>Suggested time</th><th>Why this guess?</th></tr></thead><tbody>${files.slice(start,start+pageSize).map(file=>`<tr><td><strong>${esc(file.path)}</strong><small class="date-file-status">${file.holding_path ? 'On NAS · Holding for review' : file.backed_up ? 'On NAS · backed up' : `Backup ${esc(file.backup_status || 'pending')}`}</small>${file.holding_path ? `<code class="date-file-path">${esc(file.holding_path)}</code>` : ''}${file.backed_up && destination ? `<a href="/api/recording-dates/file?recording_id=${file.id}&amp;destination_id=${encodeURIComponent(destination)}" target="_blank" rel="noopener">Watch NAS copy ↗</a>` : ''}<button type="button" class="ghost" onclick="selectRecordingForReview(${file.id})">Review this video</button></td><td>${esc(dateLabel(file.effective_time))}<small class="date-file-status">${esc(file.status)}</small></td><td>${esc(dateLabel(file.suggested_time))}${file.suggested_time ? `<small class="date-file-status">${esc(file.suggestion_confidence || 'low')} confidence</small>` : ''}</td><td>${esc(file.suggestion_reason || (file.reasons || []).join('. ') || 'No date concerns recorded.')}</td></tr>`).join('')}</tbody></table></div>${pages > 1 ? `<div class="row date-file-pages"><button type="button" class="ghost" onclick="changeDateReviewPage(-1)" ${dateReviewState.page === 0 ? 'disabled' : ''}>Previous 50</button><span class="hint">Page ${dateReviewState.page+1} of ${pages}</span><button type="button" class="ghost" onclick="changeDateReviewPage(1)" ${dateReviewState.page === pages-1 ? 'disabled' : ''}>Next 50</button></div>` : ''}</div>`;
+}
+function selectRecordingForReview(id) {
+  const file = dateReviewState.files.find(file=>file.id===id);
+  if (!file) return;
+  document.getElementById('dateFolder').value = file.folder;
+  updateDateRange(true);
+  document.getElementById('dateFirst').value = String(id);
+  document.getElementById('dateLast').value = String(id);
+  document.getElementById('dateAnchor').value = 'first_start';
+  document.getElementById('dateMethod').value = 'shift';
+  updateDateRange(false);
+  if (recordingDateGuess()) useRecordingDateGuess();
+  document.getElementById('dateReviewForm').scrollIntoView({behavior:'smooth',block:'start'});
+}
+function changeDateReviewPage(delta) {
+  dateReviewState.page += delta;
+  renderDateReviewFiles();
+}
 async function loadRecordingDates() {
   const root = document.getElementById('workflowCamera').value;
   const status = document.getElementById('dateReviewStatus');
-  if (!root) { status.textContent = 'Connect your camera to check recording dates.'; return {total:0,held:0}; }
+  if (!root) { status.textContent = 'Connect your camera to check recording dates. Saved recordings will stay available here after backup.'; return {total:0,held:0}; }
   if (dateReviewState.root !== root) { dateReviewState.root = root; resetDateReview(); }
-  const data = await api.get(`/api/recording-dates?camera_root=${encodeURIComponent(root)}`);
-  status.innerHTML = `<div class="verification-banner ${data.held || !data.checked_at ? 'needs-action' : 'verified'}"><strong>${data.checked_at ? `${data.total-data.held} recordings ready · ${data.held} need review` : 'Checking camera dates before upload'}</strong><p>${data.failure ? `Correction stopped: ${esc(data.failure.error)} · <a href="/jobs">Retry job ${data.failure.id}</a>` : data.job ? `${esc(data.job.detail || data.job.status)} · <a href="/jobs">View job</a>` : 'Higher folder and DVR numbers must move forward in time. Recent rides are checked against the day the camera connected.'}</p>${data.job && ['queued','running','paused'].includes(data.job.status) ? `<progress max="1" value="${data.job.progress}" aria-label="Date check progress"></progress>` : ''}</div>`;
-  document.getElementById('checkDatesButton').disabled = !!data.job || dateReviewState.busy;
+  const data = await api.get(`/api/recording-dates?camera_root=${encodeURIComponent(root)}&destination_id=${encodeURIComponent(document.getElementById('workflowDestination').value)}`);
+  const backedUp = data.files.filter(file=>file.backed_up).length;
+  status.innerHTML = `<div class="verification-banner ${data.held || !data.checked_at ? 'needs-action' : 'verified'}"><strong>${data.checked_at ? `${backedUp} / ${data.total} backed up · ${data.held} dates need review` : 'Checking dates; every video can still be backed up'}</strong><p>${data.failure ? `Correction stopped: ${esc(data.failure.error)} · <a href="/jobs">Retry job ${data.failure.id}</a>` : data.job ? `${esc(data.job.detail || data.job.status)} · <a href="/jobs">View job</a>` : data.camera_available === false ? 'Camera unplugged. Review the saved NAS copies and apply date corrections here.' : 'Uncertain dates go to Holding on the NAS. Review a suggested time or enter a known time, then preview the correction.'}</p>${data.job && ['queued','running','paused'].includes(data.job.status) ? `<progress max="1" value="${data.job.progress}" aria-label="Date check progress"></progress>` : ''}</div>`;
+  document.getElementById('checkDatesButton').disabled = !!data.job || dateReviewState.busy || data.camera_available === false;
   document.getElementById('dateReviewForm').inert = !!data.job || dateReviewState.busy || !data.files.length;
-  const signature = JSON.stringify(data.files.map(f => [f.id,f.revision,f.status]));
+  const signature = JSON.stringify(data.files.map(f => [f.id,f.revision,f.status,f.suggested_time,f.suggestion_confidence,f.suggestion_reason]));
+  dateReviewState.files = data.files;
   if (signature !== dateReviewState.signature) {
     dateReviewState.signature = signature;
-    dateReviewState.files = data.files;
     invalidateDatePreview();
     const folders = [...new Set(data.files.map(f=>f.folder))];
     const folder = document.getElementById('dateFolder');
@@ -216,6 +295,11 @@ async function loadRecordingDates() {
     if (folders.filter(f=>/\d+MEDIA$/i.test(f)).length>1) folder.add(new Option('All DCIM folders','__dcim__'));
     folder.value = folders.includes(old) || old==='__dcim__' ? old : folders.filter(f=>/\d+MEDIA$/i.test(f)).at(-1) || folders.at(-1) || '';
     updateDateRange(true);
+  } else {
+    const selectedIds = new Set(dateReviewState.selected.map(file=>file.id));
+    dateReviewState.selected = data.files.filter(file=>selectedIds.has(file.id));
+    updateDateGuess();
+    renderDateReviewFiles();
   }
   document.getElementById('datePreviewButton').disabled = !data.files.length || !!data.job || dateReviewState.busy;
   return data;
@@ -226,9 +310,11 @@ function updateDateRange(rebuild) {
   if (rebuild) {
     for (const id of ['dateFirst','dateLast']) {
       const el = document.getElementById(id);
+      const previous = el.value;
       el.replaceChildren(...files.map(f=>new Option(`${f.path.split('/').at(-1)} · ${dateLabel(f.effective_time)}`,String(f.id))));
+      if (files.some(file=>String(file.id)===previous)) el.value = previous;
+      else if (id === 'dateLast' && files.length) el.value=String(files.at(-1).id);
     }
-    if (files.length) document.getElementById('dateLast').value=String(files.at(-1).id);
   }
   const first = files.findIndex(f=>String(f.id)===document.getElementById('dateFirst').value);
   const last = files.findIndex(f=>String(f.id)===document.getElementById('dateLast').value);
@@ -240,6 +326,9 @@ function updateDateRange(rebuild) {
   document.getElementById('dateActual').required=!keep;
   document.getElementById('dateReuseOffset').disabled=keep;
   if (keep) document.getElementById('dateReuseOffset').checked=false;
+  dateReviewState.page=0;
+  updateDateGuess();
+  renderDateReviewFiles();
   invalidateDatePreview();
 }
 async function checkRecordingDates() {
