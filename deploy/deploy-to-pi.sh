@@ -16,7 +16,21 @@ IMAGE_TAG="${IMAGE_TAG:-latest}"
 : "${HARBOR_ROBOT_USER:?HARBOR_ROBOT_USER not set}"
 : "${HARBOR_ROBOT_TOKEN:?HARBOR_ROBOT_TOKEN not set}"
 
-SSH=(ssh -i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+# Reuse one authenticated connection for all transfers and commands. A broken
+# transport must fail promptly rather than leaving CI waiting indefinitely.
+SSH_CONTROL_DIR="$(mktemp -d /tmp/drift-deploy.XXXXXX)"
+SSH_OPTIONS=(-i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes
+  -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10
+  -o ServerAliveInterval=10 -o ServerAliveCountMax=3
+  -o ControlMaster=auto -o ControlPersist=60
+  -o "ControlPath=${SSH_CONTROL_DIR}/ssh")
+SSH=(ssh "${SSH_OPTIONS[@]}")
+SCP=(scp "${SSH_OPTIONS[@]}")
+cleanup() {
+  "${SSH[@]}" -O exit "$DEPLOY_HOST" >/dev/null 2>&1 || true
+  rm -rf -- "$SSH_CONTROL_DIR"
+}
+trap cleanup EXIT
 
 retry() {
   local attempt
@@ -33,15 +47,16 @@ retry() {
 echo ">> Deploying ${HARBOR_REGISTRY}/drift-import/drift-import:${IMAGE_TAG} to ${DEPLOY_HOST}"
 
 retry "${SSH[@]}" "$DEPLOY_HOST" "mkdir -p ~/${DEPLOY_DIR}"
-retry scp -i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+retry "${SCP[@]}" \
   deploy/docker-compose.pi.yml "$DEPLOY_HOST:~/${DEPLOY_DIR}/docker-compose.yml"
-retry scp -i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+retry "${SCP[@]}" \
   deploy/drift-camera-mount.service deploy/99-drift-camera.rules \
   deploy/drift-camera-mount.sh deploy/install-camera-mount.sh "$DEPLOY_HOST:~/${DEPLOY_DIR}/"
-retry scp -i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+retry "${SCP[@]}" \
   deploy/drift-zram-start.sh deploy/drift-zram.service deploy/install-low-write.sh \
   "$DEPLOY_HOST:~/${DEPLOY_DIR}/"
 
+deploy_remote() {
 {
 # Send credentials over encrypted stdin, rather than remote command arguments.
 printf 'export HARBOR_REGISTRY=%q HARBOR_ROBOT_USER=%q HARBOR_ROBOT_TOKEN=%q IMAGE_TAG=%q DEPLOY_DIR=%q\n' \
@@ -93,6 +108,20 @@ with tempfile.TemporaryDirectory(prefix='.drift-deploy-', dir=root) as scratch:
 print('Application healthy; container NAS write/read passed')
 PY
 REMOTE
-} | "${SSH[@]}" "$DEPLOY_HOST" bash -se
+} | "${SSH[@]}" "$DEPLOY_HOST" "cd ~/${DEPLOY_DIR} && flock -w 180 .deploy.lock bash -se"
+}
+for attempt in 1 2 3; do
+  if deploy_remote; then
+    break
+  else
+    deploy_status=$?
+  fi
+  # An application/install error needs diagnosis, rather than repeating writes.
+  if [ "$deploy_status" -ne 255 ] || [ "$attempt" -eq 3 ]; then
+    exit "$deploy_status"
+  fi
+  echo ">> SSH connection lost; retrying deployment..." >&2
+  sleep 3
+done
 
 echo ">> Done."
