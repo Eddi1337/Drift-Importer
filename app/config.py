@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     nas_root: Path = Path("/mnt/NAS")
     require_nas_mount: bool = False  # Enabled in the Pi deployment.
     system_sample_interval_s: float = 60.0
+    upload_progress_interval_s: float = 3.0
+    job_progress_interval_s: float = 0.0
+    log_to_file: bool = True
+    state_backup_interval_s: float = 0.0
 
     # Comma-separated list of base paths to scan for an attached camera.
     mount_paths: str = "/media,/mnt,/run/media,/Volumes"

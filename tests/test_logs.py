@@ -1,4 +1,19 @@
 from app.routers import api
+import logging
+
+
+def test_memory_log_view_is_bounded_and_does_not_read_old_disk_logs(monkeypatch):
+    from app.recent_logs import recent_logs
+    monkeypatch.setattr(api, "get_settings", lambda: type("Settings", (), {"log_to_file": False})())
+    recent_logs.lines.clear()
+    for i in range(1100):
+        recent_logs.handle(logging.LogRecord("drift", logging.WARNING, "", 1, f"warning {i}", (), None))
+    assert len(recent_logs.lines) == 1000
+    payload = api._read_log_lines(limit=2, min_level="WARNING")
+    assert payload["log_file"].startswith("Memory")
+    assert [row["message"] for row in payload["lines"]] == ["warning 1098", "warning 1099"]
+    assert api._read_log_lines(limit=2, min_level="ERROR")["lines"] == []
+    recent_logs.lines.clear()
 
 
 def test_read_log_lines_filters_info_and_above(tmp_path, monkeypatch):

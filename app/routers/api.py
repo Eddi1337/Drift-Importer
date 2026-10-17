@@ -741,6 +741,10 @@ def _read_log_lines(limit: int = 500, min_level: str = "INFO") -> dict:
     levels = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
     min_value = levels.get(min_level.upper(), 20)
     limit = max(1, min(limit, 2000))
+    if not getattr(settings, "log_to_file", True):
+        from ..recent_logs import recent_logs
+        return {"log_file": "Memory (current app run)", "min_level": min_level.upper(),
+                "lines": recent_logs.read(limit, min_value)}
     log_paths = [
         settings.log_dir / "drift.log.3",
         settings.log_dir / "drift.log.2",

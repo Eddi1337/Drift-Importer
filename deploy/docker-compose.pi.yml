@@ -6,6 +6,8 @@ services:
     image: ${HARBOR_REGISTRY}/drift-import/drift-import:${IMAGE_TAG:-latest}
     container_name: drift-import
     restart: unless-stopped
+    stop_grace_period: 30s
+    command: ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--no-access-log"]
     ports:
       - "8080:8080"
     environment:
@@ -18,7 +20,11 @@ services:
       DRIFT_REQUIRE_NAS_MOUNT: "true"
       DRIFT_WORKING_DIR: "/mnt/NAS/.drift/tmp"
       DRIFT_THUMBNAIL_DIR: "/mnt/NAS/.drift/thumbnails"
-      DRIFT_SYSTEM_SAMPLE_INTERVAL_S: "60"
+      DRIFT_SYSTEM_SAMPLE_INTERVAL_S: "300"
+      DRIFT_UPLOAD_PROGRESS_INTERVAL_S: "30"
+      DRIFT_JOB_PROGRESS_INTERVAL_S: "15"
+      DRIFT_LOG_TO_FILE: "false"
+      DRIFT_STATE_BACKUP_INTERVAL_S: "900"
     env_file:
       # Keep the live application's settings (including integrations) when
       # switching runtimes. This file remains on the Pi and is never copied to
@@ -37,10 +43,11 @@ services:
       - /proc:/host/proc:ro
     # Pi Zero 2 W has ~425 MB RAM total; keep the container well under that.
     mem_limit: 256m
+    cpus: 2.0
+    cpu_shares: 256
     tmpfs:
       - /tmp:size=32m
     logging:
-      driver: json-file
+      driver: journald
       options:
-        max-size: "2m"
-        max-file: "2"
+        tag: drift-import

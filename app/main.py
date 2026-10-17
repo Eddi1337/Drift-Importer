@@ -26,15 +26,24 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 def _setup_logging() -> None:
     settings = get_settings()
-    handler = RotatingFileHandler(
-        settings.log_dir / "drift.log", maxBytes=2_000_000, backupCount=3
-    )
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    handler.setFormatter(fmt)
     root = logging.getLogger()
     root.setLevel(logging.INFO)
-    root.addHandler(handler)
-    root.addHandler(logging.StreamHandler())
+    from .recent_logs import recent_logs
+    recent_logs.setFormatter(fmt)
+    if recent_logs not in root.handlers:
+        root.addHandler(recent_logs)
+    if settings.log_to_file:
+        handler = RotatingFileHandler(
+            settings.log_dir / "drift.log", maxBytes=2_000_000, backupCount=3
+        )
+        handler.setFormatter(fmt)
+        root.addHandler(handler)
+    stream = logging.StreamHandler()
+    stream.setFormatter(fmt)
+    root.addHandler(stream)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 @asynccontextmanager
@@ -53,6 +62,11 @@ async def lifespan(app: FastAPI):
     get_monitor().start()
     get_publisher().start()
     get_device_monitor().start()
+    if get_settings().state_backup_interval_s > 0:
+        from .crypto import _fernet
+        from .state_backup import get_state_backup
+        _fernet()  # Persist the encryption key before the first recovery snapshot.
+        get_state_backup().start()
     logging.getLogger("drift").info("Drift-Import %s started", __version__)
     yield
     get_manager().stop()
@@ -63,6 +77,9 @@ async def lifespan(app: FastAPI):
     _get_monitor().stop()
     _get_publisher().stop()
     _get_device_monitor().stop()
+    if get_settings().state_backup_interval_s > 0:
+        from .state_backup import get_state_backup
+        get_state_backup().stop()
 
 
 app = FastAPI(title="Drift-Import", version=__version__, lifespan=lifespan)

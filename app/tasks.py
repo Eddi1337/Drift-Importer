@@ -597,14 +597,18 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
         else:
             ctx.log(f"Starting {filename} upload at 0 of {local_size} bytes")
         _mark_upload_progress(mid, did, clip_id, start_offset, local_size)
-        last_persist = 0.0
         upload_started_at = time.monotonic()
+        # The start offset has just been persisted. The backend resumes from
+        # the actual NAS .part size, so a longer display/checkpoint interval
+        # saves SD writes without discarding data after a restart.
+        last_persist = upload_started_at
+        progress_interval = max(0.0, getattr(get_settings(), "upload_progress_interval_s", 3.0))
 
         def on_progress(sent: int, total_bytes: int, _done=done):
             nonlocal last_persist
             frac = (sent / total_bytes) if total_bytes else 0
             now = time.monotonic()
-            if now - last_persist >= 3.0 or sent >= total_bytes:
+            if now - last_persist >= progress_interval or sent >= total_bytes:
                 ctx.set_progress((_done + frac) / total, f"Uploading {filename} -> {dest_name}")
                 _mark_upload_progress(mid, did, clip_id, sent, total_bytes)
                 last_persist = now

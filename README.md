@@ -75,8 +75,21 @@ once, and transient publish failures retry on the next tick.
 - Concurrency is capped (default: 1 upload, 1 ffmpeg at a time) — see `.env`.
 - Pi deployment puts temporary movies/concat manifests at `/mnt/NAS/.drift/tmp`
   and thumbnails at `/mnt/NAS/.drift/thumbnails`. `/tmp` is a bounded RAM tmpfs.
-  Only small SQLite state/logs remain local; upload progress writes are limited
-  to once per three seconds and system history to once per minute.
+  The durable SQLite database remains local; WAL SQLite is not placed on NFS.
+  Upload checkpoints persist every 30 seconds on the Pi (and always at terminal
+  states), generic job progress every 15 seconds, and system history every five
+  minutes. Transfer resume uses the NAS partial file's actual length.
+- Pi host setup replaces SD-backed swap with 256 MiB compressed RAM swap.
+  System and container logs use a bounded volatile journal (8 MiB); Uvicorn
+  access logs and the duplicate app file log are disabled. Thumbnail FFmpeg
+  threads are limited to one; the app container is capped at two CPU cores.
+- Consistent recovery snapshots are published every 15 minutes to
+  `/mnt/NAS/.drift/state/drift.db`, alongside the private `secret.key` needed to
+  decrypt saved integration credentials. SQLite's backup API includes committed
+  WAL records; temporary snapshots and atomic publication happen entirely on
+  the mounted NAS. Startup continues if the NAS is offline. After replacing an
+  SD card, stop the app and restore both files to `/data` before starting it.
+  Logs in RAM do not survive a reboot; the durable database and NAS snapshots do.
 - `DRIFT_REQUIRE_NAS_MOUNT=true` checks the actual filesystem is NFS/CIFS before
   writes. An existing directory or autofs placeholder on the SD card is rejected.
   The web dashboard still starts while the NAS is unavailable.

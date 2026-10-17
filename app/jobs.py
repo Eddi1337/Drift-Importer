@@ -214,9 +214,22 @@ class JobContext:
         self.manager = manager
         self.job_id = job_id
         self._last_detail: Optional[str] = None
+        self._last_progress_persist: Optional[float] = None
+        self._progress_interval = max(0.0, getattr(get_settings(), "job_progress_interval_s", 0.0))
 
     def set_progress(self, value: float, detail: Optional[str] = None) -> None:
+        # Cancellation must remain responsive even when visual progress is
+        # throttled to spare a small device's persistent storage.
+        if self.is_cancelled():
+            raise JobCancelled()
         value = max(0.0, min(1.0, value))
+        now = time.monotonic()
+        if (
+            value < 1.0
+            and self._last_progress_persist is not None
+            and now - self._last_progress_persist < self._progress_interval
+        ):
+            return
         with session_scope() as s:
             job = s.get(Job, self.job_id)
             if job:
@@ -233,6 +246,7 @@ class JobContext:
                             )
                         )
                         self._last_detail = detail
+        self._last_progress_persist = now
         if self.is_cancelled():
             raise JobCancelled()
 

@@ -156,17 +156,21 @@ def make_thumbnail(path: Path, kind: str, out_path: Path) -> bool:
     if kind == "video":
         cmd = [
             settings.ffmpeg, "-y",
+            "-threads", "1",
             "-ss", "1",
             "-i", str(path),
             "-frames:v", "1",
             "-vf", "scale=320:-1",
+            "-threads", "1", "-filter_threads", "1",
             str(out_path),
         ]
     else:
         cmd = [
             settings.ffmpeg, "-y",
+            "-threads", "1",
             "-i", str(path),
             "-vf", "scale=320:-1",
+            "-threads", "1", "-filter_threads", "1",
             str(out_path),
         ]
     res = subprocess.run(cmd, capture_output=True, timeout=120)

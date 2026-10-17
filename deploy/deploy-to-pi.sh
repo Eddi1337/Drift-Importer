@@ -38,6 +38,9 @@ retry scp -i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=ac
 retry scp -i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
   deploy/drift-camera-mount.service deploy/99-drift-camera.rules \
   deploy/drift-camera-mount.sh deploy/install-camera-mount.sh "$DEPLOY_HOST:~/${DEPLOY_DIR}/"
+retry scp -i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+  deploy/drift-zram-start.sh deploy/drift-zram.service deploy/install-low-write.sh \
+  "$DEPLOY_HOST:~/${DEPLOY_DIR}/"
 
 {
 # Send credentials over encrypted stdin, rather than remote command arguments.
@@ -47,6 +50,7 @@ cat <<'REMOTE'
 set -euo pipefail
 cd ~/${DEPLOY_DIR}
 sudo -n bash ./install-camera-mount.sh
+sudo -n bash ./install-low-write.sh
 umask 077
 cat > .env <<EOF
 HARBOR_REGISTRY=${HARBOR_REGISTRY}
