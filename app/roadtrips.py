@@ -19,7 +19,7 @@ import tempfile
 import time
 import threading
 import xml.etree.ElementTree as ET
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -40,6 +40,10 @@ MAX_DAY_POINTS = 20000
 MAX_MONTH_POINTS = 50000
 MAX_IMPORT_BYTES = 16 * 1024 * 1024
 _LOCATION_LOCK = threading.Lock()
+_DAY_CACHE_LOCK = threading.Lock()
+_DAY_CACHE = OrderedDict()
+_DAY_CACHE_BYTES = 0
+_DAY_CACHE_BUDGET = 2 * 1024 * 1024
 
 
 def _cancel(ctx):
@@ -172,7 +176,8 @@ def _cache_root() -> Path:
     if not target.resolve().is_relative_to(root) or target.is_symlink():
         raise RuntimeError("Location cache must remain within the mounted NAS")
     target.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(target, 0o700)
+    if target.stat().st_mode & 0o777 != 0o700:
+        os.chmod(target, 0o700)
     return target
 
 
@@ -207,6 +212,50 @@ def save_day(session, source: str, day: str, points: list[dict], rejected=0):
     row.cache_path, row.point_count, row.rejected_count = str(path), len(points), rejected
     row.imported_at = utcnow()
     session.flush()
+    # Imported coordinates replace any previous RAM copy, even when the new
+    # day has the same number of points or the clock timestamp is unchanged.
+    global _DAY_CACHE_BYTES
+    with _DAY_CACHE_LOCK:
+        for key in list(_DAY_CACHE):
+            if key[0] == str(path):
+                _DAY_CACHE_BYTES -= _DAY_CACHE.pop(key)[1]
+
+
+def _read_day(row, root):
+    """Keep at most 2 MiB of private GPS text in RAM, never on the SD card."""
+    global _DAY_CACHE_BYTES
+    path = Path(row.cache_path)
+    if not Path(os.path.abspath(path)).is_relative_to(root):
+        raise RuntimeError("Unsafe saved location file")
+    key = (str(path), row.imported_at, row.point_count)
+    with _DAY_CACHE_LOCK:
+        cached = _DAY_CACHE.get(key)
+        if cached is not None:
+            _DAY_CACHE.move_to_end(key)
+            data = cached[0]
+        else:
+            data = None
+    if data is None:
+        if not path.resolve().is_relative_to(root) or path.is_symlink():
+            raise RuntimeError("Unsafe saved location file")
+        with gzip.open(path, "rt") as handle:
+            data = handle.read(MAX_IMPORT_BYTES + 1)
+        if len(data) > MAX_IMPORT_BYTES:
+            raise ValueError("Saved location day exceeds the processing limit")
+        points = json.loads(data)
+        if not isinstance(points, list) or len(points) > MAX_DAY_POINTS:
+            raise ValueError("Saved location day exceeds the processing limit")
+        size = len(data.encode("utf-8"))
+        if size <= _DAY_CACHE_BUDGET:
+            with _DAY_CACHE_LOCK:
+                if key not in _DAY_CACHE:
+                    while _DAY_CACHE and _DAY_CACHE_BYTES + size > _DAY_CACHE_BUDGET:
+                        _DAY_CACHE_BYTES -= _DAY_CACHE.popitem(last=False)[1][1]
+                    _DAY_CACHE[key] = (data, size)
+                    _DAY_CACHE_BYTES += size
+        return points
+    # Return fresh objects: callers cannot alter another preview's GPS points.
+    return json.loads(data)
 
 
 def merge_day(session, source, day, points, prefs):
@@ -245,14 +294,7 @@ def load_month(session, month: str, source: str | None = None, *, start_time=Non
         rows = rows.filter_by(source=source)
     result = []
     for row in rows.order_by(LocationDay.day):
-        path = Path(row.cache_path)
-        if not path.resolve().is_relative_to(root) or path.is_symlink():
-            raise RuntimeError("Unsafe saved location file")
-        with gzip.open(path, "rt") as handle:
-            data = handle.read(MAX_IMPORT_BYTES + 1)
-        if len(data) > MAX_IMPORT_BYTES:
-            raise ValueError("Saved location day exceeds the processing limit")
-        result.extend(json.loads(data))
+        result.extend(_read_day(row, root))
         if len(result) > MAX_MONTH_POINTS:
             raise ValueError("Too many locations for one month; use a less frequent GPS export")
     return sorted(result, key=lambda p: p["t"])

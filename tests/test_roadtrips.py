@@ -474,3 +474,54 @@ def test_month_loader_skips_empty_cache_rows_without_io(session, monkeypatch):
         pytest.fail("Empty location days must not issue any cache file reads")
     monkeypatch.setattr(rt.gzip, "open", unexpected)
     assert rt.load_month(session, "2026-06", "test") == []
+
+
+def test_repeated_previews_reuse_ram_points_and_reimport_invalidates_them(session, monkeypatch):
+    source = "ha:device_tracker.test"
+    points = [point(0), point(10)]
+    rt.save_day(session, source, "2026-06-04", points)
+    opened = []
+    original = rt.gzip.open
+    def record(path, *args, **kwargs):
+        opened.append(str(path))
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(rt.gzip, "open", record)
+    first = rt.load_month(session, "2026-06", source)
+    first[0]["lat"] = 0  # an edited preview cannot poison the next one
+    assert rt.load_month(session, "2026-06", source) == points
+    assert len(opened) == 1
+    changed = [dict(p, lat=p["lat"] + .001) for p in points]
+    rt.save_day(session, source, "2026-06-04", changed)
+    assert rt.load_month(session, "2026-06", source) == changed
+    assert len(opened) == 2
+
+
+def test_ram_location_cache_still_requires_live_nas(session, monkeypatch):
+    rt.save_day(session, "test", "2026-06-04", [point(0)])
+    assert rt.load_month(session, "2026-06", "test")
+    def unavailable(*args):
+        raise RuntimeError("NAS unavailable")
+    monkeypatch.setattr(rt, "require_storage", unavailable)
+    with pytest.raises(RuntimeError, match="NAS unavailable"):
+        rt.load_month(session, "2026-06", "test")
+
+
+def test_ram_location_cache_evicts_old_days_within_its_budget(session, monkeypatch):
+    from collections import OrderedDict
+    monkeypatch.setattr(rt, "_DAY_CACHE", OrderedDict())
+    monkeypatch.setattr(rt, "_DAY_CACHE_BYTES", 0)
+    points = [point(0)]
+    budget = len(json.dumps(points, separators=(",", ":")).encode()) + 1
+    monkeypatch.setattr(rt, "_DAY_CACHE_BUDGET", budget)
+    rt.save_day(session, "test", "2026-06-04", points)
+    rt.save_day(session, "test", "2026-06-05", [point(0, date="2026-06-05")])
+    opened = []
+    original = rt.gzip.open
+    def record(path, *args, **kwargs):
+        opened.append(Path(path).name)
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(rt.gzip, "open", record)
+    assert len(rt.load_month(session, "2026-06", "test")) == 2
+    assert 0 < rt._DAY_CACHE_BYTES <= budget
+    rt.load_month(session, "2026-06", "test", start_time=point(0)["t"], end_time=point(10)["t"])
+    assert opened == ["2026-06-04.json.gz", "2026-06-05.json.gz", "2026-06-04.json.gz"]

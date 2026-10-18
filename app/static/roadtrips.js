@@ -27,6 +27,13 @@
     try { await fn(); } catch(e) { error(e.message); }
     finally { rt.busy=false; buttons(); }
   }
+  async function loadDetail(url,body) {
+    const status=$("rtStatus"), previous=status.textContent;
+    const message="Loading GPS track… First loads can take about a minute.";
+    status.textContent=message;
+    try { const detail=await request(url,body); renderDetail(detail); return detail; }
+    finally { if(status.textContent===message) status.textContent=previous; }
+  }
   function buttons() {
     ["rtImportHA","rtImportFile","rtSaveSettings","rtFind","rtProbe","rtPreview","rtConfirm","rtReject"].forEach(id => {
       if ($(id)) $(id).disabled=rt.busy || (rt.jobs.size>0 && ["rtImportHA","rtImportFile","rtProbe"].includes(id));
@@ -143,8 +150,8 @@
     const group=rt.candidates.groups.find(g=>g.key===groupKey);
     rt.selection={month:$("rtMonth").value,group_key:groupKey,outing_id:Number(outingId),
       clip_ids:(group?.clips || []).map(c=>c.id)};
-    const detail=await request("/preview",rt.selection);
-    renderDetail(detail); $("rtName").value=""; $("rtDetail").scrollIntoView({behavior:"smooth",block:"nearest"});
+    await loadDetail("/preview",rt.selection);
+    $("rtName").value=""; $("rtDetail").scrollIntoView({behavior:"smooth",block:"nearest"});
   }
   function selection() {
     if (!rt.selection) throw new Error("Choose a possible journey first");
@@ -255,7 +262,7 @@
       const form=new FormData();form.append("month",$("rtMonth").value);form.append("file",file);
       await queue("/import-file",form,true);$("rtImportFile").value="";
     }));
-    $("rtPreview").addEventListener("click",()=>action(async()=>renderDetail(await request("/preview",selection()))));
+    $("rtPreview").addEventListener("click",()=>action(()=>loadDetail("/preview",selection())));
     $("rtConfirm").addEventListener("click",()=>action(async()=>{
       const data=await request("/matches",{...selection(),name:$("rtName").value,status:"confirmed"});
       await refresh(); if(data.id || data.match?.id) renderDetail(await request("/matches/"+(data.id || data.match.id)));
@@ -277,10 +284,10 @@
       const b=e.target.closest("[data-rt-group]");if(b) action(()=>choose(b.dataset.rtGroup,b.dataset.rtOuting));
     });
     $("rtSaved").addEventListener("click",e=>{const b=e.target.closest("[data-rt-match]");if(b) action(async()=>{
-      const detail=await request("/matches/"+encodeURIComponent(b.dataset.rtMatch));
+      const detail=await loadDetail("/matches/"+encodeURIComponent(b.dataset.rtMatch));
       const match=detail.match || {};rt.selection={month:match.month || detail.group.month,group_key:match.group_key || detail.group.key,
         outing_id:match.outing_id || detail.outing.id,clip_ids:(detail.group.clips || []).map(c=>c.id)};
-      renderDetail(detail);$("rtName").value=match.name || "";
+      $("rtName").value=match.name || "";
     });});
     $("rtClips").addEventListener("click",e=>{if(e.target.closest("input")) return;const row=e.target.closest("[data-rt-clip]");if(row) selectClip(row.dataset.rtClip);});
     $("rtClips").addEventListener("keydown",e=>{if(e.key==="Enter" && !e.target.closest("input")){const row=e.target.closest("[data-rt-clip]");if(row) selectClip(row.dataset.rtClip);}});

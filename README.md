@@ -29,7 +29,10 @@ GPS estimates for the displayed alignment, not calibrated road measurements.
 
 Location fixes live in private, guarded NAS files under .drift/locations
 at roughly one-minute resolution. SQLite holds only compact indexes and
-confirmed associations. GPX and Google Timeline JSON imports are supported
+confirmed associations. A 2 MiB RAM cache avoids rereading GPS days during
+preview adjustments; imports invalidate changed days. A cold preview can take
+30–60 seconds on a slow NAS, and the page shows that it is loading.
+GPX and Google Timeline JSON imports are supported
 for a selected month, with a 16 MB input limit to bound Pi memory. Google
 Timeline is stored on the phone; a Google Maps API key does not grant access
 to personal Timeline history. Export it from the phone if HA no longer retains
