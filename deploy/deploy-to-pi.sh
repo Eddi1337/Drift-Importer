@@ -99,6 +99,15 @@ if ! docker compose up -d; then
   echo "Old container has stopped; finishing replacement once"
   docker compose up -d
 fi
+# Compose can retain its temporary replacement name after recovering a failed
+# stop. Restore the configured name before exec-based health/NAS checks.
+if ! docker inspect drift-import >/dev/null 2>&1; then
+  recovered_id="$(docker compose ps -q drift-import)"
+  case "$recovered_id" in
+    ''|*$'\n'*) echo "Cannot identify one replacement container" >&2; exit 1 ;;
+  esac
+  docker rename "$recovered_id" drift-import
+fi
 docker image prune -f >/dev/null 2>&1 || true
 docker compose ps
 # Do not report success until the app is healthy and real container NAS I/O works.
