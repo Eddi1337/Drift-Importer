@@ -200,6 +200,13 @@ def sample_fingerprint(root: Path, relative: str, expected: dict, progress=None)
     offsets = sorted({0, max(0, before.st_size // 2 - SAMPLE_BYTES // 2), max(0, before.st_size - SAMPLE_BYTES)})
     # O_NOFOLLOW closes the final component symlink race on Linux.
     fd = os.open(root / relative, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    # A video-size sequential read-ahead window can amplify three tiny NFS
+    # samples into many MiB of traffic. Tell Linux these seeks are random;
+    # other platforms/filesystems can safely ignore this optional hint.
+    try:
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_RANDOM)
+    except (AttributeError, NotImplementedError, OSError):
+        pass
     with os.fdopen(fd, "rb") as source:
         if not _same_identity(stat_identity(os.fstat(source.fileno())), expected):
             raise RuntimeError("File changed while opening")
@@ -338,7 +345,8 @@ def _sample_candidates(progress, completed):
         updates.append((file_id, expected, digest))
         if len(updates) >= BATCH_SIZE:
             persist()
-        progress.update(0.8, f"Checked small samples from {count} same-size files")
+        progress.update(min(0.99, 0.6 + 0.4 * count / len(candidates)),
+                        f"Checked small samples from {count} of {len(candidates)} same-size files")
     if updates:
         persist()
 

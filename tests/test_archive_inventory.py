@@ -303,3 +303,19 @@ def test_hardlink_execution_rejects_reconfigured_destination(store):
     with pytest.raises(RuntimeError, match='destination changed'):
         archive_tasks.run_hardlink(1, {'group_id': group['id'], 'keeper_id': ids[0], 'file_ids': [ids[1]], 'confirm': True}, context())
     assert (store.root / 'a.mp4').stat().st_ino != (store.root / 'b.mp4').stat().st_ino
+
+
+def test_random_samples_disable_linux_readahead_without_changing_fingerprint(store, monkeypatch):
+    path = put(store, 'sample.mp4', b'video' * 60000)
+    calls = []
+    monkeypatch.setattr(archive.os, 'POSIX_FADV_RANDOM', 1, raising=False)
+    monkeypatch.setattr(archive.os, 'posix_fadvise', lambda *args: calls.append(args), raising=False)
+    expected = archive.stat_identity(path.stat())
+    digest = archive.sample_fingerprint(store.root, path.name, expected)
+    assert len(calls) == 1 and calls[0][1:] == (0, 0, 1)
+    def unsupported(*args):
+        raise OSError('random advice unsupported')
+    monkeypatch.setattr(archive.os, 'posix_fadvise', unsupported)
+    assert archive.sample_fingerprint(store.root, path.name, expected) == digest
+    monkeypatch.delattr(archive.os, 'posix_fadvise')
+    assert archive.sample_fingerprint(store.root, path.name, expected) == digest
