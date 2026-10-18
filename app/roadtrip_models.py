@@ -84,3 +84,26 @@ class RoadtripRejection(Base):
     group_key: Mapped[str] = mapped_column(String(128))
     outing_id: Mapped[int] = mapped_column(ForeignKey("roadtrip_outings.id"))
     created_at: Mapped[object] = mapped_column(DateTime, default=utcnow)
+
+
+class RoadtripCollection(Base):
+    """A named set of clip references, independent of movie creation or GPS."""
+    __tablename__ = "roadtrip_collections"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(256))
+    # Optional route associations supplement automatically discovered matches.
+    match_ids: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[object] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[object] = mapped_column(DateTime, default=utcnow)
+
+
+class RoadtripCollectionClip(Base):
+    __tablename__ = "roadtrip_collection_clips"
+    __table_args__ = (UniqueConstraint("collection_id", "clip_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    collection_id: Mapped[int] = mapped_column(ForeignKey("roadtrip_collections.id", ondelete="CASCADE"), index=True)
+    clip_id: Mapped[str] = mapped_column(String(64), index=True)
+    position: Mapped[int] = mapped_column(Integer)
+    # A small fallback keeps membership visible after an archive is unavailable.
+    # Raw GPS and video data are never stored in this table.
+    snapshot: Mapped[str] = mapped_column(Text, default="{}")

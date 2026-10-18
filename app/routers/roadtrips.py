@@ -16,9 +16,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from .. import roadtrips as engine
+from .. import roadtrip_collections as collections_engine
 from ..database import get_session, session_scope
 from ..models import Job, utcnow
-from ..roadtrip_models import RoadtripMatch
+from ..roadtrip_models import RoadtripCollection, RoadtripCollectionClip, RoadtripMatch
 
 router = APIRouter()
 _QUEUE_LOCK = threading.Lock()
@@ -57,6 +58,12 @@ class MatchRequest(PreviewRequest):
     status: Literal["confirmed", "rejected"] = "confirmed"
 
 
+class CollectionRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=256)
+    clip_ids: list[str] = Field(..., min_length=1, max_length=10000)
+    match_ids: list[int] | None = Field(None, max_length=1000)
+
+
 def _error(exc):
     if isinstance(exc, httpx.HTTPStatusError):
         return HTTPException(400, f"Home Assistant returned HTTP {exc.response.status_code}; check its connection and history access")
@@ -68,6 +75,74 @@ def _error(exc):
 @router.get("/state")
 def state(session: Session = Depends(get_session)):
     return engine.state(session)
+
+
+@router.get("/files")
+@router.get("/library")
+def collection_files(month: str | None = None, offset: int = 0, limit: int = 1000,
+        session: Session = Depends(get_session)):
+    try:
+        return collections_engine.library(session, month, offset, limit)
+    except ValueError as exc:
+        raise _error(exc) from None
+
+
+@router.get("/collections")
+def collections(session: Session = Depends(get_session)):
+    return collections_engine.list_collections(session)
+
+
+@router.post("/collections")
+def create_collection(request: CollectionRequest, session: Session = Depends(get_session)):
+    try:
+        result = collections_engine.save_collection(session, **request.model_dump())
+        session.commit()
+        return result
+    except ValueError as exc:
+        raise _error(exc) from None
+
+
+@router.get("/collections/{collection_id}")
+def collection(collection_id: int, session: Session = Depends(get_session)):
+    row = session.get(RoadtripCollection, collection_id)
+    if row is None:
+        raise HTTPException(404, "Trip collection not found")
+    return collections_engine.collection_detail(session, row)
+
+
+@router.get("/collections/{collection_id}/map")
+def collection_map(collection_id: int, session: Session = Depends(get_session)):
+    from ..roadtrip_collection_map import collection_map as build_map
+    row = session.get(RoadtripCollection, collection_id)
+    if row is None:
+        raise HTTPException(404, "Trip collection not found")
+    return build_map(session, row)
+
+
+@router.post("/collections/{collection_id}")
+@router.patch("/collections/{collection_id}")
+def update_collection(collection_id: int, request: CollectionRequest, session: Session = Depends(get_session)):
+    row = session.get(RoadtripCollection, collection_id)
+    if row is None:
+        raise HTTPException(404, "Trip collection not found")
+    try:
+        result = collections_engine.save_collection(session, row=row, **request.model_dump())
+        session.commit()
+        return result
+    except ValueError as exc:
+        raise _error(exc) from None
+
+
+@router.delete("/collections/{collection_id}")
+def delete_collection(collection_id: int, session: Session = Depends(get_session)):
+    row = session.get(RoadtripCollection, collection_id)
+    if row is None:
+        raise HTTPException(404, "Trip collection not found")
+    # Membership and label only: no media, archive, ledger or GPS rows are removed.
+    session.query(RoadtripCollectionClip).filter_by(collection_id=collection_id).delete()
+    session.delete(row)
+    session.commit()
+    return {"deleted": True, "id": collection_id}
 
 
 @router.get("/entities")

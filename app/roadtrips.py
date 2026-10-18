@@ -803,7 +803,7 @@ def clip_speed(segments, start: dt.datetime, duration: float):
         "speed_note": "Estimate from GPS over covered time" if speed is not None else "Insufficient GPS coverage (80% required)"}
 
 
-def preview(session, month, group_key, outing_id, start_time=None, clip_offsets=None, group_snapshot=None, confirmed=False, album_id=None, media_ids=None, clip_ids=None):
+def preview(session, month, group_key, outing_id, start_time=None, clip_offsets=None, group_snapshot=None, confirmed=False, album_id=None, media_ids=None, clip_ids=None, *, track_points=None):
     prefs = preferences(session)
     outing = session.get(RoadtripOuting, outing_id)
     if outing is None or outing.month != month:
@@ -812,7 +812,9 @@ def preview(session, month, group_key, outing_id, start_time=None, clip_offsets=
     if group is None:
         raise ValueError("Camera group changed; refresh the candidates")
     start, end = timestamp(outing.start_time), timestamp(outing.end_time)
-    points = load_month(session, month, outing.source, start_time=start, end_time=end)
+    # Collection maps load one bounded source/month bucket, then reuse its
+    # immutable points across outings without repeated NAS mount/path checks.
+    points = track_points if track_points is not None else load_month(session, month, outing.source, start_time=start, end_time=end)
     points = [p for p in points if start <= timestamp(p["t"]) <= end]
     segments = _track(points, prefs)
     anchor = timestamp(start_time, prefs.timezone) if start_time else start
@@ -846,12 +848,13 @@ def preview(session, month, group_key, outing_id, start_time=None, clip_offsets=
                 speed = round(length / seconds * 3.6, 1) if seconds else None
             series.append({"time": point["t"], "latitude": point["lat"], "longitude": point["lon"],
                 "distance_m": round(distance_so_far, 1), "speed_kmh": speed, "segment": index})
-    return {"group": group, "outing": outing_dict(outing), "provisional": not confirmed,
+    from .roadtrip_map import annotate_detail
+    return annotate_detail({"group": group, "outing": outing_dict(outing), "provisional": not confirmed,
         "start_time": iso(anchor), "clips": clips,
         "geojson": {"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"segment": i},
             "geometry": {"type": "LineString", "coordinates": [[p["lon"], p["lat"]] for p in segment]}}
             for i, segment in enumerate(segments)]}, "time_series": series,
-        "warning": "GPS is approximate. Missing locations are not joined. Clip positions assume the displayed timing until you confirm or adjust anchors."}
+        "warning": "GPS is approximate. Missing locations are not joined. Clip positions assume the displayed timing until you confirm or adjust anchors."}, prefs.timezone, prefs.max_gap_s)
 
 
 def match_dict(row):

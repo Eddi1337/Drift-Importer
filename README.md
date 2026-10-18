@@ -64,7 +64,14 @@ SFTP, or a local/NAS path).
   applying corrected dates and metadata. Saved backups remain reviewable after
   unplugging the camera. Original backups retain their exact bytes; optional
   metadata-corrected copies are stored separately.
-- **Suggested trips** — every indexed recording day appears on Trips. Create a
+- **Named trips and dated maps** — select backed-up videos across days or months
+  and save them as one named trip. Reopen the trip to edit its files, filter its
+  map and timeline by date, and select numbered video markers to see their
+  filenames, dates and GPS coordinates. Locations require a confirmed GPS
+  association; unmatched videos and gaps remain visible without invented pins.
+  Camera timestamps stay labelled as unverified, and grouping only saves file
+  references. Street-map tiles can be enabled explicitly in the map.
+- **Suggested trip movies** — every indexed recording day appears on Trips. Create a
   day movie or select several days for one movie in recording order. This uses
   completed NAS copies, so the camera can be unplugged after offload. Finished
   movies are kept separately in `<destination>/Trips/<year>/`, with Watch and
