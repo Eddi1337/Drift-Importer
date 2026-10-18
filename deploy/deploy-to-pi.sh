@@ -80,7 +80,25 @@ docker compose pull
 if docker inspect drift-import >/dev/null 2>&1; then
   docker exec drift-import python -c 'import sqlite3; source=sqlite3.connect("/data/drift.db"); target=sqlite3.connect("/data/drift.predeploy.db"); source.backup(target); target.close(); source.close()'
 fi
-docker compose up -d
+if ! docker compose up -d; then
+  # A slow NAS syscall can delay the engine's exit event beyond its stop
+  # deadline. Reconcile once only after the old container is actually stopped;
+  # never repeat installation, credentials, pulls or database backup writes.
+  stopped=false
+  for attempt in $(seq 1 15); do
+    if [ "$(docker inspect --format '{{.State.Running}}' drift-import 2>/dev/null)" = false ]; then
+      stopped=true
+      break
+    fi
+    sleep 2
+  done
+  if [ "$stopped" != true ]; then
+    echo "Container reconciliation failed while the old container is still active" >&2
+    exit 1
+  fi
+  echo "Old container has stopped; finishing replacement once"
+  docker compose up -d
+fi
 docker image prune -f >/dev/null 2>&1 || true
 docker compose ps
 # Do not report success until the app is healthy and real container NAS I/O works.

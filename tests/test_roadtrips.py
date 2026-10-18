@@ -421,3 +421,56 @@ def test_sparse_away_fixes_can_suggest_outing_without_inventing_route_or_speed(p
     assert outing["complete"] is False
     assert rt._track(points, prefs) == []
     assert rt.clip_speed([], rt.timestamp(points[0]["t"]), 600)["average_speed_kmh"] is None
+
+
+def test_preview_reads_only_nonempty_outing_days_across_local_midnight(session, monkeypatch):
+    item = seed_clip(session, "DVR00001.MP4", dt.datetime(2020, 1, 1, 10), duration=600)
+    # BST: 22:55 UTC is 23:55 local; 23:05 UTC is 00:05 next day.
+    a = {"t": "2026-06-04T22:55:00Z", "lat": 51.5, "lon": -.1, "accuracy": 10}
+    b = {"t": "2026-06-04T23:05:00Z", "lat": 51.5, "lon": -.11, "accuracy": 10}
+    source = "ha:device_tracker.test"
+    rt.save_day(session, source, "2026-06-04", [a])
+    rt.save_day(session, source, "2026-06-05", [b])
+    rt.save_day(session, source, "2026-06-10", [point(0), point(10)])
+    # A missing empty cache file must never be resolved or opened.
+    session.add(LocationDay(source=source, day="2026-06-06", cache_path="/missing/not-opened.json.gz", point_count=0))
+    outing = RoadtripOuting(signature="midnight", source=source, month="2026-06",
+        start_time=rt.timestamp(a["t"]).replace(tzinfo=None), end_time=rt.timestamp(b["t"]).replace(tzinfo=None),
+        duration_s=600, distance_m=rt.distance(a, b), point_count=2, gap_count=0, complete=False)
+    session.add(outing)
+    session.flush()
+    opened = []
+    original_open = rt.gzip.open
+    def recording_open(path, *args, **kwargs):
+        opened.append(Path(path).name)
+        return original_open(path, *args, **kwargs)
+    monkeypatch.setattr(rt.gzip, "open", recording_open)
+    detail = rt.preview(session, "2026-06", rt.clip_groups(session, "2026-06")[0]["key"], outing.id)
+    assert opened == ["2026-06-04.json.gz", "2026-06-05.json.gz"]
+    assert len(detail["time_series"]) == 2
+    assert detail["clips"][0]["coverage"] == 1
+
+
+def test_bounded_location_read_crosses_month_boundary_and_dst_fallback(session):
+    source = "ha:device_tracker.test"
+    # Calendar month rollover must not be clipped by an SQL month-prefix filter.
+    a = {"t": "2026-05-31T22:55:00Z", "lat": 51.5, "lon": -.1, "accuracy": 10}
+    b = {"t": "2026-05-31T23:05:00Z", "lat": 51.5, "lon": -.11, "accuracy": 10}
+    rt.save_day(session, source, "2026-05-31", [a])
+    rt.save_day(session, source, "2026-06-01", [b])
+    assert rt.load_month(session, "2026-05", source, start_time=a["t"], end_time=b["t"]) == [a, b]
+    # Repeated 01:xx local times on the autumn DST transition are distinct UTC
+    # instants, both in the same local cache day and both retained.
+    c = {"t": "2026-10-25T00:50:00Z", "lat": 51.5, "lon": -.1, "accuracy": 10}
+    d = {"t": "2026-10-25T01:10:00Z", "lat": 51.5, "lon": -.11, "accuracy": 10}
+    rt.save_day(session, source, "2026-10-25", [c, d])
+    assert rt.load_month(session, "2026-10", source, start_time=c["t"], end_time=d["t"]) == [c, d]
+
+
+def test_month_loader_skips_empty_cache_rows_without_io(session, monkeypatch):
+    session.add(LocationDay(source="test", day="2026-06-01", cache_path="/must-not-open.json.gz", point_count=0))
+    session.flush()
+    def unexpected(*args, **kwargs):
+        pytest.fail("Empty location days must not issue any cache file reads")
+    monkeypatch.setattr(rt.gzip, "open", unexpected)
+    assert rt.load_month(session, "2026-06", "test") == []

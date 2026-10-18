@@ -226,9 +226,21 @@ def merge_day(session, source, day, points, prefs):
     return clean_points(points, prefs)[0]
 
 
-def load_month(session, month: str, source: str | None = None) -> list[dict]:
+def load_month(session, month: str, source: str | None = None, *, start_time=None, end_time=None) -> list[dict]:
     root = _cache_root()
-    rows = session.query(LocationDay).filter(LocationDay.day.like(month + "-%"))
+    rows = session.query(LocationDay).filter(LocationDay.point_count > 0)
+    if start_time is not None and end_time is not None:
+        # Outing times are UTC; cache days follow the configured local zone.
+        # Query days directly so midnight, DST and month boundaries stay intact
+        # without opening an entire month of tiny files across a slow NAS.
+        zone = ZoneInfo(preferences(session).timezone)
+        first_day = timestamp(start_time).astimezone(zone).date().isoformat()
+        last_day = timestamp(end_time).astimezone(zone).date().isoformat()
+        if first_day > last_day:
+            raise ValueError("Outing end must follow its start")
+        rows = rows.filter(LocationDay.day >= first_day, LocationDay.day <= last_day)
+    else:
+        rows = rows.filter(LocationDay.day.like(month + "-%"))
     if source:
         rows = rows.filter_by(source=source)
     result = []
@@ -757,8 +769,8 @@ def preview(session, month, group_key, outing_id, start_time=None, clip_offsets=
     group = group_snapshot or next((g for g in clip_groups(session, month, album_id, media_ids, clip_ids) if g["key"] == group_key), None)
     if group is None:
         raise ValueError("Camera group changed; refresh the candidates")
-    points = load_month(session, month, outing.source)
     start, end = timestamp(outing.start_time), timestamp(outing.end_time)
+    points = load_month(session, month, outing.source, start_time=start, end_time=end)
     points = [p for p in points if start <= timestamp(p["t"]) <= end]
     segments = _track(points, prefs)
     anchor = timestamp(start_time, prefs.timezone) if start_time else start
