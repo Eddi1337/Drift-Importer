@@ -17,6 +17,7 @@ from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from ..crypto import encrypt
+from ..archive import archive_summary
 from ..config import get_settings
 from ..database import get_session
 from ..destinations import get_backend
@@ -47,6 +48,12 @@ from .. import workflow
 from .. import date_review
 
 router = APIRouter()
+
+
+@router.get("/transfers/history")
+def transfer_history(session: Session = Depends(get_session)):
+    from ..transfer_history import transfer_history_report
+    return transfer_history_report(session)
 
 
 class CameraWorkflowReq(BaseModel):
@@ -492,6 +499,7 @@ def build_upload_stats(session: Session, timeline_hours: float = DEFAULT_TIMELIN
 
     return {
         "overview": overview,
+        "archive": archive_summary(session),
         "system": build_system_stats(system_rows, timeline_hours, session=session),
         "destinations": [
             {
@@ -1855,6 +1863,19 @@ def list_job_logs(job_id: int, limit: int = 300, session: Session = Depends(get_
         .all()
     )
     return [job_log_dict(row) for row in rows]
+
+
+@router.get("/jobs/{job_id}")
+def get_job(job_id: int, session: Session = Depends(get_session)):
+    job = session.get(Job, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    result = job_dict(job)
+    try:
+        result["result"] = json.loads(job.result) if job.result else None
+    except (ValueError, TypeError):
+        result["result"] = None
+    return result
 
 
 @router.post("/jobs/pause_all")

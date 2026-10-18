@@ -11,6 +11,7 @@ from typing import Iterable, List, NamedTuple
 from sqlalchemy.exc import IntegrityError
 
 from .config import get_settings
+from .archive import record_uploaded_file
 from .database import session_scope
 from .destinations import get_backend
 from .destinations.base import join_remote, render_remote_dir
@@ -512,6 +513,7 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                 state.updated_at = utcnow()
                 clip.bytes_uploaded = local_size
                 clip.last_error = None
+                record_uploaded_file(s, dest, clip)
                 local_filename = item.filename
                 dest_name = dest.name
                 done += 1
@@ -580,6 +582,7 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                             clip.uploaded_at = clip.uploaded_at or now
                             clip.last_error = None
                             clip.updated_at = now
+                            record_uploaded_file(s, dest_detached, clip)
                     done += 1
                     ctx.set_progress(done / total, f"Verified existing {filename}")
                     continue
@@ -729,6 +732,8 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                 if result_status == "done":
                     clip.full_verification_failed = False
                 clip.updated_at = utcnow()
+                if result_status == "done":
+                    record_uploaded_file(s, dest_detached, clip)
         if result_status == "done" and not holding and date and date.corrected_time and dest.type in ("local", "nfs", "smb"):
             from .date_review import queue_metadata
             queue_metadata(date.id, did, result_remote)

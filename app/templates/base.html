@@ -6,6 +6,7 @@
   <title>Drift-Import{% block title %}{% endblock %}</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v={{ asset_version }}">
   <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
+  {% block head %}{% endblock %}
 </head>
 <body class="page-{{ active|replace('.html', '') }}">
   <a href="#mainContent" class="skip-link">Skip to content</a>
@@ -22,7 +23,7 @@
       <a href="/stats" class="{{ 'on' if active=='stats.html' else '' }}">Stats</a>
       <a href="/settings" class="{{ 'on' if active=='settings.html' else '' }}">Settings</a>
       <details class="nav-more"><summary>More</summary><div>
-        <a href="/library">Library</a><a href="/explorer">Explorer</a>
+        <a href="/library">Library</a><a href="/explorer">Explorer</a><a href="/duplicates" class="{{ 'on' if active=='duplicates.html' else '' }}">Duplicates</a>
         <a href="/destinations">Destinations</a>
       </div></details>
     </nav>

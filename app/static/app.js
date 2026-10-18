@@ -2032,6 +2032,7 @@ async function loadStats(showLoading = true) {
     renderIfChanged(overview, cards.map(([label, value, hint, symbol], i) => `<div class="live-card"><span class="metric-symbol" aria-hidden="true">${symbol}</span><div class="hint">${esc(label)}</div><div class="value ${i === 3 && data.error_clip_count ? 'needs-attention' : ''}">${esc(String(value))}</div><small>${esc(hint)}</small></div>`).join(''));
     renderSystemStats(stats.system || {});
     renderStatsDestinations(stats.destinations || []);
+    if (window.renderArchiveStats) window.renderArchiveStats(stats.archive);
     if (status) {
       status.textContent = `Live · ${new Date(stats.system?.sampled_at || Date.now()).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'})}`;
       status.className = "live-indicator ready";

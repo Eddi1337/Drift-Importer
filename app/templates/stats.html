@@ -9,6 +9,18 @@
   <div class="section-heading"><div><p class="eyebrow">THE BIG PICTURE</p><h2 id="transferTitle">Your transfers</h2></div><a href="/jobs">View jobs →</a></div>
   <div id="statsOverview" class="live-grid stats-metrics"><p class="hint loading-placeholder">Loading transfer history…</p></div>
 </section>
+<section class="panel archive-panel" aria-labelledby="archiveTitle">
+  <div class="section-heading"><div><p class="eyebrow">WHAT IS ON THE NAS</p><h2 id="archiveTitle">Archive inventory</h2><p class="hint">Find saved videos, including older files outside the upload history. Counts reflect the last scan.</p></div><a href="/duplicates">Duplicate report →</a></div>
+  <div id="archiveMetrics" class="live-grid stats-metrics"><p class="hint loading-placeholder">Loading archive inventory…</p></div>
+  <div class="archive-actions"><div id="archiveScanStatus" class="hint" role="status" aria-live="polite"></div><div class="row"><button id="archiveRefreshButton" class="ghost" type="button">Refresh report</button><button id="archiveScanButton" type="button">Scan NAS files</button></div></div>
+  <p class="hint archive-explanation">A scan lists videos and checks known uploads against storage. Duplicate checks read small samples first; only matching candidates need a full read. Scans run one at a time.</p>
+  <p id="archiveError" class="error-text" role="alert" hidden></p>
+  <details id="archiveFilesDetails" class="archive-files"><summary>Browse saved files</summary>
+    <div class="archive-file-toolbar"><label>Show<select id="archiveFileStatus"><option value="all">All files</option><option value="present">Present on NAS</option><option value="missing">Missing uploads</option></select></label><span id="archiveFileCount" class="hint" role="status"></span></div>
+    <div id="archiveFilesList"><p class="hint">Open this list to load files.</p></div>
+    <div class="row archive-pagination"><button id="archiveFilesPrevious" class="ghost" type="button" disabled>Previous</button><span id="archiveFilesPage" class="hint"></span><button id="archiveFilesNext" class="ghost" type="button" disabled>Next</button></div>
+  </details>
+</section>
 <section class="panel" id="piStatus" aria-labelledby="systemTitle">
   <div class="section-heading"><div><p class="eyebrow">ON YOUR PI</p><h2 id="systemTitle">System health</h2><p class="hint">Live readings with recent CPU and network history.</p></div>
     <label class="timeline-control">Show history for<select id="timelineMinutes" onchange="loadStats()"><option value="15">15 minutes</option><option value="30" selected>30 minutes</option><option value="60">1 hour</option><option value="360">6 hours</option><option value="1440">24 hours</option></select></label>
@@ -20,4 +32,4 @@
   <div id="statsDestinations"><p class="hint loading-placeholder">Checking destinations…</p></div>
 </section>
 {% endblock %}
-{% block scripts %}<script>initStats();</script>{% endblock %}
+{% block scripts %}<script src="/static/archive.js?v={{ asset_version }}"></script><script>initStats(); initArchiveStats();</script>{% endblock %}

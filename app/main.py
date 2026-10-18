@@ -19,6 +19,8 @@ from .jobs import get_manager
 from . import tasks  # noqa: F401  (registers job handlers)
 from . import workflow  # noqa: F401
 from . import date_review  # noqa: F401
+from . import archive_tasks  # noqa: F401
+from . import roadtrips  # noqa: F401
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -113,9 +115,13 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 
 # Routers are imported here so they can share the templates object.
 from .routers import pages, api  # noqa: E402
+from .routers import archive as archive_api  # noqa: E402
+from .routers import roadtrips as roadtrip_api  # noqa: E402
 
 app.include_router(pages.router, dependencies=[Depends(require_auth)])
 app.include_router(api.router, prefix="/api", dependencies=[Depends(require_auth)])
+app.include_router(archive_api.router, prefix="/api/archive", dependencies=[Depends(require_auth)])
+app.include_router(roadtrip_api.router, prefix="/api/roadtrips", dependencies=[Depends(require_auth)])
 
 
 @app.get("/healthz")

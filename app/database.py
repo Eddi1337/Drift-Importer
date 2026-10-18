@@ -39,6 +39,8 @@ SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
 
 def init_db() -> None:
     from . import models  # noqa: F401  (register mappers)
+    from . import archive_models  # noqa: F401
+    from . import roadtrip_models  # noqa: F401
 
     Base.metadata.create_all(_engine)
     _run_migrations()

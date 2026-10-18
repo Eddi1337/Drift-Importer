@@ -22,6 +22,7 @@ from .devicescan import get_device_monitor
 from .jobs import jobs_overview
 from .models import Job
 from .settings_store import get_app_settings
+from .transfer_history import transfer_estimate
 
 log = logging.getLogger("drift.ha")
 
@@ -80,6 +81,7 @@ class HAPublisher:
             if not (prefs.ha_base_url and prefs.ha_token):
                 return
             overview = compute_jobs_overview(s)
+            transfer = transfer_estimate(s)
             running_jobs = s.query(Job).filter(
                 Job.status == "running", Job.dismissed_at.is_(None)
             ).order_by(Job.started_at, Job.id).limit(4).all()
@@ -116,6 +118,7 @@ class HAPublisher:
             task_summary, task_detail,
             camera_connected,
             camera_label,
+            transfer["remaining_bytes"], transfer["eta_summary"], transfer["eta_status"],
         )
         if not self._should_publish(snapshot, now):
             return
@@ -135,7 +138,16 @@ class HAPublisher:
                 "task_detail": (task_detail or "")[:256],
                 "task_kinds": list(kinds),
                 "camera_connected": camera_connected,
+                "remaining_bytes": transfer["remaining_bytes"],
+                "eta_seconds": transfer["eta_seconds"],
+                "eta_at": transfer["eta_at"],
+                "eta_status": transfer["eta_status"],
+                "eta_summary": transfer["eta_summary"],
+                "estimated_scope": transfer["estimated_scope"],
+                "throughput_bytes_per_s": transfer["throughput_bytes_per_s"],
+                "history_url": transfer["history_url"],
                 "unit_of_measurement": "%",
+                "state_class": "measurement",
                 "friendly_name": "Drift task progress",
                 "icon": "mdi:camera-gopro",
             },
@@ -155,8 +167,15 @@ class HAPublisher:
                 "icon": "mdi:camera" if camera_connected else "mdi:camera-off",
             },
         )
+        eta_ok = ha.publish_state(
+            prefs, "upload_eta", transfer["eta_at"] or "unknown",
+            {"friendly_name": "Drift queued uploads finish", "device_class": "timestamp",
+             "remaining_bytes": transfer["remaining_bytes"],
+             "estimated_scope": transfer["estimated_scope"],
+             "status": transfer["eta_status"], "icon": "mdi:clock-end"},
+        )
         # Failed requests retry on the next tick rather than waiting a minute.
-        if progress_ok and active_ok and camera_ok:
+        if progress_ok and active_ok and camera_ok and eta_ok:
             self._last_published = snapshot
             self._last_publish_time = now
 

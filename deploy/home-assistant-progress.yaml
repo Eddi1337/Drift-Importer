@@ -18,12 +18,17 @@ card:
   state_content:
     - state
     - task_summary
+    - eta_summary
   features_position: bottom
   features:
     - type: bar-gauge
       min: 0
       max: 100
   tap_action:
+    action: more-info
+  icon_tap_action:
+    action: more-info
+  hold_action:
     action: url
     url_path: http://drift-pi.local:8080/jobs
 grid_options:

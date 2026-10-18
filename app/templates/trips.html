@@ -1,7 +1,46 @@
 {% extends "base.html" %}
 {% block title %} · Trips{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css"><link rel="stylesheet" href="/static/roadtrips.css?v={{ asset_version }}">{% endblock %}
 {% block content %}
 <div class="page-heading"><div><p class="eyebrow">02 / MAKE THE JOURNEY</p><h1>Trips</h1><p class="hint">Your recording days appear here after importing. Originals stay on the NAS.</p></div></div>
+<section class="panel roadtrip-panel" aria-labelledby="roadtripTitle">
+  <div class="section-heading"><div><p class="eyebrow">FOLLOW THE JOURNEY</p><h2 id="roadtripTitle">Roadtrip history</h2><p class="hint">Match footage to your recorded travels, even when the camera clock was wrong.</p></div><button id="rtRefresh" class="ghost" type="button">Refresh history</button></div>
+  <p id="rtError" class="roadtrip-error" role="alert" hidden></p>
+  <p id="rtStatus" class="hint" role="status" aria-live="polite">Loading location history…</p>
+  <details id="rtSetup" class="roadtrip-setup"><summary>Location sources and matching settings</summary>
+    <p class="hint">Home Assistant supplies the location points. Raw tracks stay on the NAS. A missing GPS interval stays a gap.</p>
+    <div class="roadtrip-controls">
+      <label>GPS tracker<select id="rtEntity"><option value="">Choose a tracker</option></select></label>
+      <label>Time zone<input id="rtTimezone" value="Europe/London" placeholder="Europe/London"></label>
+      <label>Home radius (metres)<input id="rtRadius" type="number" min="20" max="2000" value="150"></label>
+      <label>Maximum GPS gap (minutes)<input id="rtGap" type="number" min="1" max="30" value="15"></label>
+      <button id="rtSaveSettings" type="button">Save location settings</button>
+    </div>
+    <div class="roadtrip-controls">
+      <label>Import from<input id="rtImportFrom" type="month"></label><label>Through<input id="rtImportTo" type="month"></label>
+      <button id="rtImportHA" type="button">Import HA history</button>
+      <label class="roadtrip-file">Or import GPX / Timeline JSON<input id="rtImportFile" type="file" accept=".gpx,.json,application/json,application/gpx+xml"></label>
+    </div>
+    <p class="hint">History is fetched a day at a time. Select a month or a range up to one year. Google Timeline needs an export from your phone; a Maps API key cannot supply your personal timeline.</p>
+    <div id="rtCoverage" class="hint"></div>
+  </details>
+  <div class="row roadtrip-toolbar"><label>Footage month<input id="rtMonth" type="month"></label><button id="rtProbe" type="button" class="ghost">Index archive clip details</button><button id="rtFind" type="button">Find possible journeys</button><span class="hint">Month, sequence, duration and clock offset are clues. Confirm a match after reviewing it.</span></div>
+  <div class="roadtrip-workspace">
+    <div id="rtCandidates" class="roadtrip-candidates"><p class="hint">Import a month of location history, then find possible journeys for your footage.</p></div>
+    <div id="rtDetail" hidden>
+      <div class="section-heading"><div><h3 id="rtDetailTitle">Journey preview</h3><p id="rtDetailMeta" class="hint"></p></div><span id="rtMatchBadge" class="badge">Suggested</span></div>
+      <div class="row"><button id="rtStreetMap" type="button" class="ghost">Show street map</button><span class="hint">Optional OpenStreetMap tiles load in your browser. The route works without them.</span></div>
+      <div id="rtMap" class="roadtrip-map" role="region" aria-label="Journey route and clip locations"></div>
+      <div id="rtGraph" class="roadtrip-graph" aria-label="GPS speed and clip timeline"></div>
+      <label class="roadtrip-scrubber">Explore the journey<input id="rtScrubber" type="range" min="0" max="100" value="0"><output id="rtCursorTime"></output></label>
+      <div id="rtQuality" class="hint"></div>
+      <div class="roadtrip-controls roadtrip-anchor"><label>Trip name<input id="rtName" placeholder="Name this roadtrip"></label><label>First clip begins (local time)<input id="rtAnchor" type="datetime-local" step="1"></label><button id="rtPreview" type="button" class="ghost">Preview this alignment</button><button id="rtConfirm" type="button">Confirm this journey</button><button id="rtReject" type="button" class="ghost">Reject suggestion</button></div>
+      <p class="hint">Confirmation saves a route association. Original video files and their dates stay unchanged. Clip speeds are GPS estimates for the proposed recording interval.</p>
+      <div class="roadtrip-table-wrap"><table class="roadtrip-table"><thead><tr><th>Clip</th><th>Proposed time</th><th>GPS coverage</th><th>Average speed</th></tr></thead><tbody id="rtClips"></tbody></table></div>
+    </div>
+  </div>
+  <div class="section-heading"><h3>Your saved roadtrips</h3></div><div id="rtSaved" class="roadtrip-saved"><p class="hint">No confirmed journeys yet.</p></div>
+</section>
 <section class="panel"><div class="row spread"><h2>Suggested recording days</h2><label>NAS destination<select id="workflowDestination" onchange="loadDaySuggestions()"></select></label></div>
   <p class="hint">Create one movie for a day, or select several days for one longer trip. Clips follow recording time; the camera can be unplugged once they are archived.</p>
   <div id="daySuggestions">Loading recording days…</div>
@@ -11,4 +50,4 @@
 <details class="panel" id="customTrips"><summary>Custom clip groups</summary><p class="hint">For manually arranging clips into a trip.</p><div class="row"><input id="albumName" aria-label="Custom trip name" placeholder="New custom trip name"><button onclick="createAlbum()">Create group</button></div><div id="albumList"></div></details>
 <dialog id="tripPlayerDlg"><video id="tripPlayer" controls preload="metadata" style="max-width:80vw;max-height:70vh"></video><div><button onclick="closeTripPlayer()">Close</button></div></dialog>
 {% endblock %}
-{% block scripts %}<script>initDayTrips();</script>{% endblock %}
+{% block scripts %}<script src="/static/vendor/leaflet/leaflet.js"></script><script src="/static/roadtrips.js?v={{ asset_version }}"></script><script>initDayTrips();initRoadtrips();</script>{% endblock %}

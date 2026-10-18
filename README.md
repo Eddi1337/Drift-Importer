@@ -1,5 +1,41 @@
 # Drift-Import
 
+## Roadtrip location history
+
+Trips can associate archived clips with journeys reconstructed from Home
+Assistant GPS history. Choose a tracker under **Trips → Location sources**,
+then import the footage month, or a range of up to twelve months. The app uses
+the existing HA connection from Settings, includes location attribute updates,
+and fetches one day at a time. A device tracker's GPS history is usually more
+detailed than a person entity. Empty recorder windows preserve previously
+imported tracks; they do not imply that no journey happened.
+
+The NAS YYYY/MM folder is the month anchor when camera dates are unreliable.
+Sequence, recording duration, plausible camera-relative gaps, and time away
+from home rank possible outings. These are advisory matches: compare the
+alternatives, choose a smaller clip sequence if a folder spans several rides,
+and adjust the first-clip time or individual clip offsets before confirming.
+Confirmation saves an association; it does not rewrite video files or dates.
+Use **Index archive clip details** to read missing duration metadata from
+older NAS footage. Metadata probes and location imports are explicit,
+serialized background jobs.
+
+The route map and speed/time graph share a time slider; clicking a clip selects
+its location interval. The route works without an external basemap. **Show
+street map** loads OpenStreetMap tiles in the browser with attribution.
+GPS gaps are not bridged, poor fixes and implausible jumps are filtered, and
+per-clip average speeds remain unavailable below 80% GPS coverage. Speeds are
+GPS estimates for the displayed alignment, not calibrated road measurements.
+
+Location fixes live in private, guarded NAS files under .drift/locations
+at roughly one-minute resolution. SQLite holds only compact indexes and
+confirmed associations. GPX and Google Timeline JSON imports are supported
+for a selected month, with a 16 MB input limit to bound Pi memory. Google
+Timeline is stored on the phone; a Google Maps API key does not grant access
+to personal Timeline history. Export it from the phone if HA no longer retains
+the required dates. Home Assistant retention varies; long-term numeric
+statistics do not replace GPS attribute history.
+
 Self-hosted camera offload & upload manager for the **Drift XL** action camera,
 designed to run on a **Raspberry Pi Zero 2 W**. Plug the camera in over USB,
 browse the clips in a web GUI, fix timestamps, merge the 5-minute segments,
@@ -61,7 +97,17 @@ to your Home view. It uses `sensor.drift_import_progress` and
 `binary_sensor.drift_import_active`; `sensor.drift_import_camera` reports the
 attached camera. The percentage measures completion of the current task batch,
 including terminated tasks; the Import page's verification report remains the
-source of truth for successful camera backups. Tap the card to open Pi Jobs.
+source of truth for successful camera backups. Tap the card or its bar to open
+Home Assistant's recorded progress history; hold it to open Pi Jobs. Keep the
+progress entity included in HA Recorder for this history. The card also shows
+an estimated finish for the current upload queue, calculated from recent
+committed byte checkpoints. Camera indexing can add more queued files, and the
+estimate excludes indexing, verification and movie creation. Until there is
+enough throughput data, while paused/stalled, or when a transfer needs review,
+the ETA stays unknown. `sensor.drift_import_upload_eta` exposes the estimated
+finish timestamp; progress attributes include remaining bytes and estimate
+scope. Estimates use bounded RAM only and reuse existing ledger checkpoints,
+so this feature adds no sample writes to the Pi's SD card.
 
 Blank token input keeps the saved credential; use **Remove the saved Home
 Assistant token** to disconnect it. Existing plaintext credentials are migrated
@@ -308,3 +354,35 @@ Failed corrections remain held; retry their job after resolving the reported err
 For future rides, the advanced clock button can send the Pi's current UK time to
 a supported Drift camera reachable over Wi-Fi. It cannot set the clock through
 USB mass storage. Check a new recording afterwards; firmware support varies.
+
+### NAS inventory and duplicate reports
+
+Stats now includes a saved-file inventory independent of the camera library and
+upload ledger. **Scan NAS** discovers existing video and image files in enabled
+mounted/local destinations, including older files and Holding. It excludes
+hidden caches, symbolic links and incomplete `.part` uploads. Missing expected
+uploads are only marked after an entire successful directory scan; an offline
+NAS or interrupted scan preserves the previous report. New successful uploads
+join the inventory with a cheap filesystem stat, without another directory scan.
+
+The **Duplicates** page first groups equal-sized files and reads at most three
+64 KiB samples per candidate. Unique sizes are never read, and unchanged cached
+samples are reused. These are possible matches, not proof. **Verify full
+content** reads SHA-256 one file at a time and separates different full hashes;
+its cache is invalidated when inode, size, modification time or change time
+changes. Read-only report refreshes never start scans or hashing.
+
+Hardlinking is a separate, explicitly confirmed job. Choose a kept copy and
+copies within the same configured destination. The job reads both complete
+files again, requires the same filesystem and matching timestamps, ownership,
+permissions and extended attributes/ACLs, and atomically replaces each selected duplicate with a link
+while preserving both filenames. Hardlinked names subsequently share edits and
+metadata. Files with different dates or permissions remain separate. Keep other
+NAS clients from editing selected files while the operation runs. No automatic
+hardlinking or deletion is performed; NAS snapshots/compression can affect the
+actual saving.
+
+Archive work shares the upload/metadata semaphore, runs one audit at a time,
+and is prioritized after the current transfer instead of waiting behind an
+entire camera backlog. Cancellation is supported; inventory/sample cache writes
+are batched, and no new media copies are staged on the Pi SD card.

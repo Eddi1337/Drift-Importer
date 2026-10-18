@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %} · Duplicates{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">ARCHIVE CARE</p><h1>Duplicate report</h1><p class="hint">Find identical videos on the NAS and choose which copies should share their storage.</p></div><a class="button-link" href="/stats#archiveTitle">Back to Stats</a></div>
+<section class="panel archive-panel" aria-labelledby="duplicateSummaryTitle">
+  <div class="section-heading"><div><h2 id="duplicateSummaryTitle">Check the archive</h2><p class="hint">The fast scan compares file sizes and small content samples. A sample match is a candidate, not proof of identical content.</p></div></div>
+  <div id="duplicateMetrics" class="live-grid stats-metrics"><p class="hint loading-placeholder">Loading duplicate report…</p></div>
+  <div class="archive-actions"><div id="archiveScanStatus" class="hint" role="status" aria-live="polite"></div><div class="row"><button id="archiveRefreshButton" class="ghost" type="button">Refresh report</button><button id="archiveScanButton" type="button">Run fast scan</button></div></div>
+  <p id="archiveError" class="error-text" role="alert" hidden></p>
+</section>
+<aside class="archive-note" aria-labelledby="hardlinkNoteTitle"><strong id="hardlinkNoteTitle">Before linking copies</strong><p>A hardlink keeps every filename but makes the files share the same content and modification time. Editing one changes all linked copies. Deleting one filename leaves the others available.</p><p>Nothing is changed by a scan. Verify a group with a full content hash, choose the file to keep, then review and confirm a hardlink action. Files with different dates, permissions, or filesystems cannot be linked. Already linked files do not save more space.</p></aside>
+<section class="panel" aria-labelledby="duplicateGroupsTitle"><div class="section-heading"><div><h2 id="duplicateGroupsTitle">Matching files</h2><p id="duplicateCount" class="hint"></p></div><label class="archive-filter">Show<select id="duplicateFilter"><option value="all">All matches</option><option value="candidate">Needs verification</option><option value="verified">Verified identical</option><option value="linked">Already linked</option></select></label></div>
+  <div id="duplicateGroups"><p class="hint loading-placeholder">Loading matches…</p></div>
+  <div class="row archive-pagination"><button id="duplicatePrevious" class="ghost" type="button" disabled>Previous</button><span id="duplicatePage" class="hint"></span><button id="duplicateNext" class="ghost" type="button" disabled>Next</button></div>
+</section>
+<dialog id="hardlinkDialog" class="archive-dialog" aria-labelledby="hardlinkDialogTitle">
+  <form id="hardlinkForm"><h2 id="hardlinkDialogTitle">Review hardlinks</h2><p>Keep this file as the shared content:</p><p id="hardlinkKeeper" class="archive-path"></p><p>Replace these duplicate copies with links:</p><ul id="hardlinkTargets" class="archive-link-targets"></ul><p id="hardlinkSavings" class="hint"></p>
+    <label class="archive-consent"><input id="hardlinkConsent" type="checkbox" required><span>I understand that future content or timestamp edits affect every linked filename.</span></label>
+    <p id="hardlinkError" class="error-text" role="alert" hidden></p><div class="row archive-dialog-actions"><button id="hardlinkCancel" class="ghost" type="button">Cancel</button><button id="hardlinkConfirm" type="submit" disabled>Confirm hardlinks</button></div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}<script src="/static/archive.js?v={{ asset_version }}"></script><script>initDuplicates();</script>{% endblock %}

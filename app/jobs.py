@@ -24,6 +24,8 @@ from .models import Job, JobLog, utcnow
 log = logging.getLogger("drift.jobs")
 
 ACTIVE_STATES = ("queued", "running", "paused")
+ARCHIVE_KINDS = ("archive_scan", "archive_verify", "archive_hardlink")
+MAINTENANCE_KINDS = ARCHIVE_KINDS + ("roadtrip_import_ha", "roadtrip_import_file", "roadtrip_probe")
 
 # Only look this far back when reconstructing the current run; a single run
 # realistically never spans longer, and it bounds the scan as history grows.
@@ -385,12 +387,13 @@ class JobManager:
             return None
         with self._claim_lock:
             with session_scope() as s:
-                job = (
-                    s.query(Job)
-                    .filter(Job.status == "queued")
-                    .order_by(Job.created_at)
-                    .first()
-                )
+                query = s.query(Job).filter(Job.status == "queued")
+                if s.query(Job.id).filter(Job.status == "running", Job.kind.in_(MAINTENANCE_KINDS)).first():
+                    query = query.filter(Job.kind.notin_(MAINTENANCE_KINDS))
+                # An explicitly requested audit must not wait behind an entire
+                # camera's FIFO upload backlog. Its handler takes the same NAS
+                # semaphore, so a transfer already in progress finishes first.
+                job = query.order_by(case((Job.kind.in_(MAINTENANCE_KINDS), 0), else_=1), Job.created_at, Job.id).first()
                 if not job:
                     return None
                 if job.cancel_requested:

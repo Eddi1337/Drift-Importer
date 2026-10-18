@@ -197,6 +197,10 @@ def test_publisher_counts_all_task_types_and_exposes_running_gate(monkeypatch, k
     assert calls["progress"][0] == 25
     assert calls["progress"][1]["task_kinds"] == [kind]
     assert calls["progress"][1]["task_detail"] == "Current task"
+    assert calls["progress"][1]["state_class"] == "measurement"
+    assert calls["progress"][1]["eta_seconds"] is None
+    assert calls["progress"][1]["history_url"] == "/jobs"
+    assert calls["upload_eta"][0] == "unknown"
     assert calls["active"][0] == "on"
     assert calls["active"][2]["domain"] == "binary_sensor"
 

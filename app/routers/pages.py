@@ -16,7 +16,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent
 _static = Path(__file__).resolve().parent.parent / "static"
 templates.env.globals["asset_version"] = sha256(b"".join(
     (_static / name).read_bytes()
-    for name in ("style.css", "app.js", "workflow.js", "favicon.svg")
+    for name in ("style.css", "app.js", "workflow.js", "archive.js", "roadtrips.js", "roadtrips.css", "favicon.svg")
 )).hexdigest()[:12]
 
 
@@ -72,3 +72,8 @@ def settings(request: Request):
 @router.get("/stats", response_class=HTMLResponse)
 def stats(request: Request):
     return _page(request, "stats.html")
+
+
+@router.get("/duplicates", response_class=HTMLResponse)
+def duplicates(request: Request):
+    return _page(request, "duplicates.html")
