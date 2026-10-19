@@ -18,6 +18,7 @@ from app.database import Base, get_session
 from app.models import Job
 from app.roadtrips import timestamp
 from app.routers.roadtrips import router
+from app.processing_sync import ProcessingSyncState
 
 
 @pytest.fixture
@@ -112,3 +113,21 @@ def test_deferred_discovery_retries_after_nas_recovers_without_new_input(data, m
     monkeypatch.setattr(jobs, "enqueue_discovery", lambda: calls.append("retry"))
     jobs.AutoRideMonitor().tick()
     assert calls == ["retry"]
+
+
+def test_processor_waits_for_initial_metadata_before_discovery(data, monkeypatch):
+    session, _, nas, _ = data
+    monkeypatch.setattr(jobs, "get_settings", lambda: SimpleNamespace(processing_role="processor", nas_root=nas))
+    @contextmanager
+    def scoped():
+        yield session
+    monkeypatch.setattr(jobs, "session_scope", scoped)
+    calls = []
+    monkeypatch.setattr(jobs, "enqueue_discovery", lambda: calls.append("discover"))
+    monitor = jobs.AutoRideMonitor()
+    monitor.tick()
+    assert calls == []
+    session.add(ProcessingSyncState(id=1, seeded=True))
+    session.flush()
+    monitor.tick()
+    assert calls == ["discover"]

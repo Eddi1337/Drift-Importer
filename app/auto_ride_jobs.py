@@ -218,6 +218,12 @@ class AutoRideMonitor:
     def tick(self, *, check_inputs=True):
         from .auto_ride_models import AutoRideDiscovery
         from .auto_rides import input_fingerprint
+        if get_settings().processing_role == "processor":
+            from .processing_sync import ProcessingSyncState
+            with session_scope() as session:
+                initial = session.get(ProcessingSyncState, 1)
+                if not initial or not initial.seeded:
+                    return  # Do not create empty preferences before Pi seeding.
         if check_inputs:
             from .auto_ride_ha import pending_refresh_days
             with session_scope() as session:

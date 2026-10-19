@@ -215,8 +215,23 @@ def _validate(payload):
     return validated
 
 
+def _default_preferences_placeholder(row):
+    """Recognize preferences created by an idle processor before its first sync."""
+    if row["id"] != 1 or row["home_lat"] is not None or row["home_lon"] is not None:
+        return False
+    for column in RoadtripSettings.__table__.c:
+        if column.name in ("id", "updated_at", "home_lat", "home_lon"):
+            continue
+        if column.default is None or not column.default.is_scalar or row[column.name] != column.default.arg:
+            return False
+    return True
+
+
 def _upsert(connection, spec, rows, *, seed=False):
-    existing = {row[spec.key]: row for row in connection.execute(select(*(spec.table.c[name] for name in spec.fields))).mappings()}
+    # Home coordinates stay local, but must be checked before treating the
+    # first-run preference row as an untouched default placeholder.
+    query = select(spec.table) if seed and spec.model is RoadtripSettings else select(*(spec.table.c[name] for name in spec.fields))
+    existing = {row[spec.key]: row for row in connection.execute(query).mappings()}
     natural = [{tuple(row[name] for name in names) for row in existing.values()} for names in spec.natural_keys]
     new, groups = [], {}
     for row in rows:
@@ -227,7 +242,7 @@ def _upsert(connection, spec, rows, *, seed=False):
             new.append(row)
             for names, keys in zip(spec.natural_keys, natural):
                 keys.add(tuple(row[name] for name in names))
-        elif not seed:
+        elif not seed or (spec.model is RoadtripSettings and _default_preferences_placeholder(previous)):
             if spec.model is RecordingDate and previous["revision"] > row["revision"]:
                 continue  # An older Pi observation must not undo a processor correction.
             changed = tuple(name for name in spec.fields if name != spec.key and previous[name] != row[name])

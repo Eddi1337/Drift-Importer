@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, delete, event, select
 from sqlalchemy.orm import Session
 
 from app import processing_sync as sync
+from app import roadtrips as rt
 from app.archive_models import ArchiveFile
 from app.auto_ride_jobs import AutoRideRender
 from app.auto_ride_models import AutoRide
@@ -157,6 +158,48 @@ def test_initial_seed_does_not_replace_preexisting_central_rows_or_natural_keys(
     assert scalar(target,LocationDay,'point_count',77)==999
     assert scalar(target,LocationDay,'point_count',1) is None
     assert scalar(target,RoadtripOuting,'source',77)=="ha:central"
+
+
+@pytest.mark.parametrize("precreated_state", [False, True])
+def test_first_seed_adopts_source_preferences_over_untouched_monitor_placeholder(databases, precreated_state):
+    source,target=databases
+    rt.preferences(target)  # The monitor used to create this before initial sync.
+    if precreated_state:
+        target.add(sync.ProcessingSyncState(id=1,seeded=False))
+    target.commit()
+    prefs=source.get(RoadtripSettings,1)
+    prefs.timezone='UTC';prefs.home_radius_m=225;prefs.max_accuracy_m=55;prefs.max_gap_s=600;prefs.max_speed_kmh=140
+    source.commit()
+    result=sync.import_snapshot(target,sync.export_snapshot(source))
+    assert result['seeded'] and result['updated']==1
+    for name in ('entity_id','timezone','home_radius_m','max_accuracy_m','max_gap_s','max_speed_kmh'):
+        assert scalar(target,RoadtripSettings,name)==getattr(prefs,name)
+    assert scalar(target,RoadtripSettings,'home_lat') is None
+    assert scalar(target,RoadtripSettings,'home_lon') is None
+
+
+@pytest.mark.parametrize("custom", [
+    {'entity_id':'device_tracker.central'}, {'entity_id':' '}, {'timezone':'UTC'},
+    {'home_lat':0}, {'home_lon':0}, {'home_radius_m':200}, {'max_accuracy_m':75},
+    {'max_gap_s':600}, {'max_speed_kmh':150},
+])
+def test_first_seed_preserves_any_customized_processor_preferences(databases,custom):
+    source,target=databases
+    target.add(RoadtripSettings(id=1,**custom));target.commit()
+    before=dict(target.connection().execute(select(RoadtripSettings.__table__)).mappings().one())
+    sync.import_snapshot(target,sync.export_snapshot(source))
+    after=dict(target.connection().execute(select(RoadtripSettings.__table__)).mappings().one())
+    assert after==before
+
+
+def test_later_sync_never_replaces_even_default_processor_preferences(databases):
+    source,target=databases
+    sync.import_snapshot(target,sync.export_snapshot(source));target.commit()
+    target.get(RoadtripSettings,1).entity_id='';target.commit()
+    source.get(MediaItem,1).size_bytes=200;source.commit()
+    result=sync.import_snapshot(target,sync.export_snapshot(source))
+    assert not result['seeded']
+    assert scalar(target,RoadtripSettings,'entity_id')==''
 
 
 def test_missing_source_archives_are_retired_without_deleting_processor_rows(databases):
