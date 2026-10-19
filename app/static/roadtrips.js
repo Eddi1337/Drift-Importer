@@ -1,7 +1,7 @@
 // Trip membership and GPS associations never move or rewrite the recordings.
 (() => {
   const rt = {state:null, candidates:null, detail:null, selection:null, jobs:new Set(), poll:null, busy:false,
-    map:null, route:null, marker:null, clipLayers:[], pins:[], tiles:null, selectedClip:null,
+    map:null, route:null, marker:null, clipLayers:[], pins:[], tiles:null, tileWait:null, streetMapHidden:false, selectedClip:null,
     files:null, filesComplete:true, filtered:[], shown:300, selected:new Set(), editingId:null, collection:null, dateFilter:"all", auto:null, autoShown:24, autoPoll:null, autoRide:null, snapshot:null, entitiesLoaded:false};
   const $ = id => document.getElementById(id);
   const zone = () => rt.state?.settings?.timezone || "Europe/London";
@@ -326,7 +326,40 @@
   }
   function ensureMap() {
     if(!window.L) {$("rtMap").textContent="Map library unavailable. The dated video table still works.";return false;}
-    if(!rt.map) rt.map=L.map("rtMap",{scrollWheelZoom:false}).setView([54,-2],5);return true;
+    if(!rt.map) {
+      rt.map=L.map("rtMap",{scrollWheelZoom:false}).setView([54,-2],5);
+    }
+    return true;
+  }
+  function mapTileStatus(message,retry=false) {
+    $("rtTileStatus").hidden=!message;$("rtTileMessage").textContent=message;
+    $("rtTileRetry").hidden=!retry;
+  }
+  function showStreetMap() {
+    rt.streetMapHidden=false;
+    if(rt.tiles) {rt.tiles.redraw();return;}
+    const layer=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{
+      maxZoom:19,referrerPolicy:"strict-origin-when-cross-origin",
+      attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'});
+    let failures=0;
+    rt.tiles=layer;$("rtStreetMap").textContent="Hide street map";$("rtStreetMap").setAttribute("aria-pressed","true");
+    layer.on("loading",()=>{
+      if(rt.tiles!==layer)return;failures=0;clearTimeout(rt.tileWait);
+      mapTileStatus("Loading street map…");
+      rt.tileWait=setTimeout(()=>{if(rt.tiles===layer)mapTileStatus("Street map is taking longer to load. Your route and video pins are still available.",true);},15000);
+    });
+    layer.on("tileerror",()=>{if(rt.tiles===layer)failures++;});
+    layer.on("load",()=>{
+      if(rt.tiles!==layer)return;clearTimeout(rt.tileWait);
+      // Leaflet also fires load when every tile fails; don't report success
+      // merely because all outstanding requests have finished.
+      mapTileStatus(failures?"Some street-map tiles could not load. Your route and video pins are still available.":"",failures>0);
+    });
+    layer.addTo(rt.map);
+  }
+  function hideStreetMap() {
+    const layer=rt.tiles;rt.tiles=null;rt.streetMapHidden=true;clearTimeout(rt.tileWait);if(layer)layer.remove();
+    $("rtStreetMap").textContent="Show street names and places";$("rtStreetMap").setAttribute("aria-pressed","false");mapTileStatus("");
   }
   function drawMap() {
     if(!ensureMap()) return;rt.map.invalidateSize({animate:false});
@@ -351,7 +384,7 @@
         pin.bindTooltip(label+" · "+esc(when(point.time)),{direction:"right"});rt.pins.push(pin);
       }
     }
-    fitMap();setTimeout(()=>rt.map.invalidateSize(),0);
+    fitMap();if(!rt.tiles && !rt.streetMapHidden)showStreetMap();setTimeout(()=>rt.map.invalidateSize(),0);
   }
   function fitMap() {
     if(!rt.map) return;
@@ -444,7 +477,8 @@
     $("rtGraph").addEventListener("click",e=>{const band=e.target.closest("[data-rt-band]");if(band) selectClip(band.dataset.rtBand);});
     $("rtGraph").addEventListener("keydown",e=>{if(e.key==="Enter" || e.key===" "){const band=e.target.closest("[data-rt-band]");if(band){e.preventDefault();selectClip(band.dataset.rtBand);}}});
     $("rtScrubber").addEventListener("input",()=>scrub(Number($("rtScrubber").value)/100));$("rtFitMap").addEventListener("click",fitMap);
-    $("rtStreetMap").addEventListener("click",()=>{if(!ensureMap()) return;if(rt.tiles){rt.tiles.remove();rt.tiles=null;$("rtStreetMap").textContent="Show street names and places";}else{rt.tiles=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'}).addTo(rt.map);$("rtStreetMap").textContent="Hide street map";}});
+    $("rtStreetMap").addEventListener("click",()=>{if(!ensureMap())return;if(rt.tiles)hideStreetMap();else showStreetMap();});
+    $("rtTileRetry").addEventListener("click",()=>{if(ensureMap())showStreetMap();});
     await action(async()=>{await refresh(true);await refreshAuto();});
   };
 })();

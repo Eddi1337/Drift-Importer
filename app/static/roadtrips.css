@@ -206,3 +206,4 @@
 .rt-auto-card { width:100%; max-width:620px; justify-self:start; }
 .rt-auto-cover { height:auto; aspect-ratio:16 / 9; min-height:170px; max-height:280px; }
 @media(max-width:700px) { .roadtrip-auto-gallery { grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); } }
+.roadtrip-tile-status { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin:8px 0 12px; color:var(--mut); font-size:.8rem; }

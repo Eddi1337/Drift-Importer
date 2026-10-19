@@ -71,8 +71,10 @@ Final movies and snapshots publish atomically. Film playback supports HTTP
 Range requests, and the gallery reads compact cached progress once per minute.
 
 The route map and speed/time graph share a time slider; clicking a clip selects
-its location interval. The route works without an external basemap. **Show
-street map** loads OpenStreetMap tiles in the browser with attribution.
+its location interval. Opening a ride automatically loads its OpenStreetMap
+background in the browser, with attribution. **Hide street map** keeps just the
+route. Tile failures show a retry control while the route and video pins remain
+available; map tiles do not pass through the Pi or write to its SD card.
 GPS gaps are not bridged, poor fixes and implausible jumps are filtered, and
 per-clip average speeds remain unavailable below 80% GPS coverage. Speeds are
 GPS estimates for the displayed alignment, not calibrated road measurements.

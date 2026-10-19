@@ -19,6 +19,7 @@ from .config import get_settings
 from .database import Base, session_scope
 from .jobs import ACTIVE_STATES, get_manager, handler
 from .models import Job, utcnow
+from .auto_ride_models import AutoRide  # Register the render index's FK target.
 
 log = logging.getLogger(__name__)
 _QUEUE_LOCK = threading.Lock()
