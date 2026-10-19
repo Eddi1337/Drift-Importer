@@ -225,6 +225,7 @@ def test_central_migration_keeps_upload_settings_and_processor_rides(tmp_path):
     from deploy.migrations.centralize import build
     from app.database import Base
     from app.models import AppSettings,Job
+    from app.roadtrip_models import RoadtripSettings
     from app.auto_ride_models import AutoRideDiscovery
     paths=[tmp_path/name for name in ('source.db','processor.db')]
     for path in paths:
@@ -232,6 +233,7 @@ def test_central_migration_keeps_upload_settings_and_processor_rides(tmp_path):
         maker=sessionmaker(bind=engine)
         with maker() as s:
             s.add(AppSettings(id=1,auto_import_on_connect=path==paths[0],ha_token='encrypted-existing-secret' if path==paths[0] else None))
+            s.add(RoadtripSettings(id=1,home_lat=1.5 if path==paths[0] else None,home_lon=2.5 if path==paths[0] else None))
             if path==paths[0]:s.add(Job(id=99,kind='upload',status='running',payload='{"media_ids":[77]}'))
             else:s.add(AutoRideDiscovery(id=1,input_signature='keep-me',report='{"rides":2}'))
             s.commit()
@@ -241,6 +243,7 @@ def test_central_migration_keeps_upload_settings_and_processor_rides(tmp_path):
     with sqlite3.connect(output) as db:
         assert db.execute('select auto_import_on_connect,ha_token from app_settings').fetchone()==(1,'encrypted-existing-secret')
         assert db.execute('select id,status,payload from jobs').fetchone()==(99,'queued','{"media_ids":[77]}')
+        assert db.execute('select home_lat,home_lon from roadtrip_settings').fetchone()==(1.5,2.5)
         assert db.execute('select input_signature from auto_ride_discovery').fetchone()==('keep-me',)
     with pytest.raises(RuntimeError):build(*paths,output)
 

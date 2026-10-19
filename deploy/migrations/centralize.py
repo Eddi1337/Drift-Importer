@@ -27,6 +27,7 @@ def build(uploader,processor,output):
         # processor reference now points at a different archive in the source.
         conflicts=db.execute('SELECT count(*) FROM processor.archive_files p LEFT JOIN main.archive_files m ON m.id=p.id WHERE m.id IS NULL OR m.path!=p.path OR m.destination_id!=p.destination_id').fetchone()[0]
         if conflicts:raise RuntimeError('Archive identities changed; explicit reconciliation is required')
+        private_home=db.execute('SELECT home_lat,home_lon FROM main.roadtrip_settings WHERE id=1').fetchone()
         db.execute('PRAGMA foreign_keys=OFF')
         for table in reversed(PROCESSOR_TABLES):db.execute(f'DELETE FROM main.{table}')
         counts={}
@@ -36,6 +37,10 @@ def build(uploader,processor,output):
             if expected!=actual:raise RuntimeError(f'Schema mismatch for {table}')
             db.execute(f'INSERT INTO main.{table} SELECT * FROM processor.{table}')
             counts[table]=db.execute(f'SELECT count(*) FROM main.{table}').fetchone()[0]
+        # Old metadata sync deliberately omitted home coordinates. Restore
+        # them from the authoritative uploader if the processor had none.
+        if private_home:
+            db.execute('UPDATE roadtrip_settings SET home_lat=COALESCE(home_lat,?),home_lon=COALESCE(home_lon,?) WHERE id=1',private_home)
         db.execute("UPDATE jobs SET status='queued',error=NULL,finished_at=NULL WHERE status='running'")
         db.execute('DELETE FROM processing_sync_state')
         db.commit()
