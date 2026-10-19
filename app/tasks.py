@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Iterable, List, NamedTuple
@@ -30,6 +31,7 @@ from .models import Album, AlbumItem, Destination, Job, MediaItem, UploadedClip,
 from .timestamps import set_file_mtime, shift_datetime, write_metadata_creation_time
 
 log = logging.getLogger("drift.tasks")
+_upload_enqueue_lock = threading.Lock()
 
 
 def _thumb_path_for(media_id: int) -> Path:
@@ -956,35 +958,81 @@ def _date_ready_ids(media_ids):
         return [mid for mid in media_ids if mid in ready]
 
 
+def _upload_enqueue_targets(session, media_ids, destination_ids):
+    """Plan only uncovered media/destination pairs, using SQLite metadata.
+
+    Reconnecting a camera can request an import while its earlier transfers
+    are still queued. Paused work also owns its pairs until cancelled. The
+    caller holds the enqueue lock through inserting all the planned jobs.
+    """
+    targets = _destination_ids_for_upload(session, destination_ids)
+    if not targets:
+        # Preserve the existing no-destination error at execution time.
+        return {mid: destination_ids for mid in media_ids}
+    wanted = set(media_ids)
+    defaults = set(_destination_ids_for_upload(session, None))
+    active = {mid: set() for mid in media_ids}
+    rows = session.query(Job.payload).filter(
+        Job.kind == "upload", Job.status.in_(("queued", "running", "paused")),
+        Job.cancel_requested == False,  # noqa: E712
+    ).all()
+    for (raw,) in rows:
+        try:
+            payload = json.loads(raw or "{}")
+            mids = payload.get("media_ids", [])
+            dids = payload.get("destination_ids")
+            if not isinstance(mids, list) or (dids and not isinstance(dids, list)):
+                continue
+            mids = wanted.intersection(mid for mid in mids if type(mid) is int)
+            covered = set(did for did in dids if type(did) is int) if dids else defaults
+        except (ValueError, TypeError, AttributeError):
+            continue
+        for mid in mids:
+            active[mid].update(covered)
+    checksums = dict(session.query(MediaItem.id, MediaItem.checksum)
+                     .filter(MediaItem.id.in_(media_ids)).all())
+    done = set(session.query(UploadedClip.destination_id, UploadedClip.checksum).filter(
+        UploadedClip.destination_id.in_(targets),
+        UploadedClip.checksum.in_([cs for cs in checksums.values() if cs]),
+        UploadedClip.status == "done", UploadedClip.remote_path.isnot(None),
+        UploadedClip.remote_path != "",
+    ).all())
+    plan = {}
+    for mid in media_ids:
+        missing = [did for did in targets
+                   if did not in active[mid] and (did, checksums.get(mid)) not in done]
+        if missing:
+            # Keep implicit defaults when the whole request is still needed;
+            # partial overlaps must name only the destinations left to do.
+            plan[mid] = destination_ids if missing == targets else missing
+    return plan
+
+
 def enqueue_upload_jobs(
     media_ids: list[int],
     destination_ids: list[int] | None = None,
     description_prefix: str = "Upload",
     content_names: bool = False,
 ) -> list[int]:
-    media_ids = list(dict.fromkeys(media_ids))
-    media_ids = _date_ready_ids(media_ids)
-    media_ids = _media_ids_needing_upload(media_ids, destination_ids)
-    if not media_ids:
-        return []
-    with session_scope() as s:
-        rows = (
-            s.query(MediaItem.id, MediaItem.filename)
-            .filter(MediaItem.id.in_(media_ids))
-            .all()
-        )
-        names = {mid: filename for mid, filename in rows}
-    job_ids = []
-    for mid in media_ids:
-        filename = names.get(mid, f"item {mid}")
-        job_ids.append(
-            get_manager_enqueue(
-                "upload",
-                {"media_ids": [mid], "destination_ids": destination_ids, **({"content_names": True} if content_names else {})},
-                description=f"{description_prefix} {filename}",
+    with _upload_enqueue_lock:
+        media_ids = _date_ready_ids(list(dict.fromkeys(media_ids)))
+        if not media_ids:
+            return []
+        with session_scope() as s:
+            plan = _upload_enqueue_targets(s, media_ids, destination_ids)
+            names = dict(s.query(MediaItem.id, MediaItem.filename)
+                         .filter(MediaItem.id.in_(plan)).all())
+        job_ids = []
+        for mid, targets in plan.items():
+            filename = names.get(mid, f"item {mid}")
+            job_ids.append(
+                get_manager_enqueue(
+                    "upload",
+                    {"media_ids": [mid], "destination_ids": targets, **({"content_names": True} if content_names else {})},
+                    description=f"{description_prefix} {filename}",
+                )
             )
-        )
-    return job_ids
+        return job_ids
 
 
 def enqueue_upload_jobs_by_month(
@@ -993,30 +1041,33 @@ def enqueue_upload_jobs_by_month(
     description_prefix: str = "Upload",
     content_names: bool = False,
 ) -> list[int]:
-    media_ids = list(dict.fromkeys(media_ids))
-    media_ids = _date_ready_ids(media_ids)
-    media_ids = _media_ids_needing_upload(media_ids, destination_ids)
-    if not media_ids:
-        return []
-    with session_scope() as s:
-        rows = [
-            UploadPlanRow(mid, filename, capture_time)
-            for mid, filename, capture_time in (
-                s.query(MediaItem.id, MediaItem.filename, MediaItem.capture_time)
-                .filter(MediaItem.id.in_(media_ids))
-                .all()
-            )
-        ]
-    job_ids = []
-    for month, month_rows in _month_upload_groups(rows):
-        media_ids_for_month = [row.media_id for row in month_rows]
-        count = len(month_rows)
-        noun = "video" if count == 1 else "videos"
-        job_ids.append(
-            get_manager_enqueue(
-                "upload",
-                {"media_ids": media_ids_for_month, "destination_ids": destination_ids, **({"content_names": True} if content_names else {})},
-                description=f"{description_prefix} {month} ({count} {noun})",
-            )
-        )
-    return job_ids
+    with _upload_enqueue_lock:
+        media_ids = _date_ready_ids(list(dict.fromkeys(media_ids)))
+        if not media_ids:
+            return []
+        with session_scope() as s:
+            plan = _upload_enqueue_targets(s, media_ids, destination_ids)
+            rows = [
+                UploadPlanRow(mid, filename, capture_time)
+                for mid, filename, capture_time in (
+                    s.query(MediaItem.id, MediaItem.filename, MediaItem.capture_time)
+                    .filter(MediaItem.id.in_(plan)).all()
+                )
+            ]
+        job_ids = []
+        for month, month_rows in _month_upload_groups(rows):
+            by_targets = {}
+            for row in month_rows:
+                targets = plan[row.media_id]
+                key = tuple(targets) if targets is not None else None
+                by_targets.setdefault(key, []).append(row.media_id)
+            for targets, ids in by_targets.items():
+                count = len(ids)
+                noun = "video" if count == 1 else "videos"
+                job_ids.append(get_manager_enqueue(
+                    "upload",
+                    {"media_ids": ids, "destination_ids": list(targets) if targets is not None else None,
+                     **({"content_names": True} if content_names else {})},
+                    description=f"{description_prefix} {month} ({count} {noun})",
+                ))
+        return job_ids

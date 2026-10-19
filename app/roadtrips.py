@@ -924,6 +924,13 @@ def _metadata_identity(row):
     return hashlib.sha256(json.dumps([row.size_bytes, row.mtime_ns, row.ctime_ns, str(row.device), str(row.inode)]).encode()).hexdigest()
 
 
+def _portable_metadata_identity(row):
+    # NFS st_dev identifies the client's mount, so the uploader and processor
+    # see different values for the same server file. Keep every server-backed
+    # identity attribute when validating an imported inventory observation.
+    return (row.size_bytes, row.mtime_ns, row.ctime_ns, str(row.inode))
+
+
 def _probe_file(path: Path, ctx):
     command = [get_settings().ffprobe, "-v", "error", "-threads", "1", "-show_entries",
         "format=duration:format_tags=creation_time,date:stream_tags=creation_time", "-of", "json", str(path)]
@@ -995,6 +1002,7 @@ def handle_probe(job_id, payload, ctx):
                 if archived is None or not archived.present:
                     continue
                 identity = _metadata_identity(archived)
+                portable_identity = _portable_metadata_identity(archived)
                 cached = session.get(RoadtripClipMetadata, archive_id)
                 if cached and cached.identity == identity and not cached.error:
                     report["cached"] += 1
@@ -1005,17 +1013,27 @@ def handle_probe(job_id, payload, ctx):
                 root = _safe_root(root)
                 current = stat_identity(_safe_stat(root, relative))
                 actual = SimpleIdentity(current)
-                if _metadata_identity(actual) != identity:
+                local_identity = _metadata_identity(actual)
+                if getattr(get_settings(), "processing_role", "standalone") == "processor":
+                    matches = _portable_metadata_identity(actual) == portable_identity
+                else:
+                    matches = local_identity == identity
+                if not matches:
                     raise ValueError("File changed; refresh the archive inventory first")
                 duration, observed = _probe_file(root / relative, ctx)
                 after = SimpleIdentity(stat_identity(_safe_stat(root, relative)))
-                if _metadata_identity(after) != identity:
+                # The pre/post probe check is entirely local and remains
+                # strict, including a remount or replacement during probing.
+                if _metadata_identity(after) != local_identity:
                     raise ValueError("File changed while probing; refresh the archive inventory")
                 report["probed"] += 1
             except JobCancelled:
                 raise
             except (OSError, ValueError, RuntimeError) as exc:
                 # Do not include video tags, raw subprocess output or GPS data.
+                # A failed post-probe identity check invalidates every value
+                # just read; never let that timestamp qualify a future ride.
+                duration, observed = None, None
                 error = str(exc)[:512]
                 report["errors"] += 1
             pending.append((archive_id, identity, duration, observed, error))

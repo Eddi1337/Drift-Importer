@@ -21,6 +21,7 @@ from . import workflow  # noqa: F401
 from . import date_review  # noqa: F401
 from . import archive_tasks  # noqa: F401
 from . import roadtrips  # noqa: F401
+from . import auto_ride_jobs  # noqa: F401
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -54,16 +55,24 @@ async def lifespan(app: FastAPI):
     init_db()
     from .routers.api import ensure_default_nas_destination
 
-    with session_scope() as session:
-        ensure_default_nas_destination(session)
+    settings = get_settings()
+    if settings.processing_role != "processor":
+        with session_scope() as session:
+            ensure_default_nas_destination(session)
     get_manager().start()
     from .sysmon import get_monitor
     from .ha_publish import get_publisher
     from .devicescan import get_device_monitor
 
     get_monitor().start()
-    get_publisher().start()
-    get_device_monitor().start()
+    if settings.processing_role != "processor":
+        get_publisher().start()
+        get_device_monitor().start()
+    from .processing import sync_monitor
+    if settings.processing_role == "processor":
+        sync_monitor.start()
+    if settings.processing_role != "uploader" and settings.auto_rides_interval_s > 0:
+        auto_ride_jobs.monitor.start()
     if get_settings().state_backup_interval_s > 0:
         from .crypto import _fernet
         from .state_backup import get_state_backup
@@ -79,12 +88,21 @@ async def lifespan(app: FastAPI):
     _get_monitor().stop()
     _get_publisher().stop()
     _get_device_monitor().stop()
+    auto_ride_jobs.monitor.stop()
+    sync_monitor.stop()
     if get_settings().state_backup_interval_s > 0:
         from .state_backup import get_state_backup
         get_state_backup().stop()
 
 
 app = FastAPI(title="Drift-Import", version=__version__, lifespan=lifespan)
+
+
+@app.middleware("http")
+async def processing_routes(request: Request, call_next):
+    from .processing import route_request
+    response = await route_request(request, require_auth, _security)
+    return response if response is not None else await call_next(request)
 
 _security = HTTPBasic(auto_error=False)
 

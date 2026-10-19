@@ -2,8 +2,25 @@
 
 ## Roadtrip location history
 
-Trips can associate archived clips with journeys reconstructed from Home
-Assistant GPS history. Choose a tracker under **Trips → Location sources**,
+**Trips opens an automatic ride gallery.** Consecutive recordings with evidenced
+timestamps are grouped when their times overlap one Home Assistant journey.
+Clock resets, future dates, mismatched archive months, modification-time-only
+dates and unconfirmed Holding files are excluded. The gallery explains excluded
+files, match confidence and GPS coverage; it never shifts a wrong camera clock
+to force a match. Separate rides stay separate even when HA has one long outing
+without a recorded return home. Manual clip collections remain available below.
+
+The Pi checks metadata for changes every five minutes in the deployed setup.
+New supported rides automatically queue a film on the offload worker. The
+gallery uses cached metadata, so listing rides does not wait for NAS scans.
+Films combine the ride's clips in recording order at 720p with a GPS route inset,
+moving location marker and recording date/time. Unrecorded gaps are skipped;
+the displayed clock follows each original clip. GPS gaps show as unavailable.
+Six actual ride photos appear before the full film has finished encoding.
+Original videos remain unchanged, and all derivatives stay on the NAS.
+
+Trips also supports manual associations with journeys reconstructed from Home
+Assistant GPS history. Choose a tracker under **Location history and matching settings**,
 then import the footage month, or a range of up to twelve months. The app uses
 the existing HA connection from Settings, includes location attribute updates,
 and fetches one day at a time. A device tracker's GPS history is usually more
@@ -19,6 +36,39 @@ Confirmation saves an association; it does not rewrite video files or dates.
 Use **Index archive clip details** to read missing duration metadata from
 older NAS footage. Metadata probes and location imports are explicit,
 serialized background jobs.
+
+### Offloaded ride films
+
+The Pi is the camera uploader (`DRIFT_PROCESSING_ROLE=uploader`). Its Trips API
+forwards to a dedicated **drift-importer LXC** at `192.168.10.223:8080`, configured
+by `DRIFT_PROCESSING_BACKEND_URL` in the Pi's private environment file.
+The processor polls an allowlisted, conditional metadata snapshot every five
+minutes; credentials and raw GPS never travel in that snapshot. Its separate
+SQLite database owns ride associations, HA refreshes and render progress.
+Existing location indexes are seeded once, and future supported video dates
+automatically fetch relevant missing HA days. Uncertain dates remain excluded.
+
+CT 124 has two CPU cores, 2 GiB RAM and a 12 GiB disk. Originals are mounted
+read-only; only `.drift/locations` and `.drift/ride-renders` are writable.
+`drift-processor.service` serves the library, and a separate renderer uses one
+CPU and at most 512 MiB RAM. Both run inside the LXC; no application service
+runs on the Proxmox host. The renderer uses offline route graphics and has no
+network access. Films and snapshots stream directly from the wired LXC.
+
+Main-branch CI tests both services, builds the images, deploys the processing
+LXC using `deploy/deploy-to-processor.sh`, and then updates the Pi. Deployment
+refuses a processor target that is not an LXC. Guest dependencies are FFmpeg,
+DejaVu fonts, Python 3.11 venv support and OpenSSH. Set the processor's
+`DRIFT_PROCESSING_ROLE=processor`, `DRIFT_PROCESSING_SOURCE_URL` to the Pi,
+`DRIFT_AUTO_RIDES_INTERVAL_S=300`, and disable the Pi's state-backup publisher
+on this separate service (`DRIFT_STATE_BACKUP_INTERVAL_S=0`). Its private
+`/etc/drift-importer.env` and HA credentials are provisioned separately over SSH.
+The processor's DHCP address should be reserved for its configured MAC.
+
+Interrupted films resume from completed clip segments. Requests validate file
+size and modification time before encoding; changed files require rediscovery.
+Final movies and snapshots publish atomically. Film playback supports HTTP
+Range requests, and the gallery reads compact cached progress once per minute.
 
 The route map and speed/time graph share a time slider; clicking a clip selects
 its location interval. The route works without an external basemap. **Show

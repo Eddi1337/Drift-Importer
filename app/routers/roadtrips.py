@@ -11,7 +11,8 @@ from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -23,6 +24,101 @@ from ..roadtrip_models import RoadtripCollection, RoadtripCollectionClip, Roadtr
 
 router = APIRouter()
 _QUEUE_LOCK = threading.Lock()
+
+
+@router.get("/processor-input")
+def processor_input(request: Request, session: Session = Depends(get_session)):
+    from ..processing_sync import export_snapshot
+    from ..config import get_settings
+    if get_settings().processing_role == "processor":
+        raise HTTPException(404, "The input snapshot belongs to the camera uploader")
+    snapshot = export_snapshot(session)
+    etag = '"' + snapshot["digest"] + '"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    return JSONResponse(snapshot, headers={"ETag": etag, "Cache-Control": "private, no-cache"})
+
+
+@router.get("/jobs/{job_id}")
+def processing_job(job_id: int, session: Session = Depends(get_session)):
+    from ..jobs import PROCESSOR_KINDS
+    from .api import get_job
+    row = session.get(Job, job_id)
+    if not row or row.kind not in PROCESSOR_KINDS:
+        raise HTTPException(404, "Location processing job not found")
+    return get_job(job_id, session)
+
+
+@router.get("/auto")
+def automatic_rides(session: Session = Depends(get_session)):
+    from ..auto_ride_jobs import list_payload
+    return list_payload(session)
+
+
+@router.post("/auto/discover")
+def discover_automatic_rides():
+    from ..auto_ride_jobs import enqueue_discovery
+    return enqueue_discovery()
+
+
+@router.get("/auto/{ride_id}")
+def automatic_ride(ride_id: int, session: Session = Depends(get_session)):
+    from ..auto_rides import ride_detail
+    from ..auto_ride_models import AutoRide
+    from ..auto_ride_jobs import render_summary
+    try:
+        detail = ride_detail(session, ride_id)
+        detail["ride"]["render"] = render_summary(session, session.get(AutoRide, ride_id))
+        return detail
+    except (ValueError, RuntimeError, OSError) as exc:
+        raise _error(exc) from None
+
+
+@router.post("/auto/{ride_id}/render")
+def render_automatic_ride(ride_id: int):
+    from ..auto_ride_jobs import enqueue_render
+    try:
+        return enqueue_render(ride_id, force=True)
+    except ValueError as exc:
+        raise _error(exc) from None
+
+
+def _ride_asset(session, ride_id, filename):
+    from ..auto_ride_jobs import AutoRideRender
+    from ..auto_ride_models import AutoRide
+    from ..auto_rides import ride_clips
+    from ..config import get_settings
+    from ..ride_render import job_directory
+    row = session.get(AutoRide, ride_id)
+    index = session.get(AutoRideRender, ride_id)
+    if not row or not row.active or not index or index.input_signature != row.input_signature:
+        raise HTTPException(404, "This ride film is not current")
+    try:
+        ride_clips(session, row)  # Metadata-only revalidation, including GPS revisions.
+        state = json.loads(index.state_json)
+        allowed = {"done"} if filename == "ride.mp4" else {"rendering", "done"}
+        if state.get("status") not in allowed:
+            raise HTTPException(404, "The ride film is still being prepared")
+        directory = job_directory(get_settings().nas_root, index.signature)
+        path = directory / filename
+        if path.is_symlink() or not path.resolve().is_relative_to(directory.resolve()) or not path.is_file():
+            raise HTTPException(404, "Ride asset not found")
+        return path
+    except (ValueError, RuntimeError, OSError) as exc:
+        raise _error(exc) from None
+
+
+@router.get("/auto/{ride_id}/film")
+def automatic_ride_film(ride_id: int, request: Request, session: Session = Depends(get_session)):
+    from ..streaming import stream_file
+    return stream_file(request, _ride_asset(session, ride_id, "ride.mp4"))
+
+
+@router.get("/auto/{ride_id}/snapshot/{index}")
+def automatic_ride_snapshot(ride_id: int, index: int, session: Session = Depends(get_session)):
+    if not 1 <= index <= 6:
+        raise HTTPException(404, "Ride snapshot not found")
+    return FileResponse(_ride_asset(session, ride_id, f"snapshot-{index}.jpg"), media_type="image/jpeg")
 
 
 class SettingsRequest(BaseModel):

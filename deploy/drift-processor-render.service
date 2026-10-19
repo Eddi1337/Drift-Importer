@@ -1,0 +1,37 @@
+[Unit]
+Description=Drift ride film renderer
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/mnt/NAS
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/drift-importer/current
+Environment=DRIFT_NAS_ROOT=/mnt/NAS
+Environment=DRIFT_REQUIRE_NAS_MOUNT=true
+Environment=DRIFT_LOG_TO_FILE=false
+Environment=DRIFT_DATA_DIR=/run/drift-ride-render
+Environment=DRIFT_WORKING_DIR=/run/drift-ride-render/work
+Environment=DRIFT_THUMBNAIL_DIR=/run/drift-ride-render/thumbnails
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/drift-importer/venv/bin/python -m app.ride_render_worker --nas-root /mnt/NAS --poll-seconds 30
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=15
+CPUQuota=100%
+MemoryMax=512M
+TasksMax=32
+Nice=15
+IOSchedulingClass=idle
+RuntimeDirectory=drift-ride-render
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+CapabilityBoundingSet=
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

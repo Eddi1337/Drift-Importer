@@ -1,0 +1,29 @@
+[Unit]
+Description=Drift ride library and Home Assistant processing
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/mnt/NAS
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/drift-importer/current
+EnvironmentFile=/etc/drift-importer.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/drift-importer/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --workers 1 --no-access-log
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=30
+CPUQuota=100%
+MemoryMax=512M
+TasksMax=64
+Nice=10
+UMask=0077
+NoNewPrivileges=true
+CapabilityBoundingSet=
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

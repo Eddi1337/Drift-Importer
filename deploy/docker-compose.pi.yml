@@ -25,6 +25,9 @@ services:
       DRIFT_JOB_PROGRESS_INTERVAL_S: "15"
       DRIFT_LOG_TO_FILE: "false"
       DRIFT_STATE_BACKUP_INTERVAL_S: "900"
+      DRIFT_PROCESSING_ROLE: "uploader"
+      DRIFT_AUTO_RIDES_INTERVAL_S: "0"
+      DRIFT_AUTO_RIDES_RENDER: "false"
     env_file:
       # Keep the live application's settings (including integrations) when
       # switching runtimes. This file remains on the Pi and is never copied to

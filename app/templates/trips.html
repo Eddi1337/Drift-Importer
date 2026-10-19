@@ -2,34 +2,27 @@
 {% block title %} · Trips{% endblock %}
 {% block head %}<link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css"><link rel="stylesheet" href="/static/roadtrips.css?v={{ asset_version }}">{% endblock %}
 {% block content %}
-<div class="page-heading"><div><p class="eyebrow">02 / YOUR JOURNEYS</p><h1>Trips</h1><p class="hint">Put your videos together as a trip, then explore where and when each clip was recorded.</p></div></div>
-<section class="panel roadtrip-panel" aria-labelledby="roadtripTitle">
-  <div class="section-heading"><div><p class="eyebrow">YOUR VIDEO JOURNEYS</p><h2 id="roadtripTitle">Trips and video locations</h2><p class="hint">A trip can contain videos from several days or months. GPS matches add dates and places to its map.</p></div><button id="rtRefresh" class="ghost" type="button">Refresh</button></div>
+<div class="page-heading"><div><p class="eyebrow">02 / RIDE AGAIN</p><h1>Your rides</h1><p class="hint">The camera's recordings, brought together with your travels.</p></div></div>
+<section class="panel roadtrip-auto-panel" aria-labelledby="roadtripTitle">
+  <div class="section-heading"><div><p class="eyebrow">AUTOMATIC RIDE HISTORY</p><h2 id="roadtripTitle">All your rides</h2><p class="hint">Videos recorded close together become one ride. Trustworthy recording times and Home Assistant locations put each ride on the map.</p></div><button id="rtAutoDiscover" type="button">Find new rides</button></div>
   <p id="rtError" class="roadtrip-error" role="alert" hidden></p>
-  <p id="rtStatus" class="hint" role="status" aria-live="polite">Loading your trips…</p>
-  <div class="row spread"><h3>Your trips</h3><button id="rtNewCollection" type="button">New trip</button></div>
-  <div id="rtCollections" class="roadtrip-collections"><p class="hint">Loading saved trips…</p></div>
-  <details id="rtCollectionBuilder" class="roadtrip-builder">
-    <summary id="rtBuilderTitle">Create a trip from your videos</summary>
-    <p class="hint">Choose any archived videos, give the trip a name, and save it. The trip keeps the original files together without making another video copy.</p>
-    <div class="roadtrip-controls">
-      <label>Trip name<input id="rtCollectionName" placeholder="For example, Summer coast ride" maxlength="256"></label>
-      <label>From archive month<input id="rtFilesFrom" type="month"></label>
-      <label>Through<input id="rtFilesTo" type="month"></label>
-      <label>Find a file<input id="rtFileSearch" type="search" placeholder="Filename or folder"></label>
-      <button id="rtLoadFiles" type="button" class="ghost">Show videos</button>
-    </div>
-    <div class="row roadtrip-pick-toolbar"><button id="rtSelectVisible" type="button" class="ghost">Select displayed videos</button><button id="rtSelectAll" type="button" class="ghost">Select all archive videos</button><button id="rtClearSelection" type="button" class="ghost">Clear selection</button><strong id="rtSelectedCount" aria-live="polite">No videos selected</strong></div>
-    <p id="rtFilesStatus" class="hint"></p>
-    <div id="rtFilePicker" class="roadtrip-file-picker"><p class="hint">Choose a month range, or show all videos in the archive.</p></div>
-    <div class="row roadtrip-savebar"><button id="rtSaveCollection" type="button">Save trip</button><button id="rtCancelCollection" type="button" class="ghost">Close editor</button><span id="rtCollectionNotice" class="hint" role="status"></span></div>
-  </details>
+  <div id="rtAutoMetrics" class="roadtrip-auto-metrics" aria-label="Ride history totals"></div>
+  <div class="roadtrip-auto-toolbar"><label>Show rides<select id="rtAutoMonth"><option value="">All dates</option></select></label><label>Find a ride<input id="rtAutoSearch" type="search" placeholder="Name or date"></label><button id="rtAutoRefresh" type="button" class="ghost">Refresh</button><span id="rtAutoStatus" class="hint" role="status" aria-live="polite">Loading ride history…</span></div>
+  <div id="rtAutoDiscovery" class="roadtrip-auto-discovery" hidden role="status"></div>
+  <div id="rtAutoGallery" class="roadtrip-auto-gallery"><p class="hint">Loading your rides…</p></div>
+  <div id="rtAutoMore" class="roadtrip-auto-more" hidden><button id="rtAutoShowMore" type="button" class="ghost">Show more rides</button></div>
+  <details id="rtAutoReview" class="roadtrip-auto-review" hidden><summary>Recordings waiting for reliable dates or locations</summary><div id="rtAutoReviewReasons"></div><button id="rtAutoReviewLocations" type="button" class="ghost">Review uncertain recordings</button></details>
+  <p id="rtAutoNote" class="hint"></p>
+</section>
+<section id="rtMapSection" class="panel roadtrip-panel" hidden aria-labelledby="rtMapTitle">
+  <div class="row spread"><p class="eyebrow">EXPLORE A RIDE</p><button id="rtRefresh" class="ghost" type="button">Refresh map</button></div>
+  <p id="rtStatus" class="hint" role="status" aria-live="polite"></p>
   <div class="roadtrip-map-heading"><div><p class="eyebrow">DATES · PLACES · VIDEOS</p><h3 id="rtMapTitle">Video location map</h3><p id="rtMapSummary" class="hint">Open a trip or choose a possible journey below to see its route and video locations.</p></div></div>
   <div id="rtDateFilters" class="roadtrip-date-filters" aria-label="Filter video locations by date" hidden></div>
-  <div class="roadtrip-workspace">
+  <div id="rtWorkspace" class="roadtrip-workspace">
     <aside class="roadtrip-sidebar">
       <h4>Confirmed journeys</h4><div id="rtSaved" class="roadtrip-saved"><p class="hint">No confirmed journeys yet.</p></div>
-      <details id="rtMatching" class="roadtrip-matching" open><summary>Find dates and locations for videos</summary>
+      <details id="rtMatching" class="roadtrip-matching"><summary>Find dates and locations for videos</summary>
         <p class="hint">The archive month narrows the search. Camera dates may be wrong, so review the proposed date and route before confirming.</p>
         <div class="roadtrip-controls"><label>Footage month<input id="rtMonth" type="month"></label><button id="rtFind" type="button">Find possible journeys</button></div>
         <button id="rtProbe" type="button" class="ghost">Index clip durations</button>
@@ -57,7 +50,27 @@
       <div id="rtClipTable" hidden><h4>Videos in this trip</h4><p id="rtUnmatchedNotice" class="hint"></p><div class="roadtrip-table-wrap"><table class="roadtrip-table"><thead><tr><th>Video</th><th>Date and time</th><th>Location</th><th>GPS / average speed</th></tr></thead><tbody id="rtClips"></tbody></table></div></div>
     </div>
   </div>
-  <details id="rtSetup" class="roadtrip-setup"><summary>Location history and matching settings</summary>
+</section>
+<details id="rtManual" class="panel roadtrip-manual"><summary>Make or edit a trip yourself</summary><p class="hint">Optional: put chosen files from several rides into your own named trip. Automatically found rides appear above without selecting files.</p>
+  <div class="row spread"><h3>Your trips</h3><button id="rtNewCollection" type="button">New trip</button></div>
+  <div id="rtCollections" class="roadtrip-collections"><p class="hint">Loading saved trips…</p></div>
+  <details id="rtCollectionBuilder" class="roadtrip-builder">
+    <summary id="rtBuilderTitle">Create a trip from your videos</summary>
+    <p class="hint">Choose any archived videos, give the trip a name, and save it. The trip keeps the original files together without making another video copy.</p>
+    <div class="roadtrip-controls">
+      <label>Trip name<input id="rtCollectionName" placeholder="For example, Summer coast ride" maxlength="256"></label>
+      <label>From archive month<input id="rtFilesFrom" type="month"></label>
+      <label>Through<input id="rtFilesTo" type="month"></label>
+      <label>Find a file<input id="rtFileSearch" type="search" placeholder="Filename or folder"></label>
+      <button id="rtLoadFiles" type="button" class="ghost">Show videos</button>
+    </div>
+    <div class="row roadtrip-pick-toolbar"><button id="rtSelectVisible" type="button" class="ghost">Select displayed videos</button><button id="rtSelectAll" type="button" class="ghost">Select all archive videos</button><button id="rtClearSelection" type="button" class="ghost">Clear selection</button><strong id="rtSelectedCount" aria-live="polite">No videos selected</strong></div>
+    <p id="rtFilesStatus" class="hint"></p>
+    <div id="rtFilePicker" class="roadtrip-file-picker"><p class="hint">Choose a month range, or show all videos in the archive.</p></div>
+    <div class="row roadtrip-savebar"><button id="rtSaveCollection" type="button">Save trip</button><button id="rtCancelCollection" type="button" class="ghost">Close editor</button><span id="rtCollectionNotice" class="hint" role="status"></span></div>
+  </details>
+<button id="rtOpenMatching" type="button" class="ghost">Review uncertain dates and GPS matches</button></details>
+  <details id="rtSetup" class="panel roadtrip-setup"><summary>Location history and matching settings</summary>
     <p class="hint">Home Assistant supplies the location points. Raw tracks stay on the NAS. A missing GPS interval stays a gap.</p>
     <div class="roadtrip-controls">
       <label>GPS tracker<select id="rtEntity"><option value="">Choose a tracker</option></select></label>
@@ -69,12 +82,14 @@
     <div class="roadtrip-controls"><label>Import from<input id="rtImportFrom" type="month"></label><label>Through<input id="rtImportTo" type="month"></label><button id="rtImportHA" type="button">Import HA history</button><label class="roadtrip-file">Or import GPX / Timeline JSON<input id="rtImportFile" type="file" accept=".gpx,.json,application/json,application/gpx+xml"></label></div>
     <p class="hint">Import a month or a range up to one year. Google Timeline needs an export from your phone.</p><div id="rtCoverage" class="hint"></div>
   </details>
-</section>
 <details class="panel roadtrip-movies"><summary>Make a combined trip movie</summary><p class="hint">Optional: join recordings into a new movie on the NAS. Saving a trip above only groups the originals and doesn't run a video conversion.</p>
   <section><div class="row spread"><h2>Suggested recording days</h2><label>NAS destination<select id="workflowDestination" onchange="loadDaySuggestions()"></select></label></div><div id="daySuggestions">Loading recording days…</div><div class="row action-row"><input id="dayTripName" aria-label="Trip movie name" placeholder="Trip movie name (optional)"><button id="combineDaysButton" onclick="createSelectedDayTrip()" disabled>Combine selected days into a movie</button><span id="selectedDaysCount" class="hint">No days selected</span></div></section>
   <section id="finishedMovies"><h2>Finished trip movies</h2><p class="hint">Saved separately in Trips / year on your NAS.</p><div id="tripMovies">Loading movies…</div></section>
   <details id="customTrips"><summary>Custom movie clip groups</summary><div class="row"><input id="albumName" aria-label="Custom movie group name" placeholder="New custom movie group"><button onclick="createAlbum()">Create group</button></div><div id="albumList"></div></details>
 </details>
 <dialog id="tripPlayerDlg"><video id="tripPlayer" controls preload="metadata" style="max-width:80vw;max-height:70vh"></video><div><button onclick="closeTripPlayer()">Close</button></div></dialog>
+
+<dialog id="rtFilmDialog" class="roadtrip-film-dialog"><div class="row spread"><div><p class="eyebrow">RIDE FILM</p><h2 id="rtFilmTitle">Ride film</h2><p id="rtFilmMeta" class="hint"></p></div><button id="rtFilmClose" type="button" class="ghost" aria-label="Close ride film">Close</button></div><video id="rtFilmVideo" controls preload="none" playsinline></video><p id="rtFilmNote" class="hint">The film combines this ride's clips with its route overlay. Originals stay in the archive.</p></dialog>
+<dialog id="rtSnapshotDialog" class="roadtrip-snapshot-dialog"><div class="row spread"><p id="rtSnapshotCaption" class="hint"></p><button id="rtSnapshotClose" type="button" class="ghost" aria-label="Close ride snapshot">Close</button></div><img id="rtSnapshotImage" alt="Snapshot from the selected ride"><div class="row spread"><button id="rtSnapshotPrevious" type="button" class="ghost">Previous snapshot</button><button id="rtSnapshotNext" type="button" class="ghost">Next snapshot</button></div></dialog>
 {% endblock %}
-{% block scripts %}<script src="/static/vendor/leaflet/leaflet.js"></script><script src="/static/roadtrips.js?v={{ asset_version }}"></script><script>initDayTrips();initRoadtrips();</script>{% endblock %}
+{% block scripts %}<script src="/static/vendor/leaflet/leaflet.js"></script><script src="/static/roadtrips.js?v={{ asset_version }}"></script><script>initRoadtrips();document.querySelector(".roadtrip-movies").addEventListener("toggle",function(){if(this.open && !this.dataset.initialized){this.dataset.initialized="true";initDayTrips();}});</script>{% endblock %}

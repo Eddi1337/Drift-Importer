@@ -25,7 +25,14 @@ log = logging.getLogger("drift.jobs")
 
 ACTIVE_STATES = ("queued", "running", "paused")
 ARCHIVE_KINDS = ("archive_scan", "archive_verify", "archive_hardlink")
-MAINTENANCE_KINDS = ARCHIVE_KINDS + ("roadtrip_import_ha", "roadtrip_import_file", "roadtrip_probe")
+AUTO_RIDE_KINDS = ("auto_rides_discover", "auto_ride_prepare")
+PROCESSOR_KINDS = ("roadtrip_import_ha", "roadtrip_import_file", "roadtrip_probe") + AUTO_RIDE_KINDS
+MAINTENANCE_KINDS = ARCHIVE_KINDS + PROCESSOR_KINDS
+
+
+def _allowed_kind(kind):
+    role = get_settings().processing_role
+    return kind in PROCESSOR_KINDS if role == "processor" else role != "uploader" or kind not in PROCESSOR_KINDS
 
 # Only look this far back when reconstructing the current run; a single run
 # realistically never spans longer, and it bounds the scan as history grows.
@@ -304,6 +311,8 @@ class JobManager:
         self._stop.set()
 
     def enqueue(self, kind: str, description: str = "", payload: Optional[dict] = None) -> int:
+        if not _allowed_kind(kind):
+            raise ValueError("This job belongs to the other Drift service")
         with session_scope() as s:
             job = Job(
                 kind=kind,
@@ -320,6 +329,8 @@ class JobManager:
             original = s.get(Job, job_id)
             if not original:
                 return None
+            if not _allowed_kind(original.kind):
+                raise ValueError("This job belongs to the other Drift service")
             job = Job(
                 kind=original.kind,
                 description=f"Retry {original.description or original.kind}",
@@ -388,12 +399,18 @@ class JobManager:
         with self._claim_lock:
             with session_scope() as s:
                 query = s.query(Job).filter(Job.status == "queued")
+                role = get_settings().processing_role
+                if role == "processor":
+                    query = query.filter(Job.kind.in_(PROCESSOR_KINDS))
+                elif role == "uploader":
+                    query = query.filter(Job.kind.notin_(PROCESSOR_KINDS))
                 if s.query(Job.id).filter(Job.status == "running", Job.kind.in_(MAINTENANCE_KINDS)).first():
                     query = query.filter(Job.kind.notin_(MAINTENANCE_KINDS))
                 # An explicitly requested audit must not wait behind an entire
                 # camera's FIFO upload backlog. Its handler takes the same NAS
                 # semaphore, so a transfer already in progress finishes first.
-                job = query.order_by(case((Job.kind.in_(MAINTENANCE_KINDS), 0), else_=1), Job.created_at, Job.id).first()
+                job = query.order_by(case((Job.kind.in_(AUTO_RIDE_KINDS), 2),
+                    (Job.kind.in_(MAINTENANCE_KINDS), 0), else_=1), Job.created_at, Job.id).first()
                 if not job:
                     return None
                 if job.cancel_requested:

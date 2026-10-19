@@ -302,17 +302,21 @@ def test_rejecting_alternative_does_not_overwrite_confirmed_roadtrip(session):
     assert all(item["outing_id"] != second.id for item in suggested)
 
 
-def test_month_metadata_probe_is_serial_cached_and_rejects_changed_file(session, monkeypatch):
+@pytest.mark.parametrize("role", ["standalone", "processor"])
+def test_month_metadata_probe_is_serial_cached_and_rejects_changed_file(session, monkeypatch, role):
     from contextlib import contextmanager
     from app import archive
     from app.models import Job
     from app.roadtrip_models import RoadtripClipMetadata
     root = rt.get_settings().nas_root
+    monkeypatch.setattr(rt, "get_settings", lambda: SimpleNamespace(nas_root=root, processing_role=role))
     path = root / "2026/06/DVR00001.MP4"
     path.parent.mkdir(parents=True)
     path.write_bytes(b"video header")
     session.add(Destination(id=1, name="NAS", type="local", base_path=str(root)))
     info = archive.stat_identity(path.stat())
+    if role == "processor":
+        info["device"] = "foreign-uploader-mount"
     row = ArchiveFile(destination_id=1, root_path=str(root), path="2026/06/DVR00001.MP4",
         kind="video", present=True, **info)
     session.add(row)
@@ -345,6 +349,7 @@ def test_month_metadata_probe_is_serial_cached_and_rejects_changed_file(session,
     assert locks == ["ffmpeg", "upload"]
     assert len(calls) == 1
     assert session.get(RoadtripClipMetadata, row.id).duration_s == 301
+    assert session.get(RoadtripClipMetadata, row.id).identity == rt._metadata_identity(row)
     rt.handle_probe(job.id, {"month": "2026-06"}, Context())
     assert len(calls) == 1
     assert json.loads(job.result)["cached"] == 1
@@ -356,6 +361,57 @@ def test_month_metadata_probe_is_serial_cached_and_rejects_changed_file(session,
     rt.handle_probe(job.id, {"month": "2026-06"}, Context())
     assert len(calls) == 1
     assert session.get(RoadtripClipMetadata, row.id).duration_s is None
+    assert json.loads(job.result)["errors"] == 1
+
+
+@pytest.mark.parametrize("changed_field", ["device", "inode", "size_bytes", "mtime_ns", "ctime_ns"])
+def test_processor_probe_still_rejects_any_local_identity_change_during_read(session, monkeypatch, changed_field):
+    from contextlib import contextmanager
+    from app import archive
+    from app.models import Job
+    from app.roadtrip_models import RoadtripClipMetadata
+    root = rt.get_settings().nas_root
+    monkeypatch.setattr(rt, "get_settings", lambda: SimpleNamespace(nas_root=root, processing_role="processor"))
+    path = root / "2026/06/DVR00001.MP4"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"video header")
+    session.add(Destination(id=1, name="NAS", type="local", base_path=str(root)))
+    original = archive.stat_identity(path.stat())
+    imported = original | {"device": "foreign-uploader-mount"}
+    row = ArchiveFile(destination_id=1, root_path=str(root), path="2026/06/DVR00001.MP4", **imported)
+    job = Job(kind="roadtrip_probe", status="running")
+    session.add_all([row, job])
+    session.flush()
+    @contextmanager
+    def scope():
+        yield session
+        session.flush()
+    monkeypatch.setattr(rt, "session_scope", scope)
+    monkeypatch.setattr(archive, "require_storage", lambda value: Path(value).resolve())
+    calls = []
+    def identity(value):
+        result = original.copy()
+        if calls:
+            result[changed_field] = str(int(result[changed_field]) + 1) if changed_field in {"device", "inode"} else result[changed_field] + 1
+        calls.append(value)
+        return result
+    monkeypatch.setattr(archive, "stat_identity", identity)
+    monkeypatch.setattr(rt, "_probe_file", lambda *_: (301, dt.datetime(2026, 6, 4, 10)))
+    @contextmanager
+    def lock():
+        yield
+    class Context:
+        def is_cancelled(self): return False
+        def set_progress(self, *args): pass
+        @property
+        def ffmpeg_semaphore(self): return lock()
+        @property
+        def upload_semaphore(self): return lock()
+    rt.handle_probe(job.id, {"month": "2026-06"}, Context())
+    cached = session.get(RoadtripClipMetadata, row.id)
+    assert cached.duration_s is None
+    assert cached.observed_time is None
+    assert "File changed while probing" in cached.error
     assert json.loads(job.result)["errors"] == 1
 
 
