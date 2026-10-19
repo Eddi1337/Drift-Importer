@@ -82,28 +82,31 @@ print(db.execute(\"select status,count(*) from uploaded_clips group by status\")
 - `python run.py` → http://localhost:8080 (needs `ffmpeg`/`ffprobe` on PATH).
 - Config from `.env` (see `.env.example`). Tests: `pytest -q`.
 
-## Central server / camera agents (new deployments)
+## Current ownership: fast LXC UI, Pi uploader
 
-- `DRIFT_PROCESSING_ROLE=server` owns the web UI, settings, jobs, HA integration,
-  indexing, date review, NAS writes and processing. The dedicated LXC is
-  `root@192.168.10.223`, CT124; app state `/var/lib/drift-importer`, environment
-  `/etc/drift-importer.env`, services `drift-processor` and `drift-processor-render`.
-- Enrolled Pis use stdlib-only `drift-camera-agent.service`: authenticated,
-  TLS-pinned, read-only inventory and byte ranges on :8090. :8080 redirects to
-  the central web app. No agent DB, NFS writes or FFmpeg. Existing Docker state
-  is retained stopped for rollback, not used by the agent.
-- `app/camera_paths.py` adapts remote camera paths; NAS/local paths retain pathlib
-  behavior. `AgentUnavailable` must propagate to the job manager, which defers
-  rather than marking a disconnected clip uploaded. Metadata is cached in RAM;
-  source bytes are streamed through the LXC. FFmpeg uses the loopback source
-  bridge on :8091, never credentials in argv. Keep additional agents in unique
-  `/media/agents/<id>` namespaces.
-- Main deployment detects `/etc/drift-camera-agent.env` and updates the native
-  agent rather than Docker. SSH failure must not fall through to legacy deploy.
-- The LXC receives a dedicated writable NAS bind from `/mnt/drift-processing-nas`;
-  preserve other guests' read-only mounts. All existing NAS guards still apply.
-- Migration must preserve the uploader encryption key and entire authoritative
-  DB plus the processor-owned ride/location tables. `deploy/migrations/centralize.py`
-  refuses archive identity conflicts, checks all foreign keys, and never edits
-  input snapshots. Never copy private SSH keys or expose pairing/integration
-  secrets in logs. Verify a new transfer with full source/NAS SHA-256 afterwards.
+- The Pi (`ed@192.168.3.188`) owns camera imports, date checks, uploads,
+  thumbnails, ordinary merge jobs, settings and HA progress publishing. Run the
+  normal Docker application in `uploader` role; preserve its low-write settings,
+  NAS scratch and exact `/mnt/NAS` guards. Camera-only agent mode is optional and
+  is disabled for this installation.
+- CT124 (`root@192.168.10.223`) hosts the fast web UI, local trip/map APIs and
+  the existing ride-film renderer in `processor` role. `/etc/drift-importer.env`
+  points `DRIFT_PROCESSING_SOURCE_URL` at the Pi. It runs `drift-processor` and
+  `drift-processor-render`; app state is `/var/lib/drift-importer`.
+- `pi_gateway.py` forwards camera APIs and controls to the configured Pi only.
+  It caches bounded reads in RAM with background refresh and stale labelling.
+  Never cache/retry writes, change the upstream from user input, buffer entire
+  videos, or consume queued camera work locally in the LXC.
+- `/api/processor/jobs/...` addresses the LXC queue; ordinary `/api/jobs/...`
+  addresses the Pi. Keep these distinct: IDs can overlap. Pi controls on the
+  LXC UI must operate the Pi, not an old replicated Job row.
+- The Pi's `processing_backend_url` points at the LXC for trip APIs; the LXC
+  serves those APIs locally. Preserve the loop guard. Metadata sync explicitly
+  excludes credentials, jobs and raw GPS. Local trip history remains available
+  while camera uploads run or the Pi is offline.
+- `frontend` role is available for UI-only deployments. It starts no job workers
+  and forwards trip APIs as well; do not accidentally start the render service.
+- When changing ownership, consistently snapshot the latest state before
+  stopping either service. `deploy/migrations/split_state.py` preserves the new
+  upload ledger and settings and separates queued job ownership. Keep source
+  snapshots for recovery and prove a fresh upload with full source/NAS SHA-256.

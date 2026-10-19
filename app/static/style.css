@@ -1810,3 +1810,12 @@ input[type=checkbox], input[type=radio] { min-height:0; }
 .archive-panel [hidden], .archive-dialog [hidden] { display:none!important; }
 @media(max-width:900px) { .archive-panel .stats-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } .archive-copy { grid-template-columns:minmax(0,1fr) auto; } .archive-target-choice { grid-column:1 / -1; } }
 @media(max-width:600px) { .archive-actions .row { width:100%; } .archive-actions button { flex:1; } .archive-copy { padding:.8rem; gap:.7rem; } .archive-copy-path { grid-column:1 / -1; } .archive-target-choice { grid-column:auto; } .archive-note { padding:1rem; } .archive-pagination { gap:.6rem; justify-content:space-between; } .archive-pagination .hint { font-size:.75rem; } }
+
+/* The camera connection is separate from the locally served navigation. */
+.pi-connection {display:flex;align-items:center;gap:.65rem;padding:.6rem 2rem;background:var(--panel,#10291f);border-bottom:1px solid var(--line,#234134);font-size:.85rem;color:var(--muted,#b4c9bc)}
+.pi-connection-dot {width:.5rem;height:.5rem;border-radius:50%;background:#8de7a3;flex:none}
+.pi-connection a {margin-left:auto;white-space:nowrap}
+.pi-connection.is-offline .pi-connection-dot,.pi-connection.is-delayed .pi-connection-dot {background:#f6b85a}
+@media(max-width:700px) {.pi-connection {padding:.6rem 1rem;flex-wrap:wrap}.pi-connection a {margin-left:1.15rem}.topbar nav {gap:.75rem}}
+
+.activity-tabs {display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap}.activity-tabs a {padding:.65rem 1rem;border:1px solid #31503e;border-radius:.65rem;text-decoration:none}.activity-tabs a.on {background:#214834;color:#baffc4}

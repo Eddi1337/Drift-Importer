@@ -18,6 +18,12 @@ MAX_BODY = 17 * 1024 * 1024  # 16 MB monthly location export plus multipart fram
 
 
 async def route_request(request, authenticate, security):
+    from .pi_gateway import route_request as pi_route
+    response = await pi_route(request, authenticate, security)
+    if response is not None:
+        return response
+    if request.scope.get("drift_local_jobs"):
+        return None
     settings = get_settings()
     path = request.url.path
     if settings.processing_role == "processor" and path.startswith("/api/") and request.method not in {"GET", "HEAD", "OPTIONS"} and not path.startswith(PREFIX + "/"):
@@ -46,7 +52,7 @@ async def route_request(request, authenticate, security):
         body.extend(chunk)
         if len(body) > MAX_BODY:
             return JSONResponse({"detail": "Use a location export smaller than 16 MB"}, status_code=413)
-    headers = {key: request.headers[key] for key in ("content-type", "authorization", "if-none-match") if key in request.headers}
+    headers = {key: request.headers[key] for key in ("content-type", "authorization", "if-none-match", "x-drift-proxy-hop") if key in request.headers}
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=5), follow_redirects=False, trust_env=False) as client:
             async with client.stream(request.method, target, content=bytes(body), headers=headers) as remote:

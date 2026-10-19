@@ -5,7 +5,8 @@ from pathlib import Path
 from hashlib import sha256
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
+from ..config import get_settings
 from fastapi.templating import Jinja2Templates
 
 router = APIRouter()
@@ -21,11 +22,19 @@ templates.env.globals["asset_version"] = sha256(b"".join(
 
 
 def _page(request: Request, name: str, **ctx):
-    return templates.TemplateResponse(name, {"request": request, "active": name, **ctx})
+    return templates.TemplateResponse(name, {"request": request, "active": name,
+        "app_role": get_settings().processing_role, **ctx})
 
 
 @router.get("/", response_class=HTMLResponse)
 def gallery(request: Request):
+    if get_settings().processing_role in ("processor", "frontend"):
+        return RedirectResponse('/trips', status_code=307)
+    return _page(request, "dashboard.html")
+
+
+@router.get("/overview", response_class=HTMLResponse)
+def overview_page(request: Request):
     return _page(request, "dashboard.html")
 
 
@@ -66,7 +75,8 @@ def trips(request: Request):
 
 @router.get("/jobs", response_class=HTMLResponse)
 def jobs(request: Request):
-    return _page(request, "jobs.html")
+    source = 'trips' if get_settings().processing_role == 'processor' and request.query_params.get('source') == 'trips' else 'pi'
+    return _page(request, "jobs.html", job_source=source)
 
 
 @router.get("/settings", response_class=HTMLResponse)

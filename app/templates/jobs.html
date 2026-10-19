@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block title %} · Jobs{% endblock %}
 {% block content %}
+{% if app_role == 'processor' %}<div class="activity-tabs" aria-label="Choose activity"><a href="/jobs" class="{{ 'on' if job_source=='pi' else '' }}">Camera &amp; uploads</a><a href="/jobs?source=trips" class="{{ 'on' if job_source=='trips' else '' }}">Trip processing</a></div>{% endif %}
 <section class="panel">
   <div class="row spread">
     <div>
-      <h2>Background jobs</h2>
-      <p class="hint">Imports, thumbnails, timestamp edits, merges and uploads run here.</p>
+      <h2>{{ "Trip processing" if job_source=="trips" else "Camera activity" }}</h2>
+      <p class="hint">{{ "Location matching and ride film preparation." if job_source=="trips" else "Imports, date checks, thumbnails and NAS uploads running on your Pi." }}</p>
     </div>
     <div id="jobBulkActions" class="row job-bulk-actions"></div>
   </div>

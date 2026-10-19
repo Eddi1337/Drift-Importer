@@ -449,42 +449,40 @@ and is prioritized after the current transfer instead of waiting behind an
 entire camera backlog. Cancellation is supported; inventory/sample cache writes
 are batched, and no new media copies are staged on the Pi SD card.
 
-### Central server and camera agents
+### Fast LXC interface, Pi camera processing
 
-`DRIFT_PROCESSING_ROLE=server` runs the whole application in the dedicated LXC:
-web UI, queue, camera indexing, date review, NAS writes, Home Assistant, duplicate
-checks, trip matching and rendering. The Pi runs only `agent/camera_agent.py`
-(Python standard library). It detects read-only mounted cameras and streams their
-bytes to the server over authenticated HTTPS with a pinned per-agent certificate.
-No footage, database, thumbnails, NAS credentials or video processing live on the
-agent. Existing Pi :8080 links redirect to the central server.
+The normal setup keeps the camera workflow on the Pi. The Pi detects the camera,
+indexes footage, checks dates, uploads directly to `/mnt/NAS`, and publishes Home
+Assistant progress. It uses `DRIFT_PROCESSING_ROLE=uploader`, one upload and one
+FFmpeg job at a time, NAS scratch/thumbnails, and the existing low-write settings.
 
-The server polls inventories every ten seconds. Each connection triggers the
-existing auto-import/auto-upload settings. A disconnected camera leaves jobs
-queued and partial files on the NAS; reads resume by HTTP byte range. All NAS
-writes still require the real `/mnt/NAS` mount. A loopback-only bridge supplies
-camera sources to FFmpeg without putting pairing credentials in command lines.
+The dedicated LXC at `http://192.168.10.223:8080` serves the web interface and
+static assets. It opens on **Rides & map**, with direct links to **Camera & uploads**,
+**Activity**, and **Overview**. Camera controls go to the Pi; the Activity page
+separates camera work from LXC trip processing. Existing settings remain on the
+Pi and can be edited through the LXC interface.
 
-The **Agents** page shows paired Pis, cameras, connection status and enable/disable
-controls. The first migrated Pi retains `/media/...` paths, preserving existing
-queue and review references; additional Pis use `/media/agents/<id>/...` so equal
-camera names do not collide.
+`DRIFT_PROCESSING_ROLE=processor` keeps the existing trip/location matching and
+ride-film renderer in the LXC, reading NAS originals independently of camera
+uploads. `DRIFT_PROCESSING_SOURCE_URL` is the fixed Pi HTTP origin. Progress reads
+use a bounded memory cache and refresh in the background, so multiple browser
+tabs share requests instead of repeatedly querying the Pi. Offline or delayed
+status is labelled; commands are sent once, never cached or silently retried.
+Video previews preserve HTTP Range streaming without buffering whole files.
 
-For another Pi, install the existing camera automount rules and
-`deploy/drift-camera-agent.service` with the dedicated `drift-camera` user. Pair
-with a unique random bearer token and a self-signed TLS certificate whose SAN
-matches its stable LAN address. Keep `/etc/drift-camera-agent.env` root-only:
-`DRIFT_AGENT_TOKEN`, `DRIFT_AGENT_CERT`, `DRIFT_AGENT_KEY`, and `DRIFT_SERVER_URL`.
-Store its certificate and key readable only by root and the service group. Copy
-only its public certificate to the server, then run `deploy/register-camera-agent.py`
-in the server environment with `--id`, `--name`, `--url`, `--root`, and `--ca`,
-supplying the pairing token through private stdin. The command verifies the pinned
-TLS connection and camera manifest before saving encrypted credentials. Never
-put pairing tokens in Git, URLs, logs or shell command arguments.
+For an interface-only LXC, `DRIFT_PROCESSING_ROLE=frontend` forwards all work to
+the Pi and starts no job workers. This mode can show cached reads while the Pi
+is unavailable; it does not independently compute new trips or films.
 
-Main-branch deployment updates the native LXC server. `deploy/deploy-to-pi.sh`
-detects an enrolled camera agent and deploys only its small stdlib service; it
-retains the legacy Docker path for unmigrated installations. Pairing and central
-settings survive upgrades. The LXC database remains on its own disk, with guarded
-NAS recovery snapshots and normal Proxmox backups; render scratch and footage
-stay on the NAS. Upload and FFmpeg concurrency remain one by default.
+Pi-to-LXC metadata sync uses an explicit credential-free allowlist. GPS tracks
+and render scratch stay on the NAS. The LXC keeps its own trip database and
+Proxmox backups; the Pi retains its guarded NAS recovery snapshots. CI deploys
+the native LXC service and the normal Pi Docker application on every main push.
+The camera-only gateway is optional and is not used in this configuration.
+
+`deploy/migrations/split_state.py` creates ownership-specific copies of a
+consistent server snapshot when returning from a centralized deployment. It
+keeps completed uploads, byte counts, settings, date review, trip records and
+NAS paths, while separating each service's queued jobs. Never restart an old
+Pi database after newer uploads have been recorded elsewhere; migrate the
+latest state first and verify a fresh camera-to-NAS transfer afterwards.

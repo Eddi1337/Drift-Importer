@@ -22,6 +22,7 @@
     const response=await fetch("/api/roadtrips"+url,{method:method || (body===undefined?"GET":"POST"),
       headers:body===undefined || multipart?{}:{"Content-Type":"application/json"},
       body:body===undefined?undefined:multipart?body:JSON.stringify(body)});
+    if(typeof notePiResponse==='function') notePiResponse(response);
     const data=await response.json().catch(()=>({}));
     if(!response.ok) throw new Error(typeof data.detail==="string"?data.detail:"Request failed ("+response.status+")");
     return data;
@@ -72,7 +73,7 @@
     $("rtAutoMetrics").innerHTML=[{n:rides.length.toLocaleString(),label:"rides found"},{n:counts.clips.toLocaleString(),label:"videos brought together"},{n:rideDuration(counts.seconds),label:"recorded"},{n:rideDistance(counts.metres),label:"GPS distance"}].map(x=>'<div><strong>'+esc(x.n)+'</strong><span>'+esc(x.label)+"</span></div>").join("");
     const job=payload.job || payload.active_job,active=job && ["queued","running","pending"].includes(job.status);
     $("rtAutoDiscovery").hidden=!active;
-    if(active) $("rtAutoDiscovery").innerHTML='<span class="rt-auto-spinner" aria-hidden="true"></span><div><strong>Finding rides in your archive</strong><span>'+esc(job.description || "Checking recording times against your location history…")+'</span></div><a href="/jobs">View progress</a>';
+    if(active) $("rtAutoDiscovery").innerHTML='<span class="rt-auto-spinner" aria-hidden="true"></span><div><strong>Finding rides in your archive</strong><span>'+esc(job.description || "Checking recording times against your location history…")+'</span></div><a href="/jobs?source=trips">View progress</a>';
     $("rtAutoDiscover").disabled=Boolean(rt.busy || active);
     const review=Number(summary.review_count || 0),reasons=Array.isArray(summary.review_reasons)?summary.review_reasons.map(r=>typeof r==="string"?r:r.reason || r.label || "").filter(Boolean):[];
     const labels={missing_metadata_provenance:"Recording metadata needs indexing",archive_month_mismatch:"Camera date differs from the archive month",reset_reused_or_uncertain_date:"Camera clock needs review",reset_or_future_date:"Camera date is reset or in the future",no_exact_ha_time_overlap:"No HA travel at the exact recording time",insufficient_gps_corroboration:"Not enough GPS evidence around the recordings",no_configured_ha_history:"HA location history is missing",gps_history_temporarily_unavailable:"GPS history is temporarily unavailable",unconfirmed_holding_date:"Held footage dates need review",unconfirmed_date_correction:"A date correction needs confirmation",mtime_only_date:"Only the file's modification date is available",ambiguous_date_observation:"Conflicting recording dates",ambiguous_ha_outing:"More than one HA outing fits",invalid_date_or_duration:"Recording date or duration is missing"};
@@ -93,6 +94,7 @@
   }
   async function refreshAuto() {
     rt.auto=await request("/auto");
+    if($("rtOpenLatestMap")) $("rtOpenLatestMap").disabled=!(rt.auto.rides || []).length;
     const selected=$("rtAutoMonth").value,months=[...new Set((rt.auto.rides || []).map(r=>dateKey(r.start_time).slice(0,7)).filter(m=>/^\d{4}-\d{2}$/.test(m)))].sort().reverse();
     $("rtAutoMonth").innerHTML='<option value="">All dates</option>'+months.map(m=>'<option value="'+esc(m)+'">'+esc(new Date(m+"-15T12:00:00Z").toLocaleDateString("en-GB",{month:"long",year:"numeric",timeZone:zone()}))+"</option>").join("");$("rtAutoMonth").value=selected;
     renderAutoGallery();
@@ -433,6 +435,7 @@
   }
   window.initRoadtrips=async function() {
     if(!$("roadtripTitle")) return;
+    $("rtOpenLatestMap").addEventListener("click",()=>action(async()=>{const latest=(rt.auto?.rides || [])[0];if(latest) await openAutoRide(latest.id);}));
     $("rtAutoDiscover").addEventListener("click",()=>action(discoverRides));$("rtAutoRefresh").addEventListener("click",()=>action(refreshAuto));
     ["rtAutoMonth","rtAutoSearch"].forEach(id=>$(id).addEventListener("input",()=>{rt.autoShown=24;renderAutoGallery();}));
     $("rtAutoShowMore").addEventListener("click",()=>{rt.autoShown+=24;renderAutoGallery();});

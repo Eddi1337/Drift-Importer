@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     state_backup_interval_s: float = 0.0
     auto_rides_interval_s: float = 0.0
     auto_rides_render: bool = True
-    processing_role: Literal["standalone", "uploader", "processor", "server"] = "standalone"
+    processing_role: Literal["standalone", "uploader", "processor", "server", "frontend"] = "standalone"
     processing_backend_url: str = ""
     processing_source_url: str = ""
     processing_sync_interval_s: float = 300.0

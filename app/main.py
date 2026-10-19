@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
     from .routers.api import ensure_default_nas_destination
 
     settings = get_settings()
-    if settings.processing_role != "processor":
+    if settings.processing_role not in ("processor", "frontend"):
         with session_scope() as session:
             ensure_default_nas_destination(session)
     # Install even offline camera namespaces before workers inspect old paths.
@@ -67,19 +67,23 @@ async def lifespan(app: FastAPI):
         from .camera_agents import monitor as agents_monitor
         agent_bridge.start()
         agents_monitor.start()
-    get_manager().start()
+    if settings.processing_role != "frontend":
+        get_manager().start()
     from .sysmon import get_monitor
     from .ha_publish import get_publisher
     from .devicescan import get_device_monitor
 
     get_monitor().start()
-    if settings.processing_role != "processor":
+    if settings.processing_role in ("processor", "frontend") and settings.processing_source_url:
+        from .pi_gateway import gateway
+        gateway.start()
+    if settings.processing_role not in ("processor", "frontend"):
         get_publisher().start()
         get_device_monitor().start()
     from .processing import sync_monitor
     if settings.processing_role == "processor":
         sync_monitor.start()
-    if settings.processing_role != "uploader" and settings.auto_rides_interval_s > 0:
+    if settings.processing_role not in ("uploader", "frontend") and settings.auto_rides_interval_s > 0:
         auto_ride_jobs.monitor.start()
     if get_settings().state_backup_interval_s > 0:
         from .crypto import _fernet
@@ -103,6 +107,9 @@ async def lifespan(app: FastAPI):
         agents_monitor.stop()
         agent_bridge.stop()
     sync_monitor.stop()
+    if settings.processing_role in ("processor", "frontend"):
+        from .pi_gateway import gateway
+        await gateway.stop()
     if get_settings().state_backup_interval_s > 0:
         from .state_backup import get_state_backup
         get_state_backup().stop()

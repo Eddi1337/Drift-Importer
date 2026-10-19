@@ -8,28 +8,29 @@
   <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
   {% block head %}{% endblock %}
 </head>
-<body class="page-{{ active|replace('.html', '') }}">
+<body class="page-{{ active|replace('.html', '') }}" data-job-source="{{ job_source|default('pi') }}">
   <a href="#mainContent" class="skip-link">Skip to content</a>
   <header class="topbar">
-    <a class="brand" href="/">
-      <span class="brand-mark" aria-hidden="true">D</span>
-      <span>Drift-Import</span>
+    <a class="brand" href="{{ '/trips' if app_role in ('processor','frontend') else '/' }}">
+      <span class="brand-mark" aria-hidden="true">D</span><span>Drift-Import</span>
     </a>
     <nav aria-label="Main navigation">
-      <a href="/" class="{{ 'on' if active=='dashboard.html' else '' }}">Overview</a>
-      <a href="/import" class="{{ 'on' if active=='import.html' else '' }}">Import</a>
-      <a href="/agents" class="{{ 'on' if active=='agents.html' else '' }}">Agents</a>
-      <a href="/trips" class="{{ 'on' if active=='trips.html' else '' }}">Trips</a>
-      <a href="/jobs" class="{{ 'on' if active=='jobs.html' else '' }}">Jobs</a>
-      <a href="/stats" class="{{ 'on' if active=='stats.html' else '' }}">Stats</a>
-      <a href="/settings" class="{{ 'on' if active=='settings.html' else '' }}">Settings</a>
+      <a href="/trips" class="{{ 'on' if active=='trips.html' else '' }}">Rides &amp; map</a>
+      <a href="/import" class="{{ 'on' if active=='import.html' else '' }}">Camera &amp; uploads</a>
+      <a href="/jobs" class="{{ 'on' if active=='jobs.html' else '' }}">Activity</a>
+      <a href="/overview" class="{{ 'on' if active=='dashboard.html' else '' }}">Overview</a>
       <details class="nav-more"><summary>More</summary><div>
-        <a href="/library">Library</a><a href="/explorer">Explorer</a><a href="/duplicates" class="{{ 'on' if active=='duplicates.html' else '' }}">Duplicates</a>
-        <a href="/destinations">Destinations</a>
+        <a href="/library">Video library</a><a href="/explorer">File browser</a>
+        <a href="/stats">Statistics</a><a href="/duplicates">Duplicates</a>
+        <a href="/destinations">Destinations</a><a href="/settings">Settings</a>
+        {% if app_role == 'server' %}<a href="/agents">Camera agents</a>{% endif %}
       </div></details>
     </nav>
     <span id="jobBadge" class="badge" title="active jobs"></span>
   </header>
+  {% if app_role in ('processor','frontend') %}
+  <div class="pi-connection" id="piConnection" role="status" data-trip-processing="{{ 'lxc' if app_role=='processor' else 'pi' }}"><span class="pi-connection-dot" aria-hidden="true"></span><span id="piConnectionText">Connecting to camera Pi…</span><a href="/jobs">View camera activity →</a></div>
+  {% endif %}
   <main id="mainContent" tabindex="-1">
     {% block content %}{% endblock %}
   </main>

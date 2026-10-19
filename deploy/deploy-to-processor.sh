@@ -46,11 +46,20 @@ install -m 644 deploy/drift-processor.service deploy/drift-processor-render.serv
 ln -sfn "$release" /opt/drift-importer/current.next
 mv -Tf /opt/drift-importer/current.next /opt/drift-importer/current
 systemctl daemon-reload
-systemctl enable drift-processor.service drift-processor-render.service
-systemctl restart drift-processor.service drift-processor-render.service
+systemctl enable drift-processor.service
+if [ "${DRIFT_PROCESSING_ROLE:-processor}" = frontend ]; then
+  systemctl disable --now drift-processor-render.service
+  systemctl restart drift-processor.service
+else
+  systemctl enable drift-processor-render.service
+  systemctl restart drift-processor.service drift-processor-render.service
+fi
 for attempt in $(seq 1 30); do
   if curl --fail --silent --max-time 3 http://127.0.0.1:8080/healthz >/dev/null; then
-    systemctl is-active --quiet drift-processor.service drift-processor-render.service
+    systemctl is-active --quiet drift-processor.service
+    if [ "${DRIFT_PROCESSING_ROLE:-processor}" != frontend ]; then
+      systemctl is-active --quiet drift-processor-render.service
+    fi
     echo "Processor $revision healthy; app and renderer running in the LXC"
     exit 0
   fi

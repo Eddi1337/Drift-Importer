@@ -3,6 +3,7 @@
 const api = {
   async get(url) {
     const r = await fetch(url);
+    notePiResponse(r);
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   },
@@ -204,6 +205,10 @@ async function loadSettings() {
   return appState.settings;
 }
 
+function jobsEndpoint(path = "") {
+  return (document.body.dataset.jobSource === "trips" ? "/api/processor/jobs" : "/api/jobs") + path;
+}
+
 function ensureGlobalJobPolling() {
   if (appState.jobPollStarted) return;
   appState.jobPollStarted = true;
@@ -215,8 +220,8 @@ async function refreshGlobalJobs() {
   try {
     const statusParam = appState.jobFilter ? `&status=${encodeURIComponent(appState.jobFilter)}` : "";
     const [jobs, overview] = await Promise.all([
-      api.get(`/api/jobs?limit=100${statusParam}`),
-      api.get("/api/jobs/overview"),
+      api.get(jobsEndpoint(`?limit=100${statusParam}`)),
+      api.get(jobsEndpoint("/overview")),
     ]);
     appState.jobs = jobs;
     appState.jobsOverview = overview;
@@ -1930,7 +1935,7 @@ async function toggleJobLogs(id) {
 
 async function loadJobLogs(id) {
   try {
-    appState.jobLogs[id] = await api.get(`/api/jobs/${id}/logs?limit=400`);
+    appState.jobLogs[id] = await api.get(jobsEndpoint(`/${id}/logs?limit=400`));
   } catch (e) {
     appState.jobLogs[id] = [{ level: "ERROR", message: "Unable to load job logs: " + e.message }];
   }
@@ -1957,33 +1962,33 @@ function updateJobLogPanel(id) {
 }
 
 async function cancelJob(id) {
-  await api.post(`/api/jobs/${id}/cancel`);
+  await api.post(jobsEndpoint(`/${id}/cancel`));
   refreshGlobalJobs();
 }
 
 async function pauseAllJobs() {
-  await api.post("/api/jobs/pause_all");
+  await api.post(jobsEndpoint("/pause_all"));
   refreshGlobalJobs();
 }
 
 async function resumeAllJobs() {
-  await api.post("/api/jobs/resume_all");
+  await api.post(jobsEndpoint("/resume_all"));
   refreshGlobalJobs();
 }
 
 async function stopAllJobs() {
-  await api.post("/api/jobs/stop_all");
+  await api.post(jobsEndpoint("/stop_all"));
   refreshGlobalJobs();
 }
 
 async function retryJob(id) {
-  await api.post(`/api/jobs/${id}/retry`);
+  await api.post(jobsEndpoint(`/${id}/retry`));
   toast("Upload job queued");
   refreshGlobalJobs();
 }
 
 async function dismissJob(id) {
-  await api.post(`/api/jobs/${id}/dismiss`);
+  await api.post(jobsEndpoint(`/${id}/dismiss`));
   refreshGlobalJobs();
 }
 
@@ -2557,3 +2562,35 @@ async function loadAppLogs(showLoading = true) {
     el.textContent = "Unable to load logs: " + e.message;
   }
 }
+
+
+// The interface remains local while the Pi handles camera work. Never present
+// an old cached response as current, or retry a user command automatically.
+let piCachedRead = false;
+function notePiResponse(response) {
+  if (response.headers.get('X-Drift-Stale') === 'true') piCachedRead = true;
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const banner = document.getElementById('piConnection');
+  if (!banner) return;
+  const label = document.getElementById('piConnectionText');
+  async function refreshConnection() {
+    try {
+      const response = await fetch('/api/connection');
+      if (!response.ok) throw Error('Connection check unavailable');
+      const state = await response.json();
+      const offline = state.pi_online === false;
+      banner.classList.toggle('is-offline', offline);
+      banner.classList.toggle('is-delayed', !offline && piCachedRead);
+      label.textContent = offline
+        ? (state.trip_processing === 'lxc' ? 'Camera Pi offline · saved rides and maps remain available' : 'Camera Pi offline · showing cached data where available')
+        : state.pi_online === null ? 'Connecting to camera Pi…'
+        : piCachedRead ? 'Camera Pi connected · some status is still refreshing' : 'Camera Pi connected · uploads continue in the background';
+      piCachedRead = false;
+    } catch (_) {
+      label.textContent = 'Connection status unavailable · your current view is preserved';
+    }
+  }
+  refreshConnection();
+  setInterval(() => { if (!document.hidden) refreshConnection(); }, 6000);
+});

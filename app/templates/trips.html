@@ -2,7 +2,7 @@
 {% block title %} · Trips{% endblock %}
 {% block head %}<link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css"><link rel="stylesheet" href="/static/roadtrips.css?v={{ asset_version }}">{% endblock %}
 {% block content %}
-<div class="page-heading"><div><p class="eyebrow">02 / RIDE AGAIN</p><h1>Your rides</h1><p class="hint">The camera's recordings, brought together with your travels.</p></div></div>
+<div class="page-heading"><div><p class="eyebrow">RIDES · PLACES · VIDEOS</p><h1>Your rides</h1><p class="hint">Explore the route, recording times and videos from each ride.</p></div><button id="rtOpenLatestMap" type="button" disabled>Open latest ride map →</button></div>
 <section class="panel roadtrip-auto-panel" aria-labelledby="roadtripTitle">
   <div class="section-heading"><div><p class="eyebrow">AUTOMATIC RIDE HISTORY</p><h2 id="roadtripTitle">All your rides</h2><p class="hint">Videos recorded close together become one ride. Trustworthy recording times and Home Assistant locations put each ride on the map.</p></div><button id="rtAutoDiscover" type="button">Find new rides</button></div>
   <p id="rtError" class="roadtrip-error" role="alert" hidden></p>

@@ -33,6 +33,7 @@ MAINTENANCE_KINDS = ARCHIVE_KINDS + PROCESSOR_KINDS
 
 def _allowed_kind(kind):
     role = get_settings().processing_role
+    if role == "frontend":return False
     return kind in PROCESSOR_KINDS if role == "processor" else role != "uploader" or kind not in PROCESSOR_KINDS
 
 # Only look this far back when reconstructing the current run; a single run
@@ -402,6 +403,7 @@ class JobManager:
                 query = s.query(Job).filter(Job.status == "queued")
                 query = query.filter(or_(Job.retry_after.is_(None), Job.retry_after <= utcnow()))
                 role = get_settings().processing_role
+                if role == "frontend":return None
                 if role == "processor":
                     query = query.filter(Job.kind.in_(PROCESSOR_KINDS))
                 elif role == "uploader":

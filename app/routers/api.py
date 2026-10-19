@@ -1810,6 +1810,9 @@ def list_jobs(
 ):
     def base():
         q = session.query(Job)
+        if get_settings().processing_role == "processor":
+            from ..jobs import PROCESSOR_KINDS
+            q = q.filter(Job.kind.in_(PROCESSOR_KINDS))
         return q if include_dismissed else q.filter(Job.dismissed_at.is_(None))
 
     # Running first, then paused, then queued, then everything else.
