@@ -2579,6 +2579,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const response = await fetch('/api/connection');
       if (!response.ok) throw Error('Connection check unavailable');
       const state = await response.json();
+      // Keep progress visible on map pages without fetching the full job list.
+      const progress = await api.get(jobsEndpoint('/overview')).catch(() => null);
+      if (progress) { appState.jobsOverview = progress; renderJobBadge(); }
       const offline = state.pi_online === false;
       banner.classList.toggle('is-offline', offline);
       banner.classList.toggle('is-delayed', !offline && piCachedRead);
