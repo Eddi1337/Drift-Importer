@@ -44,6 +44,7 @@ def init_db() -> None:
     from . import auto_ride_models  # noqa: F401
     from . import auto_ride_jobs  # noqa: F401
     from . import processing_sync  # noqa: F401
+    from . import camera_agents  # noqa: F401
 
     Base.metadata.create_all(_engine)
     _run_migrations()
@@ -114,6 +115,8 @@ def _run_migrations() -> None:
 
         if "jobs" in tables:
             cols = _column_names(conn, "jobs")
+            if "retry_after" not in cols:
+                conn.execute("ALTER TABLE jobs ADD COLUMN retry_after DATETIME")
             if "result" not in cols:
                 conn.execute("ALTER TABLE jobs ADD COLUMN result TEXT")
             if "dismissed_at" not in cols:

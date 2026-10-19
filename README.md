@@ -448,3 +448,43 @@ Archive work shares the upload/metadata semaphore, runs one audit at a time,
 and is prioritized after the current transfer instead of waiting behind an
 entire camera backlog. Cancellation is supported; inventory/sample cache writes
 are batched, and no new media copies are staged on the Pi SD card.
+
+### Central server and camera agents
+
+`DRIFT_PROCESSING_ROLE=server` runs the whole application in the dedicated LXC:
+web UI, queue, camera indexing, date review, NAS writes, Home Assistant, duplicate
+checks, trip matching and rendering. The Pi runs only `agent/camera_agent.py`
+(Python standard library). It detects read-only mounted cameras and streams their
+bytes to the server over authenticated HTTPS with a pinned per-agent certificate.
+No footage, database, thumbnails, NAS credentials or video processing live on the
+agent. Existing Pi :8080 links redirect to the central server.
+
+The server polls inventories every ten seconds. Each connection triggers the
+existing auto-import/auto-upload settings. A disconnected camera leaves jobs
+queued and partial files on the NAS; reads resume by HTTP byte range. All NAS
+writes still require the real `/mnt/NAS` mount. A loopback-only bridge supplies
+camera sources to FFmpeg without putting pairing credentials in command lines.
+
+The **Agents** page shows paired Pis, cameras, connection status and enable/disable
+controls. The first migrated Pi retains `/media/...` paths, preserving existing
+queue and review references; additional Pis use `/media/agents/<id>/...` so equal
+camera names do not collide.
+
+For another Pi, install the existing camera automount rules and
+`deploy/drift-camera-agent.service` with the dedicated `drift-camera` user. Pair
+with a unique random bearer token and a self-signed TLS certificate whose SAN
+matches its stable LAN address. Keep `/etc/drift-camera-agent.env` root-only:
+`DRIFT_AGENT_TOKEN`, `DRIFT_AGENT_CERT`, `DRIFT_AGENT_KEY`, and `DRIFT_SERVER_URL`.
+Store its certificate and key readable only by root and the service group. Copy
+only its public certificate to the server, then run `deploy/register-camera-agent.py`
+in the server environment with `--id`, `--name`, `--url`, `--root`, and `--ca`,
+supplying the pairing token through private stdin. The command verifies the pinned
+TLS connection and camera manifest before saving encrypted credentials. Never
+put pairing tokens in Git, URLs, logs or shell command arguments.
+
+Main-branch deployment updates the native LXC server. `deploy/deploy-to-pi.sh`
+detects an enrolled camera agent and deploys only its small stdlib service; it
+retains the legacy Docker path for unmigrated installations. Pairing and central
+settings survive upgrades. The LXC database remains on its own disk, with guarded
+NAS recovery snapshots and normal Proxmox backups; render scratch and footage
+stay on the NAS. Upload and FFmpeg concurrency remain one by default.

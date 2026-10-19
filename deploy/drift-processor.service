@@ -1,5 +1,5 @@
 [Unit]
-Description=Drift ride library and Home Assistant processing
+Description=Drift central server, camera uploads and processing
 After=network-online.target
 Wants=network-online.target
 RequiresMountsFor=/mnt/NAS
@@ -14,8 +14,8 @@ Restart=on-failure
 RestartSec=15
 TimeoutStopSec=30
 CPUQuota=100%
-MemoryMax=512M
-TasksMax=64
+MemoryMax=768M
+TasksMax=96
 Nice=10
 UMask=0077
 NoNewPrivileges=true

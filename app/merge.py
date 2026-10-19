@@ -10,7 +10,8 @@ from __future__ import annotations
 import datetime as dt
 import subprocess
 import tempfile
-from pathlib import Path
+from .camera_paths import Path
+from .camera_paths import source_url
 from typing import Callable, Dict, List, Optional, Sequence
 
 from .config import get_settings
@@ -48,6 +49,7 @@ def build_concat_command(
         settings.ffmpeg, "-y",
         "-f", "concat",
         "-safe", "0",
+        "-protocol_whitelist", "file,http,tcp",
         "-i", str(list_file),
         "-map", "0",
         "-c", "copy",
@@ -68,7 +70,7 @@ def write_concat_list(paths: Sequence[Path], list_file: Path) -> None:
     lines = []
     for p in paths:
         # ffmpeg concat list format: escape single quotes.
-        safe = str(p.resolve()).replace("'", "'\\''")
+        safe = source_url(p.resolve()).replace("'", "'\\''")
         lines.append(f"file '{safe}'")
     list_file.write_text("\n".join(lines) + "\n")
 

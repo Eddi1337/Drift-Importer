@@ -5,7 +5,7 @@ from __future__ import annotations
 import mimetypes
 import os
 import re
-from pathlib import Path
+from .camera_paths import Path
 from typing import Iterator
 
 from fastapi import HTTPException, Request

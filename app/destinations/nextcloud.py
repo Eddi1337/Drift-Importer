@@ -7,7 +7,7 @@ root for the user, e.g. https://cloud.example.com/remote.php/dav/files/USER
 from __future__ import annotations
 
 import datetime as dt
-from pathlib import Path
+from ..camera_paths import Path
 from typing import Iterator
 from urllib.parse import unquote
 import xml.etree.ElementTree as ET

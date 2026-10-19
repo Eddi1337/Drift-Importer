@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from pathlib import Path
+from .camera_paths import Path
 from typing import Optional
 
 from .database import session_scope
@@ -49,6 +49,7 @@ class DeviceMonitor:
         # again, but a steady connection only triggers once.
         self._auto_imported: set[str] = set()
         self._date_seen: dict[str, tuple] = {}
+        self._connections: dict[str,str] = {}
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="drift-devices", daemon=True)
@@ -73,6 +74,21 @@ class DeviceMonitor:
 
     def _scan(self) -> None:
         try:
+            from .config import get_settings
+            if get_settings().processing_role == "server":
+                from .camera_agents import devices
+                cache=devices()
+                connections={d['path']:d.get('connection_id','') for d in cache}
+                for path,connection in connections.items():
+                    if self._connections.get(path)!=connection:
+                        self._auto_imported.discard(path);self._date_seen.pop(path,None)
+                self._connections=connections
+                with self._lock:
+                    self._cache=cache
+                    self._scanned=True
+                self._maybe_date_check(cache)
+                self._maybe_auto_import(cache)
+                return
             with session_scope() as s:
                 exclude = [d.base_path for d in s.query(Destination).all() if d.base_path]
             devices = detect_devices(exclude_paths=exclude, time_budget=SCAN_BUDGET_S)

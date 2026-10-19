@@ -10,7 +10,7 @@ import errno
 import os
 import shutil
 import datetime as dt
-from pathlib import Path
+from ..camera_paths import Path
 
 from ..config import get_settings
 from ..media import checksum as sampled_checksum

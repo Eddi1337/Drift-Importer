@@ -6,12 +6,13 @@ import json
 import logging
 import threading
 import time
-from pathlib import Path
+from .camera_paths import Path
 from typing import Iterable, List, NamedTuple
 
 from sqlalchemy.exc import IntegrityError
 
 from .config import get_settings
+from .camera_agents import AgentUnavailable
 from .archive import record_uploaded_file
 from .database import session_scope
 from .destinations import get_backend
@@ -240,6 +241,8 @@ def handle_import(job_id: int, payload: dict, ctx: JobContext) -> None:
                     known_ids.append(existing.id)
             log.info("Skipped already-indexed file %s", path)
             ctx.set_progress((i + 1) / total, f"Already indexed {path.name}")
+        except AgentUnavailable:
+            raise
         except Exception:  # noqa: BLE001
             log.exception("Failed to index %s", path)
             ctx.set_progress((i + 1) / total, f"Failed {path.name}")
@@ -659,6 +662,8 @@ def handle_upload(job_id: int, payload: dict, ctx: JobContext) -> None:
                     mtime=capture_mtime,
                 )
             except JobCancelled:
+                raise
+            except AgentUnavailable:
                 raise
             except Exception as exc:  # noqa: BLE001
                 result_status = "error"

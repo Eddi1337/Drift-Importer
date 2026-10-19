@@ -4,7 +4,8 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import stat
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
+from ..camera_paths import Path
 
 import paramiko
 

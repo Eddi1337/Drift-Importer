@@ -8,7 +8,7 @@ import os
 import shutil
 import tempfile
 import threading
-from pathlib import Path
+from .camera_paths import Path, walk
 
 from .database import session_scope
 from .devicescan import get_device_monitor
@@ -22,7 +22,13 @@ enqueue_lock = threading.Lock()
 
 
 def camera_roots() -> list[Path]:
-    roots = sorted({Path(d["path"]).resolve() for d in get_device_monitor().get_devices()}, key=lambda p: len(p.parts))
+    from .config import get_settings
+    if get_settings().processing_role == "server":
+        from .camera_agents import devices
+        current = devices()
+    else:
+        current = get_device_monitor().get_devices()
+    roots = sorted({Path(d["path"]).resolve() for d in current}, key=lambda p: len(p.parts))
     result = []
     for root in roots:
         if not any(root.is_relative_to(parent) for parent in result):
@@ -43,7 +49,7 @@ def scan_videos(root: Path) -> list[Path]:
     def fail(error):
         raise error
     result = []
-    for folder, dirs, names in os.walk(root, onerror=fail, followlinks=False):
+    for folder, dirs, names in walk(root,onerror=fail):
         dirs[:] = [name for name in dirs if not (Path(folder) / name).is_symlink()]
         for name in names:
             path = Path(folder) / name

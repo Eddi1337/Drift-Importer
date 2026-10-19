@@ -8,10 +8,11 @@ import datetime as dt
 import hashlib
 import json
 import subprocess
-from pathlib import Path
+from .camera_paths import Path
 from typing import Dict, Optional
 
 from .config import get_settings
+from .camera_paths import source_url
 
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".ts", ".mts", ".m2ts"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".gif", ".bmp", ".tiff"}
@@ -35,7 +36,7 @@ def probe(path: Path) -> Dict:
         "-print_format", "json",
         "-show_format",
         "-show_streams",
-        str(path),
+        source_url(path),
     ]
     out = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     info: Dict = {
@@ -158,7 +159,7 @@ def make_thumbnail(path: Path, kind: str, out_path: Path) -> bool:
             settings.ffmpeg, "-y",
             "-threads", "1",
             "-ss", "1",
-            "-i", str(path),
+            "-i", source_url(path),
             "-frames:v", "1",
             "-vf", "scale=320:-1",
             "-threads", "1", "-filter_threads", "1",
@@ -168,7 +169,7 @@ def make_thumbnail(path: Path, kind: str, out_path: Path) -> bool:
         cmd = [
             settings.ffmpeg, "-y",
             "-threads", "1",
-            "-i", str(path),
+            "-i", source_url(path),
             "-vf", "scale=320:-1",
             "-threads", "1", "-filter_threads", "1",
             str(out_path),

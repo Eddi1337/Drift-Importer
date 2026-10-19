@@ -15,11 +15,12 @@ import threading
 import time
 from typing import Callable, Dict, Optional
 
-from sqlalchemy import case, func
+from sqlalchemy import case, func, or_
 
 from .config import get_settings
 from .database import session_scope
 from .models import Job, JobLog, utcnow
+from .camera_agents import AgentUnavailable
 
 log = logging.getLogger("drift.jobs")
 
@@ -399,6 +400,7 @@ class JobManager:
         with self._claim_lock:
             with session_scope() as s:
                 query = s.query(Job).filter(Job.status == "queued")
+                query = query.filter(or_(Job.retry_after.is_(None), Job.retry_after <= utcnow()))
                 role = get_settings().processing_role
                 if role == "processor":
                     query = query.filter(Job.kind.in_(PROCESSOR_KINDS))
@@ -410,7 +412,33 @@ class JobManager:
                 # camera's FIFO upload backlog. Its handler takes the same NAS
                 # semaphore, so a transfer already in progress finishes first.
                 job = query.order_by(case((Job.kind.in_(AUTO_RIDE_KINDS), 2),
-                    (Job.kind.in_(MAINTENANCE_KINDS), 0), else_=1), Job.created_at, Job.id).first()
+                    (Job.kind.in_(MAINTENANCE_KINDS), 0), else_=1), Job.created_at, Job.id)
+                if role == "server":
+                    # Metadata is cached; offline sources must not churn the
+                    # queue or block work on footage already on the NAS.
+                    from .camera_agents import lookup, require_online
+                    from .models import MediaItem
+                    paths = dict(s.query(MediaItem.id, MediaItem.path).all())
+                    def available(candidate):
+                        payload = json.loads(candidate.payload or "{}")
+                        sources = list(payload.get("paths", []))
+                        sources += [paths[mid] for mid in payload.get("media_ids", []) if mid in paths]
+                        sources += [payload[key] for key in ("camera_root", "dcim_path", "dcim_root") if payload.get(key)]
+                        for source in sources:
+                            found = lookup(source)
+                            if not found and str(source).startswith('/media/'):
+                                return False
+                            if found:
+                                try:
+                                    require_online(found[0])
+                                    relative = found[1]
+                                    if not any(relative == d['path'] or relative.startswith(d['path']+'/') for d in found[0]['manifest']['devices']):
+                                        return False
+                                except AgentUnavailable:return False
+                        return True
+                    job = next((candidate for candidate in job.limit(5000) if available(candidate)), None)
+                else:
+                    job = job.first()
                 if not job:
                     return None
                 if job.cancel_requested:
@@ -456,6 +484,16 @@ class JobManager:
                     job.status = "cancelled"
                     job.finished_at = utcnow()
             log.info("Job %s cancelled", job_id)
+        except AgentUnavailable:
+            # Lost cameras are normal. Keep the durable queue and NAS partial;
+            # reconnect resumes the same upload rather than marking it done.
+            with session_scope() as s:
+                job=s.get(Job,job_id)
+                if job:
+                    job.status="queued"
+                    job.retry_after=utcnow()+dt.timedelta(seconds=30)
+                    job.error=None
+            ctx.log("Waiting for camera agent; partial transfer retained")
         except Exception as exc:  # noqa: BLE001
             log.exception("Job %s failed", job_id)
             ctx.log(f"Job failed: {exc}", level="ERROR")

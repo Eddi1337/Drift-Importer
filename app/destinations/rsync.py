@@ -12,7 +12,7 @@ import shlex
 import subprocess
 import tempfile
 import datetime as dt
-from pathlib import Path
+from ..camera_paths import Path
 
 from ..config import get_settings
 from .base import ProgressCb, RemoteEntry, UploadBackend, join_remote, make_probe
@@ -216,6 +216,22 @@ class RsyncBackend(UploadBackend):
         mtime: float | None = None,  # rsync preserves source mtime via -t
     ) -> str:
         local_path = Path(local_path)
+        from ..camera_agents import is_remote
+        if is_remote(local_path):
+            # rsync requires a real seekable local pathname. Stage this backend
+            # on guarded NAS scratch, never on an agent's SD card or LXC root.
+            import shutil
+            from ..storage import require_working_storage
+            working = get_settings().working_dir
+            require_working_storage(working)
+            working.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="agent-rsync-", dir=working) as folder:
+                staged = Path(folder) / local_path.name
+                with local_path.open("rb") as source, staged.open("wb") as target:
+                    shutil.copyfileobj(source, target, 256 * 1024)
+                when = mtime if mtime is not None else local_path.stat().st_mtime
+                os.utime(staged, (when, when))
+                return self.upload(staged, remote_dir, filename, progress, start_offset=0, mtime=when)
         total = local_path.stat().st_size
         full_dir = self._remote_dir(remote_dir)
         remote_path = join_remote(full_dir, filename)

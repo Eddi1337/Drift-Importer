@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %} · Camera agents{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">CONNECT · SAVE · EXPLORE</p><h1>Camera agents</h1><p class="hint">Attach a camera to an online agent. This server handles indexing, date checks, uploads and processing.</p></div><button id="agentsRefresh" class="ghost">Refresh</button></div>
+<div id="agentsStatus" role="status">Loading camera agents…</div><div id="agentsList" class="grid"></div>
+<section class="panel"><h2>Your workflow stays in one place</h2><p>Agents only read the attached camera. The server saves footage to your chosen destinations and keeps the queue, settings and history. Keep the camera connected until its uploads finish.</p><div class="row"><a class="button-link" href="/import">Open Import</a><a class="button-link ghost" href="/settings">Automation settings</a></div></section>
+{% endblock %}
+{% block scripts %}<script src="/static/agents.js?v={{ asset_version }}"></script><script>initAgents();</script>{% endblock %}

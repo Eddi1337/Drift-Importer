@@ -107,7 +107,7 @@ jobs:
         run: docker buildx rm "drift-${{ matrix.slug }}" >/dev/null 2>&1 || true
 
   deploy:
-    name: deploy processor and Pi
+    name: deploy central server and camera agent
     needs: build
     runs-on: [self-hosted, drift]
     if: ${{ github.event_name == 'push' || inputs.deploy }}
@@ -115,12 +115,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Deploy processing LXC
+      - name: Deploy central LXC
         run: ./deploy/deploy-to-processor.sh
         env:
           PROCESSOR_HOST: root@192.168.10.223
 
-      - name: Deploy to Pi
+      - name: Deploy Pi agent (or legacy uploader)
         run: IMAGE_TAG="${GITHUB_SHA::12}" ./deploy/deploy-to-pi.sh
         env:
           DEPLOY_HOST: ed@drift-pi.local

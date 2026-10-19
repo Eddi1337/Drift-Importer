@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% block title %} · Settings{% endblock %}
 {% block content %}
-<div class="page-heading"><div><p class="eyebrow">SET UP YOUR WORKFLOW</p><h1>Make it work your way.</h1><p class="hint">Choose what happens when you connect a camera. Everything saves on this Pi.</p></div><span id="settingsSaveStatus" class="status-pill" role="status">Loading settings…</span></div>
+<div class="page-heading"><div><p class="eyebrow">SET UP YOUR WORKFLOW</p><h1>Make it work your way.</h1><p class="hint">Choose what happens when you connect a camera. Settings and history are saved on this server.</p></div><span id="settingsSaveStatus" class="status-pill" role="status">Loading settings…</span></div>
 <div class="settings-layout">
   <form id="settingsForm" onsubmit="event.preventDefault(); saveSettings();">
     <section class="panel settings-section" aria-labelledby="automationTitle">
-      <div class="section-heading"><div class="numbered-heading"><span class="section-number">01</span><div><h2 id="automationTitle">Camera automation</h2><p class="hint">Keep it manual, or let the Pi get started when you plug in.</p></div></div></div>
+      <div class="section-heading"><div class="numbered-heading"><span class="section-number">01</span><div><h2 id="automationTitle">Camera automation</h2><p class="hint">Keep it manual, or let the server get started when you plug in.</p></div></div></div>
       <label class="setting-switch"><span><strong>Find videos when the camera connects</strong><small>Add new recordings to your library automatically. This step finds videos; the originals stay on the camera.</small></span><input type="checkbox" id="sAutoImport" role="switch"></label>
       <label class="setting-switch"><span><strong>Save new videos automatically</strong><small>After dates pass the recording-order and ride-day checks, upload to the destinations selected below. Uncertain recordings wait in Import.</small></span><input type="checkbox" id="sAutoUpload" role="switch"></label>
       <div id="automationPreview" class="workflow-preview" aria-live="polite">Loading your workflow…</div>
@@ -16,13 +16,13 @@
       <p class="hint field-note">If none are selected, destinations marked Default are used. Manual imports let you choose a NAS each time.</p>
     </section>
     <section class="panel settings-section" aria-labelledby="haTitle">
-      <div class="section-heading"><div class="numbered-heading"><span class="section-number">03</span><div><h2 id="haTitle">Home Assistant</h2><p class="hint">See a progress bar on your home dashboard while the Pi works.</p></div></div><span id="haSetupStatus" class="status-pill">Checking…</span></div>
+      <div class="section-heading"><div class="numbered-heading"><span class="section-number">03</span><div><h2 id="haTitle">Home Assistant</h2><p class="hint">See a progress bar on your home dashboard while the server works.</p></div></div><span id="haSetupStatus" class="status-pill">Checking…</span></div>
       <div class="form-grid settings-grid">
         <label class="span-2">Home Assistant address<input id="sHaUrl" type="url" placeholder="http://192.168.10.120:8123" aria-describedby="haAddressHelp"><small id="haAddressHelp" class="hint">The address you use to open Home Assistant, including its port.</small></label>
         <label class="span-2">Access token<input id="sHaToken" type="password" autocomplete="new-password" placeholder="Paste a long-lived access token" aria-describedby="haTokenHelp"><small id="haTokenHelp" class="hint">Create one in your Home Assistant profile. Leave blank to keep your saved token; it is stored encrypted.</small></label>
       </div>
       <details class="settings-advanced"><summary>Advanced connection options</summary><div class="form-grid settings-grid">
-        <label class="span-2">Entity name prefix<input id="sHaPrefix" value="drift_import" placeholder="drift_import"><small class="hint">Keep the default unless you have more than one Drift Pi.</small></label>
+        <label class="span-2">Entity name prefix<input id="sHaPrefix" value="drift_import" placeholder="drift_import"><small class="hint">Keep the default unless you have more than one Drift server.</small></label>
         <label class="inline span-2"><input type="checkbox" id="sHaClearToken"> Remove the saved access token</label>
       </div><p class="hint">Updates every five seconds. The progress bar hides when no tasks are running. Clear the address or remove the token to disconnect.</p></details>
     </section>
@@ -30,7 +30,7 @@
   </form>
   <aside class="settings-guide">
     <div class="panel"><p class="eyebrow">A SIMPLE ROUTINE</p><h2>Plug in. Save. Explore.</h2><ol class="guide-steps"><li><strong>Connect your camera</strong><span>Let automation find new videos, or open Import to start yourself.</span></li><li><strong>Save to your NAS</strong><span>Keep the camera connected until uploads finish. Run Verify to check the complete copies match.</span></li><li><strong>Make a trip</strong><span>On Trips, choose recording days and join them into a movie.</span></li></ol><a href="/import" class="button-link">Open Import →</a></div>
-    <div class="settings-tip"><span class="tip-mark" aria-hidden="true">↗</span><div><strong>Built for your Pi Zero 2</strong><p>Videos stream straight to storage. Trip movies and temporary video files use the NAS to keep SD-card writes low.</p></div></div>
+    <div class="settings-tip"><span class="tip-mark" aria-hidden="true">↗</span><div><strong>Lightweight camera agents</strong><p>Camera agents stream footage through this server to your NAS. Processing, temporary files and video movies stay off the agents.</p></div></div>
   </aside>
 </div>
 <div class="diagnostics-heading"><p class="eyebrow">WHEN YOU NEED MORE DETAIL</p><h2>History &amp; troubleshooting</h2></div>

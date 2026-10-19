@@ -98,6 +98,7 @@ class StateBackup:
             raise RuntimeError("Cannot snapshot app state without its database")
         if (
             self.settings.require_nas_mount
+            and getattr(self.settings, "processing_role", "standalone") != "server"
             and filesystem_type(Path("/tmp")) != "tmpfs"
         ):
             raise RuntimeError("State snapshot staging requires /tmp to be mounted as tmpfs")

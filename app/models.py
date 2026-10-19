@@ -229,6 +229,7 @@ class Job(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=utcnow)
     started_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
+    retry_after: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, nullable=True)
 
     # lazy="select": logs are only loaded when explicitly accessed (the jobs
     # list never touches them). Eager "selectin" loaded thousands of log rows on

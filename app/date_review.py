@@ -13,7 +13,7 @@ import re
 import struct
 import tempfile
 import threading
-from pathlib import Path
+from .camera_paths import Path
 from zoneinfo import ZoneInfo
 
 from .database import session_scope

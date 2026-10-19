@@ -16,7 +16,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent
 _static = Path(__file__).resolve().parent.parent / "static"
 templates.env.globals["asset_version"] = sha256(b"".join(
     (_static / name).read_bytes()
-    for name in ("style.css", "app.js", "workflow.js", "archive.js", "roadtrips.js", "roadtrips.css", "favicon.svg")
+    for name in ("style.css", "app.js", "workflow.js", "archive.js", "roadtrips.js", "roadtrips.css", "agents.js", "favicon.svg")
 )).hexdigest()[:12]
 
 
@@ -32,6 +32,11 @@ def gallery(request: Request):
 @router.get("/import", response_class=HTMLResponse)
 def import_page(request: Request):
     return _page(request, "import.html")
+
+
+@router.get("/agents", response_class=HTMLResponse)
+def camera_agents_page(request: Request):
+    return _page(request, "agents.html")
 
 
 @router.get("/library", response_class=HTMLResponse)

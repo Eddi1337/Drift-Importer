@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from .camera_paths import Path, walk
 from typing import Callable, Iterable, List, Optional
 
 from .config import get_settings
@@ -256,7 +256,7 @@ def scan_media_files(
 ) -> List[Path]:
     """Recursively list all video/image files under a directory (time-bounded)."""
     results: List[Path] = []
-    for dirpath, dirnames, filenames in os.walk(root, onerror=lambda e: None):
+    for dirpath, dirnames, filenames in walk(root):
         if _expired(deadline):
             break
         if is_excluded and is_excluded(Path(dirpath)):

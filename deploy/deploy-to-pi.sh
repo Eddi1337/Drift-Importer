@@ -12,6 +12,19 @@ DEPLOY_SSH_KEY="${DEPLOY_SSH_KEY:-$HOME/.ssh/drift_deploy}"
 DEPLOY_DIR="${DEPLOY_DIR:-drift-import}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 
+# Once migrated, this host is a camera agent. A transport failure must fail
+# the deployment, rather than falling through and resurrecting the old server.
+agent_check=0
+ssh -i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes \
+  -o StrictHostKeyChecking=yes -o ConnectTimeout=10 "$DEPLOY_HOST" \
+  'test -f /etc/drift-camera-agent.env' || agent_check=$?
+if [ "$agent_check" -eq 0 ]; then
+  export DEPLOY_HOST DEPLOY_SSH_KEY
+  exec ./deploy/deploy-agent.sh
+elif [ "$agent_check" -ne 1 ]; then
+  exit "$agent_check"
+fi
+
 : "${HARBOR_REGISTRY:?HARBOR_REGISTRY not set}"
 : "${HARBOR_ROBOT_USER:?HARBOR_ROBOT_USER not set}"
 : "${HARBOR_ROBOT_TOKEN:?HARBOR_ROBOT_TOKEN not set}"

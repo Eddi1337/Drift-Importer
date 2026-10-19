@@ -9,7 +9,7 @@ case "$PROCESSOR_REVISION" in
 esac
 bundle="$(mktemp /tmp/drift-processor.XXXXXX.tar.gz)"
 trap 'rm -f -- "$bundle"' EXIT
-COPYFILE_DISABLE=1 tar --exclude='__pycache__' --exclude='*.pyc' -czf "$bundle" app requirements.txt deploy/drift-processor.service deploy/drift-processor-render.service
+COPYFILE_DISABLE=1 tar --exclude='__pycache__' --exclude='*.pyc' -czf "$bundle" app requirements.txt deploy/drift-processor.service deploy/drift-processor-render.service deploy/register-camera-agent.py
 ssh_options=(-i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes
   -o "UserKnownHostsFile=${PROCESSOR_KNOWN_HOSTS_FILE:-$HOME/.ssh/known_hosts}"
   -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3)

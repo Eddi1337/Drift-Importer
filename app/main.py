@@ -22,6 +22,7 @@ from . import date_review  # noqa: F401
 from . import archive_tasks  # noqa: F401
 from . import roadtrips  # noqa: F401
 from . import auto_ride_jobs  # noqa: F401
+from .camera_agents import AgentUnavailable
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -59,6 +60,13 @@ async def lifespan(app: FastAPI):
     if settings.processing_role != "processor":
         with session_scope() as session:
             ensure_default_nas_destination(session)
+    # Install even offline camera namespaces before workers inspect old paths.
+    # A startup race must never consume remote work as locally missing files.
+    if settings.processing_role == "server":
+        from . import agent_bridge
+        from .camera_agents import monitor as agents_monitor
+        agent_bridge.start()
+        agents_monitor.start()
     get_manager().start()
     from .sysmon import get_monitor
     from .ha_publish import get_publisher
@@ -89,6 +97,11 @@ async def lifespan(app: FastAPI):
     _get_publisher().stop()
     _get_device_monitor().stop()
     auto_ride_jobs.monitor.stop()
+    if settings.processing_role == "server":
+        from . import agent_bridge
+        from .camera_agents import monitor as agents_monitor
+        agents_monitor.stop()
+        agent_bridge.stop()
     sync_monitor.stop()
     if get_settings().state_backup_interval_s > 0:
         from .state_backup import get_state_backup
@@ -135,11 +148,19 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 from .routers import pages, api  # noqa: E402
 from .routers import archive as archive_api  # noqa: E402
 from .routers import roadtrips as roadtrip_api  # noqa: E402
+from .routers import agents as agents_api  # noqa: E402
 
 app.include_router(pages.router, dependencies=[Depends(require_auth)])
 app.include_router(api.router, prefix="/api", dependencies=[Depends(require_auth)])
 app.include_router(archive_api.router, prefix="/api/archive", dependencies=[Depends(require_auth)])
 app.include_router(roadtrip_api.router, prefix="/api/roadtrips", dependencies=[Depends(require_auth)])
+app.include_router(agents_api.router, prefix="/api/agents", dependencies=[Depends(require_auth)])
+
+
+@app.exception_handler(AgentUnavailable)
+async def disconnected_agent(request, exc):
+    from fastapi.responses import JSONResponse
+    return JSONResponse({"detail":"Camera agent is offline; reconnect it to resume"},status_code=503)
 
 
 @app.get("/healthz")

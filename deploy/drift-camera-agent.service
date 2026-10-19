@@ -1,0 +1,33 @@
+[Unit]
+Description=Drift camera upload agent
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/drift-camera-agent.env
+
+[Service]
+Type=simple
+User=drift-camera
+Group=drift-camera
+EnvironmentFile=/etc/drift-camera-agent.env
+ExecStart=/usr/bin/python3 -I -B /opt/drift-camera-agent/camera_agent.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+CPUQuota=80%
+MemoryMax=96M
+TasksMax=32
+Nice=5
+UMask=0077
+NoNewPrivileges=true
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/media
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

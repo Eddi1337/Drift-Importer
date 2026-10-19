@@ -25,10 +25,11 @@ class Settings(BaseSettings):
     state_backup_interval_s: float = 0.0
     auto_rides_interval_s: float = 0.0
     auto_rides_render: bool = True
-    processing_role: Literal["standalone", "uploader", "processor"] = "standalone"
+    processing_role: Literal["standalone", "uploader", "processor", "server"] = "standalone"
     processing_backend_url: str = ""
     processing_source_url: str = ""
     processing_sync_interval_s: float = 300.0
+    agent_bridge_port: int = 8091
 
     # Comma-separated list of base paths to scan for an attached camera.
     mount_paths: str = "/media,/mnt,/run/media,/Volumes"

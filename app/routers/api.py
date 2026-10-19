@@ -7,7 +7,7 @@ import json
 import os
 import re
 import shutil
-from pathlib import Path
+from ..camera_paths import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -949,6 +949,8 @@ def timestamp_camera_file(req: FileTimestampReq, root_path: str, session: Sessio
     target = _safe_relative_path(root, req.path, "Path is outside the camera root")
     if not target.exists() or not target.is_file():
         raise HTTPException(404, "Camera file not found")
+    from ..camera_agents import is_remote
+    if is_remote(target):raise HTTPException(409,'Camera originals are read-only; correct the archived NAS copy')
     when = _parse_file_datetime(req.modified_at)
     os.utime(target, (when.timestamp(), when.timestamp()))
     item = session.query(MediaItem).filter(MediaItem.path == str(target)).first()
@@ -1030,6 +1032,8 @@ def timestamp_destination_file(dest_id: int, req: FileTimestampReq, session: Ses
     target = _safe_relative_path(root, req.path, "Path is outside the destination root")
     if not target.exists() or not target.is_file():
         raise HTTPException(404, "Destination file not found")
+    from ..camera_agents import is_remote
+    if is_remote(target):raise HTTPException(409,'Camera originals are read-only; correct the archived NAS copy')
     when = _parse_file_datetime(req.modified_at)
     os.utime(target, (when.timestamp(), when.timestamp()))
     return _entry_dict(target, root)

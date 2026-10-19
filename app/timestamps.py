@@ -10,15 +10,16 @@ import os
 import shutil
 import subprocess
 import tempfile
-from pathlib import Path
+from .camera_paths import Path
 
 from .config import get_settings
+from .camera_paths import source_url
 
 
 def metadata_copy(source: Path, output: Path, when: dt.datetime) -> None:
     """Write a separate MP4 with UTC dates on every track, without encoding."""
     stamp = (when.replace(tzinfo=dt.timezone.utc) if when.tzinfo is None else when.astimezone(dt.timezone.utc)).replace(microsecond=0).isoformat()
-    cmd = [get_settings().ffmpeg, "-v", "error", "-n", "-i", str(source),
+    cmd = [get_settings().ffmpeg, "-v", "error", "-n", "-i", source_url(source),
            "-map", "0", "-c", "copy", "-map_metadata", "0",
            "-metadata", f"creation_time={stamp}", "-metadata:s", f"creation_time={stamp}", str(output)]
     result = subprocess.run(cmd, capture_output=True, timeout=1800)
@@ -31,6 +32,8 @@ def shift_datetime(base: dt.datetime, *, days=0, hours=0, minutes=0, seconds=0) 
 
 
 def set_file_mtime(path: Path, when: dt.datetime) -> None:
+    from .camera_agents import is_remote
+    if is_remote(path):raise OSError('Camera originals are read-only; correct the archived NAS copy')
     ts = when.timestamp()
     os.utime(path, (ts, ts))
 
@@ -41,6 +44,8 @@ def write_metadata_creation_time(path: Path, when: dt.datetime) -> bool:
     ffmpeg cannot edit metadata in place, so we write to a temp file and swap.
     Returns True if metadata was updated. Only attempted for video files.
     """
+    from .camera_agents import is_remote
+    if is_remote(path):return False
     settings = get_settings()
     stamp = when.strftime("%Y-%m-%dT%H:%M:%S")
     tmp = Path(tempfile.mkstemp(suffix=path.suffix, dir=str(path.parent))[1])
