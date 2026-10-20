@@ -207,3 +207,18 @@
 .rt-auto-cover { height:auto; aspect-ratio:16 / 9; min-height:170px; max-height:280px; }
 @media(max-width:700px) { .roadtrip-auto-gallery { grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); } }
 .roadtrip-tile-status { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin:8px 0 12px; color:var(--mut); font-size:.8rem; }
+.roadtrip-auto-gallery { grid-template-columns:repeat(auto-fit,minmax(min(100%,290px),1fr)); }
+.roadtrip-detail, .rt-auto-card, .roadtrip-map-shell { min-width:0; }
+@media(max-width:700px) {
+  .roadtrip-auto-gallery { grid-template-columns:minmax(0,1fr); }
+  .roadtrip-map { height:clamp(280px,52dvh,450px); }
+  .roadtrip-map-toolbar { gap:.5rem; }
+  .roadtrip-controls { align-items:stretch; }
+  .roadtrip-controls label { flex:1 1 100%; min-width:0; }
+  .roadtrip-controls input, .roadtrip-controls select { width:100%; max-width:100%; }
+  .roadtrip-controls button { min-height:44px; }
+  .roadtrip-map-toolbar button, .rt-auto-card-actions button { min-height:44px; }
+  .roadtrip-map .leaflet-control-zoom a { width:44px; height:44px; line-height:44px; }
+  .roadtrip-selected-clip { flex-wrap:wrap; }
+  .rt-selected-speed { text-align:left; }
+}

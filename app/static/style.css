@@ -1816,6 +1816,49 @@ input[type=checkbox], input[type=radio] { min-height:0; }
 .pi-connection-dot {width:.5rem;height:.5rem;border-radius:50%;background:#8de7a3;flex:none}
 .pi-connection a {margin-left:auto;white-space:nowrap}
 .pi-connection.is-offline .pi-connection-dot,.pi-connection.is-delayed .pi-connection-dot {background:#f6b85a}
-@media(max-width:700px) {.pi-connection {padding:.6rem 1rem;flex-wrap:wrap}.pi-connection a {margin-left:1.15rem}.topbar nav {gap:.75rem}}
+@media(max-width:700px) {.pi-connection {padding:.6rem 1rem;flex-wrap:wrap}.pi-connection a {margin-left:1.15rem}}
+
+/* Keep navigation out of the content's width calculations on small screens. */
+.nav-toggle { display:none; }
+.topbar { z-index:1100; }
+.brand, .primary-nav, main { min-width:0; }
+.nav-more > div { box-shadow:var(--shadow); }
+.nav-more > div a { min-height:44px; display:flex; align-items:center; }
+.nav-more summary::-webkit-details-marker { display:none; }
+@media(max-width:900px) {
+  .topbar { padding:.7rem max(1rem, env(safe-area-inset-right)) .7rem max(1rem, env(safe-area-inset-left)); display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:.55rem 1rem; }
+  .topbar .brand { font-size:1rem; white-space:nowrap; gap:.55rem; }
+  .topbar .brand-mark { width:2.2rem; height:2.2rem; flex:none; }
+  .topbar .nav-toggle { display:inline-flex; align-items:center; justify-content:center; gap:.55rem; min-height:44px; min-width:88px; padding:.6rem .8rem; color:var(--fg); background:var(--surface-2); border:1px solid var(--line); box-shadow:none; }
+  .nav-toggle[hidden] { display:none; }
+  .nav-toggle-icon, .nav-toggle-icon::before, .nav-toggle-icon::after { display:block; width:16px; height:2px; background:currentColor; border-radius:2px; }
+  .nav-toggle-icon { position:relative; }
+  .nav-toggle-icon::before, .nav-toggle-icon::after { content:''; position:absolute; left:0; }
+  .nav-toggle-icon::before { top:-5px; }
+  .nav-toggle-icon::after { top:5px; }
+  .topbar .badge { grid-column:1 / -1; margin:0; width:100%; min-width:0; justify-content:flex-start; font-size:.78rem; gap:.6rem; }
+  .topbar .badge:empty { display:none; }
+  .topbar .badge .menu-progress { flex:1; max-width:180px; }
+  .topbar .badge .badge-pct { min-width:2.5rem; }
+  .topbar .primary-nav { margin:0; gap:.25rem; grid-column:1 / -1; display:flex; flex-direction:column; align-items:stretch; width:100%; }
+  .topbar.nav-ready .primary-nav { display:none; position:absolute; top:100%; left:0; right:0; padding:.6rem 1rem 1rem; max-height:calc(100dvh - 8rem); overflow-y:auto; overscroll-behavior:contain; background:var(--panel-strong); border-bottom:1px solid var(--line); box-shadow:var(--shadow); }
+  .topbar.nav-open .primary-nav { display:flex; }
+  .topbar .primary-nav a, .topbar .nav-more > summary { display:flex; align-items:center; min-height:46px; padding:.7rem .9rem; font-size:.95rem; white-space:normal; text-align:left; border-radius:8px; }
+  .topbar .primary-nav a:hover { transform:none; }
+  .topbar .nav-more { position:static; width:100%; }
+  .topbar .nav-more > summary { justify-content:space-between; }
+  .topbar .nav-more[open] > summary { color:var(--acc); background:var(--soft); }
+  .topbar .nav-more > div { position:static; min-width:0; border:0; border-left:2px solid var(--line); border-radius:0; margin:.25rem .8rem; padding:.15rem .25rem; background:transparent; box-shadow:none; }
+  .pi-connection { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:start; gap:.35rem .6rem; padding:.65rem 1rem; font-size:.75rem; line-height:1.5; }
+  .pi-connection-dot { margin-top:.3rem; }
+  .pi-connection a { grid-column:2; margin:0; justify-self:start; white-space:normal; }
+  input, select, textarea { font-size:16px; max-width:100%; }
+}
+@media(max-width:480px) {
+  main { padding:1rem .75rem 2rem; }
+  .panel { padding:1rem; }
+  .metric-grid { gap:.65rem; }
+  .metric-card { padding:1rem; min-width:0; }
+}
 
 .activity-tabs {display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap}.activity-tabs a {padding:.65rem 1rem;border:1px solid #31503e;border-radius:.65rem;text-decoration:none}.activity-tabs a.on {background:#214834;color:#baffc4}

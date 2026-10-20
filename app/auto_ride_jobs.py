@@ -171,6 +171,8 @@ def handle_prepare(job_id, payload, ctx):
             prefs = preferences(session)
             timezone, max_gap_s = prefs.timezone, prefs.max_gap_s
             ride_id, input_signature, title = ride.id, ride.input_signature, ride.name
+            if detail["ride"].get("evidence", {}).get("clock_shift_seconds"):
+                title += " · Estimated video timing"
         # Do not hold a SQLite transaction while waiting for NAS metadata writes.
         content = {"version": 1, "clips": clips, "time_series": detail["time_series"], "timezone": timezone, "max_gap_s": max_gap_s}
         signature = hashlib.sha256(json.dumps(content, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

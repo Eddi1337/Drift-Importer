@@ -178,6 +178,76 @@ def test_distant_recording_clusters_split_even_with_one_multiday_ha_outing(setup
     assert [r.clip_count for r in session.query(AutoRide)] == [2, 2]
 
 
+def confirmed_return(setup):
+    session, _, points, _ = setup
+    prefs = rt.preferences(session)
+    prefs.home_lat, prefs.home_lon = 51.5, -.1
+    outing = session.get(RoadtripOuting, 1)
+    outing.end_time = rt.timestamp('2026-10-02T14:50:00Z')
+    departure = rt.timestamp('2026-10-02T12:00:00Z')
+    points[:] = [{'t': '2026-10-02T10:00:00Z', 'lat': 52.45, 'lon': -1.7, 'accuracy': 10}]
+    for minute in range(0, 171, 5):
+        if 75 < minute < 100:
+            continue  # Real GPS gap at a fuel stop; never interpolate across it.
+        points.append({'t': rt.iso(departure + dt.timedelta(minutes=minute)),
+            'lat': 52.45 - .95 * minute / 170, 'lon': -1.7 + 1.6 * minute / 170, 'accuracy': 10})
+    for n in range(30):
+        # The saved correction is 63 minutes late, with a 20-minute stop.
+        start = departure + dt.timedelta(minutes=63 + n * 5 + (20 if n >= 15 else 0))
+        footage(setup, n + 1, start=start, duration=300, correction=True)
+    return ar.eligible_clips(session)[0], [outing], points, prefs
+
+
+def test_full_confirmed_return_realigns_with_dwell_home_and_gps_evidence(setup):
+    session, _, _, _ = setup
+    confirmed_return(setup)
+    report = ar.discover(session)
+    ride = session.query(AutoRide).one()
+    assert report['discovered_ride_count'] == 1 and ride.clip_count == 30
+    assert rt.iso(ride.start_time) == '2026-10-02T12:00:00Z'
+    assert rt.iso(ride.end_time) == '2026-10-02T14:50:00Z'
+    assert ride.confidence_label == 'GPS-aligned estimate'
+    assert json.loads(ride.payload)['evidence']['clock_shift_seconds'] == -63 * 60
+    detail = ar.ride_detail(session, ride.id)
+    assert len(detail['clips']) == 30
+    assert {c['timing_basis'] for c in detail['clips']} == {'confirmed_return_duration'}
+    assert session.query(RecordingDate).first().corrected_time == rt.timestamp('2026-10-02T13:03:00Z').replace(tzinfo=None)
+    # No route line crosses the GPS hole, even though the videos form one trip.
+    for feature in detail['geojson']['features']:
+        assert len(feature['geometry']['coordinates']) < 20
+    ar.discover(session)
+    assert session.query(AutoRide).count() == 1
+
+
+def test_return_can_be_evidenced_when_outbound_home_departure_was_missing(setup):
+    from app.auto_ride_alignment import align_confirmed_returns
+    clips, outings, points, prefs = confirmed_return(setup)
+    outings[0].complete = False
+    assert all(c.get('association_offset_s') == -63 * 60 for c in align_confirmed_returns(clips, outings, points, prefs))
+
+
+@pytest.mark.parametrize('missing', ['dwell', 'home', 'arrival', 'approved', 'corrected', 'gps', 'unique'])
+def test_return_alignment_refuses_weak_or_ambiguous_evidence(setup, missing):
+    from app.auto_ride_alignment import align_confirmed_returns
+    clips, outings, points, prefs = confirmed_return(setup)
+    if missing == 'dwell':
+        points[:] = points[1:]
+    elif missing == 'home':
+        prefs.home_lat = None
+    elif missing == 'arrival':
+        points[-1] = points[-1] | {'lat': 52.45, 'lon': -1.7}
+    elif missing == 'approved':
+        clips[0]['approved_date'] = False
+    elif missing == 'corrected':
+        clips[0]['timing_basis'] = 'camera_metadata'
+    elif missing == 'gps':
+        points[:] = [points[0], points[1], points[-1]]
+    else:
+        outings = outings + [SimpleNamespace(**{**outings[0].__dict__, 'id': 2})]
+    result = align_confirmed_returns(clips, outings, points, prefs)
+    assert not any(c.get('association_offset_s') for c in result)
+
+
 def test_ambiguous_overlapping_outings_are_review_not_auto(setup):
     session, _, _, _ = setup
     footage(setup, 1)

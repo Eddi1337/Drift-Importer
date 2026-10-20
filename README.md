@@ -6,16 +6,22 @@
 timestamps are grouped when their times overlap one Home Assistant journey.
 Clock resets, future dates, mismatched archive months, modification-time-only
 dates and unconfirmed Holding files are excluded. The gallery explains excluded
-files, match confidence and GPS coverage; it never shifts a wrong camera clock
-to force a match. Separate rides stay separate even when HA has one long outing
+files, match confidence and GPS coverage. A previously confirmed date correction
+that truncates a return trip can be realigned only when one same-day journey
+fits a stationary departure, a verified home arrival and at least 80% GPS
+coverage across the complete recording sequence. Those association times are
+labelled estimates; original files and confirmed archive dates remain unchanged.
+Fuel stops of up to an hour can remain in one ride, with GPS gaps left empty.
+Separate rides stay separate even when HA has one long outing
 without a recorded return home. Manual clip collections remain available below.
 
-The Pi checks metadata for changes every five minutes in the deployed setup.
+The LXC checks metadata for changes every five minutes in the deployed setup.
 New supported rides automatically queue a film on the offload worker. The
 gallery uses cached metadata, so listing rides does not wait for NAS scans.
 Films combine the ride's clips in recording order at 720p with a GPS route inset,
 moving location marker and recording date/time. Unrecorded gaps are skipped;
-the displayed clock follows each original clip. GPS gaps show as unavailable.
+the displayed clock follows each clip's evidenced or estimated association time.
+Films using estimated timing are labelled accordingly. GPS gaps show as unavailable.
 Six actual ride photos appear before the full film has finished encoding.
 Original videos remain unchanged, and all derivatives stay on the NAS.
 

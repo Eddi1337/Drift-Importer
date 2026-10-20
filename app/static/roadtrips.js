@@ -115,7 +115,7 @@
     try {
       const detail=await request("/auto/"+encodeURIComponent(id));
       rt.collection=null;rt.selection=null;rt.autoRide=detail.ride || (rt.auto?.rides || []).find(r=>String(r.id)===String(id));
-      renderDetail({...detail,ride:rt.autoRide,association_kind:"automatic"});$("rtStatus").textContent="Automatic match from recording times and GPS history. Positions remain approximate.";
+      renderDetail({...detail,ride:rt.autoRide,association_kind:"automatic"});$("rtStatus").textContent=rt.autoRide?.evidence?.clock_shift_seconds?"Full camera sequence aligned to HA departure and return. Video times are estimates; GPS gaps remain unlocated.":"Automatic match from recording times and GPS history. Positions remain approximate.";
       $("rtMapTitle").scrollIntoView({behavior:"smooth",block:"start"});
     } catch(e) {$("rtStatus").textContent="This ride’s map could not be loaded. "+e.message;throw e;}
   }
@@ -319,7 +319,7 @@
     $("rtAnchor").value=localInput(detail.start_time);$("rtQuality").textContent=detail.warning || group.timing_warning || "Missing GPS stays a gap. Video speeds are GPS estimates.";
     $("rtUnmatchedNotice").textContent=unconfirmed?unconfirmed+" videos have no confirmed date or location. They remain in this trip; use Find dates and locations to match their archive month.":"Select a numbered pin, timeline band or video row to see its place and date.";
     $("rtClips").innerHTML=clips.map((clip,index)=>{
-      const point=clipPoint(clip),hasTime=Number.isFinite(stamp(clip.start_time)),label=hasTime?(isAuto?"Automatic recording-time match":isCollection || detail.provisional===false?"Confirmed alignment":"Proposed alignment"):clip.alignment_conflict?"Review conflicting dates":"Date not confirmed";
+      const point=clipPoint(clip),hasTime=Number.isFinite(stamp(clip.start_time)),label=hasTime?(isAuto?(clip.association_offset_s?"Estimated time · GPS-aligned sequence":"Automatic recording-time match"):isCollection || detail.provisional===false?"Confirmed alignment":"Proposed alignment"):clip.alignment_conflict?"Review conflicting dates":"Date not confirmed";
       return '<tr data-rt-clip="'+esc(clip.id)+'" tabindex="0"><td><span class="rt-video-number">'+(index+1)+'</span><strong>'+esc(clip.filename || clip.path)+'</strong><small class="hint">'+esc(clip.path || "")+'</small>'+
         (!isCollection && !isAuto?'<details class="rt-offset-editor"><summary>Adjust offset</summary><label>Seconds after first video<input data-rt-offset="'+esc(clip.id)+'" type="number" step="1" min="0" value="'+esc(clip.offset_s || 0)+'" data-rt-initial="'+esc(clip.offset_s || 0)+'" data-rt-manual="'+(clip.timing_basis==="manual")+'" aria-label="Offset for '+esc(clip.filename || clip.id)+'"></label></details>':"")+"</td><td>"+(hasTime?'<strong>'+esc(day(clip.start_time))+'</strong><small>'+esc(clock(clip.start_time,clip.duration_s<60))+"–"+esc(clock(clip.end_time,clip.duration_s<60))+" · "+esc(label)+"</small>":'<strong>'+esc(clip.alignment_conflict?'Review conflicting dates':'Date not confirmed')+'</strong><small>Archive: '+esc(clip.month || group.month || "month unknown")+'</small><small>'+esc(clip.observed_time?"Camera: "+when(clip.observed_time)+" (unverified)":"Camera date unknown")+"</small>")+"</td><td>"+esc(coordinate(point))+(point?'<small>GPS estimate · pin '+(index+1)+"</small>":"<small>No pin placed</small>")+"</td><td>"+(hasTime?Math.round((clip.coverage || 0)*100)+"% covered<small>"+esc(speed(clip.average_speed_kmh))+"</small>":"Awaiting GPS match")+"</td></tr>";
     }).join("");

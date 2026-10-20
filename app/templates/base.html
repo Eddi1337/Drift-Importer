@@ -14,7 +14,8 @@
     <a class="brand" href="{{ '/trips' if app_role in ('processor','frontend') else '/' }}">
       <span class="brand-mark" aria-hidden="true">D</span><span>Drift-Import</span>
     </a>
-    <nav aria-label="Main navigation">
+    <button id="navToggle" class="nav-toggle" type="button" aria-controls="primaryNav" aria-expanded="false" hidden><span class="nav-toggle-icon" aria-hidden="true"></span><span id="navToggleText">Menu</span></button>
+    <nav id="primaryNav" class="primary-nav" aria-label="Main navigation">
       <a href="/trips" class="{{ 'on' if active=='trips.html' else '' }}">Rides &amp; map</a>
       <a href="/import" class="{{ 'on' if active=='import.html' else '' }}">Camera &amp; uploads</a>
       <a href="/jobs" class="{{ 'on' if active=='jobs.html' else '' }}">Activity</a>
@@ -35,6 +36,7 @@
     {% block content %}{% endblock %}
   </main>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/navigation.js?v={{ asset_version }}"></script>
   <script src="/static/app.js?v={{ asset_version }}"></script>
   <script src="/static/workflow.js?v={{ asset_version }}"></script>
   {% block scripts %}{% endblock %}

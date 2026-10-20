@@ -23,7 +23,7 @@ from .config import get_settings
 from .models import CorrectedArchive, Destination, MediaItem, RecordingDate, UploadedClip, utcnow
 from .roadtrip_models import LocationDay, RoadtripClipMetadata, RoadtripOuting, RoadtripSettings
 
-CLUSTER_GAP_S = 20 * 60
+CLUSTER_GAP_S = 60 * 60
 GPS_NEIGHBOUR_S = 15 * 60
 MIN_TEMPORAL_COVERAGE = .9
 MIN_GPS_COVERAGE = .5
@@ -64,7 +64,7 @@ def _rows(session, model):
 
 def input_fingerprint(session):
     """Cheap metadata-only change detector; includes changes lacking updated_at."""
-    digest = hashlib.sha256()
+    digest = hashlib.sha256(b'ride-policy-2-return-alignment')
     columns = {
         ArchiveFile: ("id", "destination_id", "root_path", "path", "kind", "present", "eligible", "ledger_id", "size_bytes", "mtime_ns", "ctime_ns", "device", "inode"),
         MediaItem: ("id", "path", "capture_time", "duration_s", "size_bytes", "checksum", "derived"),
@@ -229,9 +229,11 @@ def _gps_tokens(session, source, start, end, timezone):
 
 def _ride_input(session, source, outing, clips, prefs):
     first = min(rt.timestamp(c["start_time"]) for c in clips) - dt.timedelta(seconds=prefs.max_gap_s)
+    if any(c.get("association_offset_s") for c in clips):
+        first -= dt.timedelta(days=1)  # Includes the stationary-departure evidence.
     last = max(rt.timestamp(c["end_time"]) for c in clips) + dt.timedelta(seconds=prefs.max_gap_s)
     return _hash({"source": source, "outing": rt.outing_dict(outing), "settings": rt.preferences_dict(prefs),
-        "clips": [c["input_signature"] for c in clips],
+        "clips": [[c["input_signature"], c["start_time"], c["end_time"], c.get("association_offset_s", 0)] for c in clips],
         "gps": _gps_tokens(session, source, first, last, prefs.timezone)})
 
 
@@ -316,9 +318,13 @@ def _upsert(session, source, outing, clips, coverage, distance, reasons, prefs, 
     row = session.query(AutoRide).filter_by(signature=signature).one_or_none()
     input_signature = _ride_input(session, source, outing, clips, prefs)
     confidence = .96 if coverage >= .8 else .88 if coverage >= .5 else .85
+    shift = clips[0].get("association_offset_s", 0)
+    if shift:
+        confidence = min(confidence, .9)
     evidence = {"temporal_coverage": min(c["temporal_coverage"] for c in clips), "gps_coverage": round(coverage, 3),
-        "gps_supported_clip_count": len(clips), "approved_date_count": sum(c["approved_date"] for c in clips),
-        "clock_shift_seconds": 0, "cluster_gap_seconds": CLUSTER_GAP_S}
+        "gps_supported_clip_count": sum(c.get("gps_coverage", 0) >= MIN_GPS_COVERAGE for c in clips), "approved_date_count": sum(c["approved_date"] for c in clips),
+        "clock_shift_seconds": shift, "cluster_gap_seconds": CLUSTER_GAP_S,
+        "alignment_basis": clips[0].get("alignment_basis", "evidenced_timestamp")}
     payload = _dump({"reasons": reasons, "coverage": round(coverage, 3), "evidence": evidence,
         "route_preview": outline, "route_preview_truncated": truncated})
     if row is None:
@@ -326,15 +332,18 @@ def _upsert(session, source, outing, clips, coverage, distance, reasons, prefs, 
             name="Ride · " + rt.timestamp(first).astimezone(ZoneInfo(prefs.timezone)).strftime("%d %b %Y, %H:%M"),
             start_time=rt.timestamp(first), end_time=rt.timestamp(last), clip_count=len(clips),
             duration_s=sum(c["duration_s"] for c in clips), distance_m=distance, confidence=confidence,
-            confidence_label="High confidence", status="ready", active=True, payload=payload)
+            confidence_label="GPS-aligned estimate" if shift else "High confidence", status="ready", active=True, payload=payload)
         session.add(row)
         session.flush()
     elif row.input_signature == input_signature and row.payload == payload and row.active and row.status == "ready":
         return row
     else:
         row.input_signature, row.start_time, row.end_time = input_signature, rt.timestamp(first), rt.timestamp(last)
+        if row.name.startswith("Ride · "):
+            row.name = "Ride · " + rt.timestamp(first).astimezone(ZoneInfo(prefs.timezone)).strftime("%d %b %Y, %H:%M")
         row.clip_count, row.duration_s, row.distance_m = len(clips), sum(c["duration_s"] for c in clips), distance
         row.confidence, row.payload, row.active, row.status = confidence, payload, True, "ready"
+        row.confidence_label = "GPS-aligned estimate" if shift else "High confidence"
         row.updated_at = utcnow()
     old = {m.clip_id: m for m in session.query(AutoRideClip).filter_by(ride_id=row.id)}
     for position, clip in enumerate(clips):
@@ -377,11 +386,15 @@ def discover(session, month=None, *, now=None, ctx=None):
             exclusions["gps_history_temporarily_unavailable"] += len(bucket)
             continue
         times = [rt.timestamp(p["t"]) for p in points]
+        from .auto_ride_alignment import align_confirmed_returns
+        bucket = align_confirmed_returns(bucket, outings, points, prefs)
         tracks, supported = {}, defaultdict(list)
         for clip in bucket:
             start, end = rt.timestamp(clip["start_time"]), rt.timestamp(clip["end_time"])
             candidates = []
             for outing in outings:
+                if clip.get("alignment_outing_id") and clip["alignment_outing_id"] != outing.id:
+                    continue
                 left, right = rt.timestamp(outing.start_time), rt.timestamp(outing.end_time)
                 temporal = max(0, (min(end, right) - max(start, left)).total_seconds()) / clip["duration_s"]
                 if temporal >= MIN_TEMPORAL_COVERAGE:
@@ -398,7 +411,7 @@ def discover(session, month=None, *, now=None, ctx=None):
             close = (len(nearby) >= 2 and min(nearby) <= start and max(nearby) >= end and
                 min(abs((t - start).total_seconds()) for t in nearby) <= GPS_NEIGHBOUR_S and
                 min(abs((t - end).total_seconds()) for t in nearby) <= GPS_NEIGHBOUR_S)
-            if speed["coverage"] < MIN_GPS_COVERAGE and not (clip["approved_date"] and close):
+            if speed["coverage"] < MIN_GPS_COVERAGE and not (clip["approved_date"] and close) and not clip.get("alignment_basis"):
                 exclusions["insufficient_gps_corroboration"] += 1
                 continue
             supported[outing.id].append(clip | {"temporal_coverage": round(temporal, 3), "gps_coverage": speed["coverage"],
@@ -414,6 +427,9 @@ def discover(session, month=None, *, now=None, ctx=None):
                 reasons = [f"{len(cluster)} adjacent recordings use evidenced timestamps in their archive month.",
                     "Recording times overlap one configured Home Assistant outing without shifting the camera clock.",
                     f"Continuous GPS covers {coverage:.0%} of recorded time; nearby fixes corroborate the dates."]
+                if cluster[0].get("association_offset_s"):
+                    reasons[1] = "Estimated video times align the complete confirmed camera sequence with a stationary departure and HA return home; the full run has at least 80% GPS coverage."
+                    reasons.append(f"The earlier date correction was {abs(cluster[0]['association_offset_s']) / 60:.1f} minutes late. This map uses estimated association times; original files and confirmed archive dates are unchanged.")
                 if coverage < STRONG_GPS_COVERAGE:
                     reasons.append("GPS gaps remain unlocated; speed estimates require 80% per-video coverage.")
                 # Sum only the union of recorded intervals to avoid duplicate cameras inflating distance.
@@ -442,7 +458,7 @@ def discover(session, month=None, *, now=None, ctx=None):
     report.update({"exclusions": dict(exclusions), "excluded_clip_count": sum(exclusions.values()),
         "review_count": len(review), "review_candidates": review[:100],
         "association_kind": "automatic", "source": source or None, "discovered_ride_count": len(accepted),
-        "deferred_months": sorted(deferred), "policy": "Exact metadata time only; no fuzzy clock shift. GPS gaps stay empty."})
+        "deferred_months": sorted(deferred), "policy": "Evidenced dates; a unique GPS-supported complete return can realign a confirmed correction. GPS gaps stay empty."})
     state = session.get(AutoRideDiscovery, 1)
     value = _dump(report)
     fingerprint = input_fingerprint(session)
@@ -486,7 +502,10 @@ def ride_detail(session, ride_id):
     result["ride"], result["association_kind"], result["provisional"] = ride_summary(row), "automatic", False
     for clip in result["clips"]:
         original = next(c for c in clips if c["id"] == clip["id"])
-        clip["timing_basis"], clip["provisional"] = original["timing_basis"], False
+        clip["timing_basis"], clip["provisional"] = original.get("alignment_basis", original["timing_basis"]), False
+        if original.get("association_offset_s"):
+            clip["association_offset_s"] = original["association_offset_s"]
+            clip["unadjusted_start_time"] = original["unadjusted_start_time"]
         if clip.get("location"):
             clip["location_status"] = "automatic"
     # Automatic evidence is not a human confirmation, and raw GPS remains transient.
