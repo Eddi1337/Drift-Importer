@@ -16,7 +16,7 @@ IMAGE_TAG="${IMAGE_TAG:-latest}"
 # the deployment, rather than falling through and resurrecting the old server.
 agent_check=0
 ssh -i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes \
-  -o StrictHostKeyChecking=yes -o ConnectTimeout=10 "$DEPLOY_HOST" \
+  -o StrictHostKeyChecking=yes -o ConnectTimeout=20 "$DEPLOY_HOST" \
   'test -f /etc/drift-camera-agent.env' || agent_check=$?
 if [ "$agent_check" -eq 0 ]; then
   export DEPLOY_HOST DEPLOY_SSH_KEY
@@ -30,11 +30,12 @@ fi
 : "${HARBOR_ROBOT_TOKEN:?HARBOR_ROBOT_TOKEN not set}"
 
 # Reuse one authenticated connection for all transfers and commands. A broken
-# transport must fail promptly rather than leaving CI waiting indefinitely.
+# transport stays bounded, with enough headroom for the low-memory Pi to finish
+# an I/O-heavy startup or close an exec session without repeating deployment.
 SSH_CONTROL_DIR="$(mktemp -d /tmp/drift-deploy.XXXXXX)"
 SSH_OPTIONS=(-i "$DEPLOY_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes
-  -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10
-  -o ServerAliveInterval=10 -o ServerAliveCountMax=3
+  -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20
+  -o ServerAliveInterval=15 -o ServerAliveCountMax=8
   -o ControlMaster=auto -o ControlPersist=60
   -o "ControlPath=${SSH_CONTROL_DIR}/ssh")
 SSH=(ssh "${SSH_OPTIONS[@]}")
