@@ -9,6 +9,27 @@ import pytest
 HELPER = Path(__file__).resolve().parents[1] / "deploy" / "drift-camera-mount.sh"
 
 
+def test_unchanged_camera_install_does_not_write_or_retrigger_disks(tmp_path):
+    commands = tmp_path / 'bin'
+    commands.mkdir()
+    actions = tmp_path / 'actions'
+    for name in ('install', 'systemctl', 'udevadm'):
+        executable = commands / name
+        executable.write_text('#!/usr/bin/env bash\necho "${0##*/} $*" >> "$ACTIONS"\n')
+        executable.chmod(0o755)
+    compare = commands / 'cmp'
+    compare.write_text('#!/usr/bin/env bash\nexit 0\n')
+    compare.chmod(0o755)
+    result = subprocess.run(['bash', str(HELPER.with_name('install-camera-mount.sh'))],
+        env={**os.environ, 'PATH': f'{commands}:{os.environ["PATH"]}', 'ACTIONS': str(actions)},
+        text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    # The existing camera service and mount remain untouched. On a host with
+    # its camera attached, checking whether the service is active is harmless.
+    lines = actions.read_text().splitlines() if actions.exists() else []
+    assert all(line == 'systemctl is-active --quiet drift-camera-mount.service' for line in lines)
+
+
 @pytest.mark.parametrize(
     "scenario,expected_code,expected_actions",
     [
