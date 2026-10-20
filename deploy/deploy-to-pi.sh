@@ -89,9 +89,27 @@ EOF
 # matching insecure-registry setting.
 echo "${HARBOR_ROBOT_TOKEN}" | docker login "http://${HARBOR_REGISTRY}" -u "${HARBOR_ROBOT_USER}" --password-stdin
 docker compose pull
-# Back up the live SQLite database consistently before additive migrations.
+# Read the actual data mount so a retry also works when the replacement has
+# already been created but not started. SQLite's backup API remains consistent
+# while the old uploader is running; it does not need a running container.
 if docker inspect drift-import >/dev/null 2>&1; then
-  docker exec drift-import python -c 'import sqlite3; source=sqlite3.connect("/data/drift.db"); target=sqlite3.connect("/data/drift.predeploy.db"); source.backup(target); target.close(); source.close()'
+  data_dir="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' drift-import)"
+  sudo -n python3 - "$data_dir" <<'PY'
+import sqlite3
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+if not root.is_absolute() or not (root / 'drift.db').is_file():
+    raise SystemExit('Cannot locate the existing uploader database; deployment stopped')
+source = sqlite3.connect((root / 'drift.db').as_uri() + '?mode=ro', uri=True, timeout=30)
+target = sqlite3.connect(root / 'drift.predeploy.db')
+try:
+    source.backup(target)
+finally:
+    target.close()
+    source.close()
+print('Consistent pre-deployment database backup saved')
+PY
 fi
 if ! docker compose up -d; then
   # A slow NAS syscall can delay the engine's exit event beyond its stop
