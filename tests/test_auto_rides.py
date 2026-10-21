@@ -461,3 +461,14 @@ def test_place_names_update_without_invalidating_completed_film_inputs(setup):
     assert 'latitude' not in payload and 'longitude' not in payload
     ar.discover(session)
     assert ride.input_signature==original
+
+
+def test_unfiled_archive_explains_missing_month_instead_of_an_endless_index_request(setup):
+    session, _, _, _ = setup
+    archived, item, record = footage(setup, 1)
+    session.delete(record)
+    archived.path = 'Unsorted/DVR00001.MP4'
+    session.flush()
+    clips, report = ar.eligible_clips(session)
+    assert not clips
+    assert report['exclusions'] == {'missing_archive_month':1}

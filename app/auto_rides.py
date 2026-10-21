@@ -163,7 +163,7 @@ def eligible_clips(session, *, now=None):
         elif probe and probe["observed_time"]:
             value, duration, provenance = probe["observed_time"], probe["duration_s"], "probed_camera_metadata"
         else:
-            excluded["missing_metadata_provenance"] += 1
+            excluded["missing_metadata_provenance" if rt.folder_month(archived["path"])[0] else "missing_archive_month"] += 1
             continue
         try:
             start, duration = rt.timestamp(value), float(duration or 0)

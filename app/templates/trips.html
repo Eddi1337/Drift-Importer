@@ -2,9 +2,9 @@
 {% block title %} · Trips{% endblock %}
 {% block head %}<link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css"><link rel="stylesheet" href="/static/roadtrips.css?v={{ asset_version }}">{% endblock %}
 {% block content %}
-<div class="page-heading"><div><p class="eyebrow">RIDES · PLACES · VIDEOS</p><h1>Your rides</h1><p class="hint">Explore the route, recording times and videos from each ride.</p></div><button id="rtOpenLatestMap" type="button" disabled>Open latest ride map →</button></div>
+<div class="page-heading"><div><p class="eyebrow">RIDES · PLACES · VIDEOS</p><h1>Your trip history</h1><p class="hint">Browse every dated recording run, and explore the routes supported by your location history.</p></div><button id="rtOpenLatestMap" type="button" disabled>Open latest ride map →</button></div>
 <section class="panel roadtrip-auto-panel" aria-labelledby="roadtripTitle">
-  <div class="section-heading"><div><p class="eyebrow">AUTOMATIC RIDE HISTORY</p><h2 id="roadtripTitle">All your rides</h2><p class="hint">Videos recorded close together become one ride. Trustworthy recording times and Home Assistant locations put each ride on the map.</p></div><button id="rtAutoDiscover" type="button">Find new rides</button></div>
+  <div class="section-heading"><div><p class="eyebrow">AUTOMATIC RIDE HISTORY</p><h2 id="roadtripTitle">All your trips</h2><p class="hint">Videos recorded close together become one ride. Trustworthy recording times and Home Assistant locations put each ride on the map.</p></div><button id="rtAutoDiscover" type="button">Find new rides</button></div>
   <p id="rtError" class="roadtrip-error" role="alert" hidden></p>
   <div id="rtAutoMetrics" class="roadtrip-auto-metrics" aria-label="Ride history totals"></div>
   <div class="roadtrip-auto-toolbar"><label>Month<select id="rtAutoMonth"><option value="">All dates</option></select></label><label>Locations<select id="rtAutoType"><option value="all">All trips</option><option value="mapped">GPS matched</option><option value="unlocated">Not yet located</option></select></label><label>Find a trip<input id="rtAutoSearch" type="search" placeholder="Name or date"></label><button id="rtAutoRefresh" type="button" class="ghost">Refresh</button><span id="rtAutoStatus" class="hint" role="status" aria-live="polite">Loading ride history…</span></div>
