@@ -64,7 +64,7 @@ def _rows(session, model):
 
 def input_fingerprint(session):
     """Cheap metadata-only change detector; includes changes lacking updated_at."""
-    digest = hashlib.sha256(b'ride-policy-2-return-alignment')
+    digest = hashlib.sha256(b'ride-policy-3-historical-index')
     columns = {
         ArchiveFile: ("id", "destination_id", "root_path", "path", "kind", "present", "eligible", "ledger_id", "size_bytes", "mtime_ns", "ctime_ns", "device", "inode"),
         MediaItem: ("id", "path", "capture_time", "duration_s", "size_bytes", "checksum", "derived"),
@@ -245,6 +245,8 @@ def ride_summary(row):
         "association_kind": "automatic", "source": row.source, "outing_id": row.outing_id,
         "input_signature": row.input_signature, "reasons": payload.get("reasons", []),
         "coverage": payload.get("coverage"), "evidence": payload.get("evidence", {}),
+        "origin": payload.get("origin"), "destination": payload.get("destination"),
+        "place_basis": payload.get("place_basis"), "cover_key": payload.get("cover_key"),
         "route_preview": payload.get("route_preview", []),
         "route_preview_truncated": payload.get("route_preview_truncated", False),
         "updated_at": rt.iso(row.updated_at)}
@@ -254,7 +256,7 @@ def list_rides(session):
     state = session.get(AutoRideDiscovery, 1)
     report = _json(state.report, {}) if state else {}
     rides = [ride_summary(row) for row in session.query(AutoRide).filter_by(active=True, status="ready").order_by(AutoRide.start_time.desc())]
-    return {"rides": rides, "summary": report | {"ride_count": len(rides),
+    return {"rides": rides, "recordings": report.get("recording_groups", []), "summary": {k:v for k,v in report.items() if k != "recording_groups"} | {"ride_count": len(rides),
         "stale_count": session.query(AutoRide).filter_by(status="stale").count(),
         "last_discovered_at": rt.iso(state.updated_at) if state else None}}
 
@@ -312,7 +314,7 @@ def _route_preview(tracks, clips, max_points=120):
     return normalized, original_count > sum(len(piece) for piece in normalized)
 
 
-def _upsert(session, source, outing, clips, coverage, distance, reasons, prefs, outline, truncated):
+def _upsert(session, source, outing, clips, coverage, distance, reasons, prefs, outline, truncated, labels=None):
     first, last = clips[0]["start_time"], max(c["end_time"] for c in clips)
     signature = _hash([source, outing.signature, clips[0]["recording_id"] or clips[0]["archive_id"]])
     row = session.query(AutoRide).filter_by(signature=signature).one_or_none()
@@ -326,7 +328,7 @@ def _upsert(session, source, outing, clips, coverage, distance, reasons, prefs, 
         "clock_shift_seconds": shift, "cluster_gap_seconds": CLUSTER_GAP_S,
         "alignment_basis": clips[0].get("alignment_basis", "evidenced_timestamp")}
     payload = _dump({"reasons": reasons, "coverage": round(coverage, 3), "evidence": evidence,
-        "route_preview": outline, "route_preview_truncated": truncated})
+        "route_preview": outline, "route_preview_truncated": truncated, **(labels or {})})
     if row is None:
         row = AutoRide(signature=signature, input_signature=input_signature, source=source, outing_id=outing.id,
             name="Ride · " + rt.timestamp(first).astimezone(ZoneInfo(prefs.timezone)).strftime("%d %b %Y, %H:%M"),
@@ -345,6 +347,8 @@ def _upsert(session, source, outing, clips, coverage, distance, reasons, prefs, 
         row.confidence, row.payload, row.active, row.status = confidence, payload, True, "ready"
         row.confidence_label = "GPS-aligned estimate" if shift else "High confidence"
         row.updated_at = utcnow()
+    if labels and row.name != labels["title"]:
+        row.name = labels["title"]
     old = {m.clip_id: m for m in session.query(AutoRideClip).filter_by(ride_id=row.id)}
     for position, clip in enumerate(clips):
         member = old.pop(clip["id"], None)
@@ -437,7 +441,9 @@ def discover(session, month=None, *, now=None, ctx=None):
                 distance = sum(rt.clip_speed(tracks[outing_id], a, (b - a).total_seconds())["distance_m"] or 0
                     for a, b in _merge_intervals([(rt.timestamp(c["start_time"]), rt.timestamp(c["end_time"])) for c in cluster]))
                 outline, cut = _route_preview(tracks[outing_id], cluster)
-                plans.append((source, outing, cluster, coverage, round(distance, 1) if coverage else None, reasons, prefs, outline, cut))
+                from .trip_history import presentation
+                labels = presentation(cluster, prefs, tracks[outing_id])
+                plans.append((source, outing, cluster, coverage, round(distance, 1) if coverage else None, reasons, prefs, outline, cut, labels))
         # Plans contain clip metadata and an abstract outline, never raw GPS.
         # Release one month's points before the next potentially slow NAS read.
         del points, times, tracks, supported
@@ -455,6 +461,10 @@ def discover(session, month=None, *, now=None, ctx=None):
                 current_clips[c["archive_id"]]["input_signature"] == c.get("input_signature") for c in members)
         if row.id not in accepted and not safe_to_defer and (not month or local_month == month):
             row.active, row.status, row.updated_at = False, "stale", utcnow()
+    from .trip_history import recording_groups, coverage_summary
+    used = {c["archive_id"] for plan in plans for c in plan[2]}
+    report["recording_groups"] = recording_groups(clips, used, prefs)
+    report["months"] = coverage_summary(session, clips, used)
     report.update({"exclusions": dict(exclusions), "excluded_clip_count": sum(exclusions.values()),
         "review_count": len(review), "review_candidates": review[:100],
         "association_kind": "automatic", "source": source or None, "discovered_ride_count": len(accepted),

@@ -66,14 +66,14 @@
     return {ready:false,text:"Ride film not prepared"};
   }
   function renderAutoGallery() {
-    const payload=rt.auto || {},summary=payload.summary || {},rides=payload.rides || [];
+    const payload=rt.auto || {},summary=payload.summary || {},mapped=payload.rides || [],rides=[...mapped,...(payload.recordings || [])].sort((a,b)=>stamp(b.start_time)-stamp(a.start_time));
     const month=$("rtAutoMonth").value,search=$("rtAutoSearch").value.trim().toLowerCase();
-    const filtered=rides.filter(r=>(!month || dateKey(r.start_time).startsWith(month)) && (!search || ((r.name || "")+" "+when(r.start_time)+" "+(r.start_time || "")).toLowerCase().includes(search)));
+    const filtered=rides.filter(r=>$("rtAutoType").value==="all" || ($("rtAutoType").value==="mapped" ? r.association_kind!=="recording_only" : r.association_kind==="recording_only")).filter(r=>(!month || dateKey(r.start_time).startsWith(month)) && (!search || ((r.name || "")+" "+when(r.start_time)+" "+(r.start_time || "")).toLowerCase().includes(search)));
     const counts=rides.reduce((sum,r)=>({clips:sum.clips+Number(r.clip_count || 0),seconds:sum.seconds+Number(r.duration_s || 0),metres:sum.metres+Number(r.distance_m || 0)}),{clips:0,seconds:0,metres:0});
-    $("rtAutoMetrics").innerHTML=[{n:rides.length.toLocaleString(),label:"rides found"},{n:counts.clips.toLocaleString(),label:"videos brought together"},{n:rideDuration(counts.seconds),label:"recorded"},{n:rideDistance(counts.metres),label:"GPS distance"}].map(x=>'<div><strong>'+esc(x.n)+'</strong><span>'+esc(x.label)+"</span></div>").join("");
+    $("rtAutoMetrics").innerHTML=[{n:rides.length.toLocaleString(),label:"trips in your archive"},{n:counts.clips.toLocaleString(),label:"videos brought together"},{n:rideDuration(counts.seconds),label:"recorded"},{n:rideDistance(counts.metres),label:"GPS distance"}].map(x=>'<div><strong>'+esc(x.n)+'</strong><span>'+esc(x.label)+"</span></div>").join("");
     const job=payload.job || payload.active_job,active=job && ["queued","running","pending"].includes(job.status);
     $("rtAutoDiscovery").hidden=!active;
-    if(active) $("rtAutoDiscovery").innerHTML='<span class="rt-auto-spinner" aria-hidden="true"></span><div><strong>Finding rides in your archive</strong><span>'+esc(job.description || "Checking recording times against your location history…")+'</span></div><a href="/jobs?source=trips">View progress</a>';
+    if(active) $("rtAutoDiscovery").innerHTML='<span class="rt-auto-spinner" aria-hidden="true"></span><div><strong>Finding rides in your archive</strong><span>'+esc((job.detail || "Indexing video dates and checking location history…")+" · "+Math.round(Number(job.progress || 0)*100)+"%")+'</span></div><a href="/jobs?source=trips">View progress</a>';
     $("rtAutoDiscover").disabled=Boolean(rt.busy || active);
     const review=Number(summary.review_count || 0),reasons=Array.isArray(summary.review_reasons)?summary.review_reasons.map(r=>typeof r==="string"?r:r.reason || r.label || "").filter(Boolean):[];
     const labels={missing_metadata_provenance:"Recording metadata needs indexing",archive_month_mismatch:"Camera date differs from the archive month",reset_reused_or_uncertain_date:"Camera clock needs review",reset_or_future_date:"Camera date is reset or in the future",no_exact_ha_time_overlap:"No HA travel at the exact recording time",insufficient_gps_corroboration:"Not enough GPS evidence around the recordings",no_configured_ha_history:"HA location history is missing",gps_history_temporarily_unavailable:"GPS history is temporarily unavailable",unconfirmed_holding_date:"Held footage dates need review",unconfirmed_date_correction:"A date correction needs confirmation",mtime_only_date:"Only the file's modification date is available",ambiguous_date_observation:"Conflicting recording dates",ambiguous_ha_outing:"More than one HA outing fits",invalid_date_or_duration:"Recording date or duration is missing"};
@@ -81,21 +81,25 @@
     $("rtAutoReview").hidden=!exclusions.length && !review;
     $("rtAutoReviewReasons").innerHTML=exclusions.map(([reason,count])=>'<div><span>'+esc(labels[reason] || reason.replaceAll("_"," "))+'</span><strong>'+esc(videos(count))+'</strong></div>').join("")+(review?'<p class="hint">'+review+' possible rides need several consistent recordings or stronger GPS coverage before being added automatically.</p>':"");
     $("rtAutoNote").textContent=(review?review.toLocaleString()+" possible ride"+(review===1?" is":"s are")+" held for review. ":"")+(reasons.length?reasons.slice(0,3).join(" · ")+". ":"")+"Automatic matches use recording times supported by GPS history. Unreliable camera clocks are kept out of the ride map.";
-    $("rtAutoStatus").textContent=active?"Discovery is running":filtered.length.toLocaleString()+" of "+rides.length.toLocaleString()+" rides";
+    $("rtAutoStatus").textContent=active?"Discovery is running":filtered.length.toLocaleString()+" of "+rides.length.toLocaleString()+" trips";
+    $("rtHistorySummary").textContent=mapped.length+" trips matched to GPS · "+(payload.recordings || []).length+" recording groups awaiting locations. Unconfirmed camera dates stay in review.";
+    $("rtHistoryCoverage").innerHTML=(summary.months || []).map(m=>{
+      const status=m.indexed_count<m.video_count?"Metadata indexing pending":!m.dated_count?"Recording dates need review":!m.gps_points?"No HA location history available":m.matched_count<m.dated_count?"Some recording times lack GPS support":"Located recordings available";
+      return '<div class="rt-coverage-row"><strong>'+esc(m.month)+'</strong><span>'+m.video_count+' videos · '+m.indexed_count+' indexed</span><span>'+m.dated_count+' reliable dates · '+m.matched_count+' mapped</span><span>'+esc(status)+'</span></div>';
+    }).join("");
+    let lastMonth="";
     $("rtAutoGallery").innerHTML=filtered.length?filtered.slice(0,rt.autoShown).map(ride=>{
-      const film=filmStatus(ride),snapshots=(ride.snapshots || []).filter(s=>mediaUrl(s.url)),cover=mediaUrl(ride.cover_url) || mediaUrl(snapshots[0]?.url),date=when(ride.start_time),id=esc(ride.id);
-      return '<article class="rt-auto-card'+(String(rt.autoRide?.id)===String(ride.id)?" rt-auto-selected":"")+'"><button type="button" class="rt-auto-cover" data-rt-auto-map="'+id+'" aria-label="Open map for '+esc(ride.name || date)+'">'+(cover?'<img src="'+esc(cover)+'" alt="" loading="lazy" decoding="async">':sketch(ride))+'<span class="rt-auto-date">'+esc(day(ride.start_time))+'</span><span class="rt-auto-cover-label">'+(cover?"Explore ride map":"Open ride map")+'</span></button><div class="rt-auto-card-body"><div class="rt-auto-card-heading"><h3>'+esc(ride.name || "Ride · "+date)+'</h3><span class="rt-auto-confidence">'+esc(rideConfidence(ride))+'</span></div><p class="rt-auto-times">'+esc(clock(ride.start_time,ride.duration_s<60))+"–"+esc(clock(ride.end_time,ride.duration_s<60))+'</p><div class="rt-auto-facts"><span>'+esc(videos(ride.clip_count))+'</span><span>'+esc(rideDuration(ride.duration_s))+'</span><span>'+esc(rideDistance(ride.distance_m))+" GPS</span></div>"+
-        (snapshots.length?'<div class="rt-auto-snapshots" aria-label="Snapshots from '+esc(ride.name || "this ride")+'">'+snapshots.slice(0,4).map((snapshot,index)=>'<button type="button" data-rt-auto-snapshot="'+id+'" data-snapshot-index="'+index+'" aria-label="View snapshot '+(index+1)+" from "+esc(ride.name || "ride")+'"><img src="'+esc(mediaUrl(snapshot.url))+'" loading="lazy" decoding="async" alt="Ride snapshot '+(index+1)+'"><span>'+esc(clock(snapshot.time))+'</span></button>').join("")+'</div>':"")+
-        '<div class="rt-auto-film-status'+(film.error?" rt-auto-film-error":"")+'"><span class="rt-auto-status-dot'+(film.ready?" rt-film-ready":film.active?" rt-film-active":"")+'"></span><span>'+esc(film.text)+'</span></div>'+(film.error?'<p class="hint rt-auto-error-detail">'+esc(film.error)+"</p>":"")+
-        '<div class="rt-auto-card-actions">'+(film.ready?'<button type="button" data-rt-auto-play="'+id+'">▶ Watch ride</button>':'<button type="button" class="ghost" data-rt-auto-render="'+id+'"'+(film.active?" disabled":"")+'>'+(film.active?"Preparing film…":film.error?"Retry ride film":"Create ride film")+'</button>')+'<button type="button" class="ghost" data-rt-auto-map="'+id+'">Map and videos</button></div>'+
-        (ride.reasons?.length?'<details class="rt-auto-reasons"><summary>Why these clips belong together</summary><p>'+esc(ride.reasons.map(r=>typeof r==="string"?r:r.reason || "").join(" · "))+'</p></details>':"")+'</div></article>';
-    }).join(""):'<div class="rt-auto-empty"><span class="rt-auto-empty-icon" aria-hidden="true">↗</span><h3>'+(rides.length?"No rides match these filters":"Your rides will appear here")+'</h3><p>'+(rides.length?"Try another month or clear the search.":"Find new rides to group archived videos by trustworthy recording times and match them to your Home Assistant travels.")+'</p>'+(!rides.length?'<p class="hint">Clips with uncertain dates wait for review; they won’t be placed on an invented route.</p><button type="button" class="ghost" id="rtAutoOpenSetup">Check location history</button>':"")+'</div>';
+      const unlocated=ride.association_kind==="recording_only",film=filmStatus(ride),snapshots=(ride.snapshots || []).filter(s=>mediaUrl(s.url)),cover=mediaUrl(snapshots[0]?.url) || mediaUrl(ride.cover_url),id=esc(ride.id);
+      const key=dateKey(ride.start_time).slice(0,7),heading=key!==lastMonth?'<h3 class="rt-trip-month">'+esc(new Date(key+"-15T12:00:00Z").toLocaleDateString("en-GB",{month:"long",year:"numeric",timeZone:zone()}))+'</h3>':"";lastMonth=key;
+      const action=unlocated?'data-rt-recording="'+id+'"':'data-rt-auto-map="'+id+'"';
+      return heading+'<article class="rt-trip-row"><button class="rt-trip-thumb" type="button" '+action+' aria-label="View '+esc(ride.name || ride.title)+'"><span aria-hidden="true">'+(unlocated?'▻':sketch(ride))+'</span>'+(cover?'<img src="'+esc(cover)+'" alt="" loading="lazy" decoding="async">':"")+'</button><div class="rt-trip-copy"><h3><button type="button" '+action+'>'+esc(ride.name || ride.title || day(ride.start_time))+'</button></h3><p>'+esc(clock(ride.start_time))+"–"+esc(clock(ride.end_time))+" · "+esc(videos(ride.clip_count))+" · "+esc(rideDuration(ride.duration_s))+(unlocated?"":" · "+esc(rideDistance(ride.distance_m))+" GPS")+'</p><span class="rt-trip-location '+(unlocated?'rt-trip-unlocated':'')+'">'+esc(unlocated?"Recording times only · location not matched":rideConfidence(ride))+'</span>'+(ride.place_basis?'<small class="rt-trip-place-note">Approximate towns/cities at the first and last filmed GPS positions</small>':"")+'</div><div class="rt-trip-actions">'+(film.ready?'<button type="button" data-rt-auto-play="'+id+'">▶ Film</button>':'')+'<button type="button" class="ghost" '+action+'>'+(unlocated?'View videos':'Map & videos')+'</button></div></article>';
+    }).join(""):'<div class="rt-auto-empty"><h3>No trips match this view</h3><p>Clear the filters or find new rides to index older footage. Clips with unconfirmed dates remain in review.</p></div>';
     $("rtAutoMore").hidden=filtered.length<=rt.autoShown;
   }
   async function refreshAuto() {
     rt.auto=await request("/auto");
     if($("rtOpenLatestMap")) $("rtOpenLatestMap").disabled=!(rt.auto.rides || []).length;
-    const selected=$("rtAutoMonth").value,months=[...new Set((rt.auto.rides || []).map(r=>dateKey(r.start_time).slice(0,7)).filter(m=>/^\d{4}-\d{2}$/.test(m)))].sort().reverse();
+    const selected=$("rtAutoMonth").value,months=[...new Set([...(rt.auto.rides || []),...(rt.auto.recordings || [])].map(r=>dateKey(r.start_time).slice(0,7)).filter(m=>/^\d{4}-\d{2}$/.test(m)))].sort().reverse();
     $("rtAutoMonth").innerHTML='<option value="">All dates</option>'+months.map(m=>'<option value="'+esc(m)+'">'+esc(new Date(m+"-15T12:00:00Z").toLocaleDateString("en-GB",{month:"long",year:"numeric",timeZone:zone()}))+"</option>").join("");$("rtAutoMonth").value=selected;
     renderAutoGallery();
     const job=rt.auto.job || rt.auto.active_job;
@@ -126,6 +130,12 @@
     const ride=(rt.auto?.rides || []).find(r=>String(r.id)===String(id));if(!ride) return;const film=filmStatus(ride);if(!film.ready) throw new Error("This ride film is still being prepared");
     $("rtFilmTitle").textContent=ride.name || "Ride film";$("rtFilmMeta").textContent=when(ride.start_time)+" · "+videos(ride.clip_count)+" · "+rideDuration(ride.duration_s);
     const video=$("rtFilmVideo");video.src=film.url;$("rtFilmDialog").showModal();video.play().catch(()=>{});
+  }
+  async function openRecording(id) {
+    const data=await request("/recordings/"+encodeURIComponent(id));
+    $("rtRecordingTitle").textContent=data.group.title;
+    $("rtRecordingVideos").innerHTML=data.clips.map((c,i)=>'<li><strong>'+esc((i+1)+". "+c.filename)+'</strong><span>'+esc(when(c.start_time))+" · "+esc(rideDuration(c.duration_s))+'</span></li>').join("");
+    $("rtRecordingDialog").showModal();
   }
   function closeFilm() {const video=$("rtFilmVideo");video.pause();video.removeAttribute("src");video.load();$("rtFilmDialog").close();}
   function showSnapshot(id,index) {
@@ -437,12 +447,15 @@
     if(!$("roadtripTitle")) return;
     $("rtOpenLatestMap").addEventListener("click",()=>action(async()=>{const latest=(rt.auto?.rides || [])[0];if(latest) await openAutoRide(latest.id);}));
     $("rtAutoDiscover").addEventListener("click",()=>action(discoverRides));$("rtAutoRefresh").addEventListener("click",()=>action(refreshAuto));
-    ["rtAutoMonth","rtAutoSearch"].forEach(id=>$(id).addEventListener("input",()=>{rt.autoShown=24;renderAutoGallery();}));
+    ["rtAutoMonth","rtAutoSearch","rtAutoType"].forEach(id=>$(id).addEventListener("input",()=>{rt.autoShown=24;renderAutoGallery();}));
     $("rtAutoShowMore").addEventListener("click",()=>{rt.autoShown+=24;renderAutoGallery();});
     $("rtAutoGallery").addEventListener("click",e=>{
+      const recording=e.target.closest("[data-rt-recording]");if(recording){action(()=>openRecording(recording.dataset.rtRecording));return;}
       const map=e.target.closest("[data-rt-auto-map]"),play=e.target.closest("[data-rt-auto-play]"),render=e.target.closest("[data-rt-auto-render]"),snapshot=e.target.closest("[data-rt-auto-snapshot]");
       if(map) action(()=>openAutoRide(map.dataset.rtAutoMap));else if(play) action(()=>playAutoRide(play.dataset.rtAutoPlay));else if(render) action(()=>renderAutoRide(render.dataset.rtAutoRender));else if(snapshot) showSnapshot(snapshot.dataset.rtAutoSnapshot,Number(snapshot.dataset.snapshotIndex));else if(e.target.closest("#rtAutoOpenSetup")){$("rtSetup").open=true;$("rtSetup").scrollIntoView({behavior:"smooth",block:"start"});}
     });
+    $("rtAutoGallery").addEventListener("error",e=>{if(e.target.tagName==="IMG")e.target.hidden=true;},true);
+    $("rtRecordingClose").addEventListener("click",()=>$("rtRecordingDialog").close());
     $("rtFilmClose").addEventListener("click",closeFilm);$("rtFilmDialog").addEventListener("cancel",e=>{e.preventDefault();closeFilm();});
     $("rtSnapshotClose").addEventListener("click",()=>$("rtSnapshotDialog").close());
     $("rtSnapshotDialog").addEventListener("keydown",e=>{if(e.key==="ArrowLeft"){e.preventDefault();showSnapshot(rt.snapshot.id,rt.snapshot.index-1);}else if(e.key==="ArrowRight"){e.preventDefault();showSnapshot(rt.snapshot.id,rt.snapshot.index+1);}});

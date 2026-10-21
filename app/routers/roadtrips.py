@@ -58,7 +58,44 @@ def automatic_rides(session: Session = Depends(get_session)):
 @router.post("/auto/discover")
 def discover_automatic_rides():
     from ..auto_ride_jobs import enqueue_discovery
-    return enqueue_discovery()
+    return enqueue_discovery(backfill=True)
+
+
+@router.get("/covers/{key}")
+def trip_cover(key: str, session: Session = Depends(get_session)):
+    from ..auto_ride_models import AutoRide, AutoRideDiscovery
+    from ..auto_rides import _json
+    from ..trip_history import cover_directory
+    if not re.fullmatch(r"[a-f0-9]{64}", key):
+        raise HTTPException(404, "Trip picture not found")
+    state = session.get(AutoRideDiscovery, 1)
+    groups = _json(state.report if state else None, {}).get('recording_groups', [])
+    allowed = any(g.get('cover_key') == key for g in groups) or any(
+        _json(r.payload, {}).get('cover_key') == key for r in session.query(AutoRide).filter_by(active=True, status='ready'))
+    if not allowed:
+        raise HTTPException(404, "Trip picture is no longer current")
+    try:
+        path = cover_directory() / (key + '.jpg')
+        if path.is_symlink() or not path.is_file():
+            raise HTTPException(404, "Trip picture is being prepared")
+        return FileResponse(path, media_type='image/jpeg', headers={'Cache-Control':'private, max-age=86400'})
+    except (OSError, RuntimeError):
+        raise HTTPException(503, "Trip picture storage is unavailable") from None
+
+
+@router.get("/recordings/{group_id}")
+def recorded_trip(group_id: str, session: Session = Depends(get_session)):
+    from ..auto_ride_models import AutoRideDiscovery
+    from ..auto_rides import _json, _hash, eligible_clips
+    state = session.get(AutoRideDiscovery, 1)
+    group = next((g for g in _json(state.report if state else None, {}).get('recording_groups', []) if g['id'] == group_id), None)
+    if not group:
+        raise HTTPException(404, "Recording group not found")
+    current = {c['archive_id']:c for c in eligible_clips(session)[0]}
+    clips = [current[i] for i in group['clip_ids'] if i in current]
+    if len(clips) != len(group['clip_ids']) or _hash([c['input_signature'] for c in clips]) != group['input_signature']:
+        raise HTTPException(409, "Recording dates changed; refresh trip history")
+    return {'group':group, 'clips':clips}
 
 
 @router.get("/auto/{ride_id}")

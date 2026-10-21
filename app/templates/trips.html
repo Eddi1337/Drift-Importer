@@ -7,11 +7,14 @@
   <div class="section-heading"><div><p class="eyebrow">AUTOMATIC RIDE HISTORY</p><h2 id="roadtripTitle">All your rides</h2><p class="hint">Videos recorded close together become one ride. Trustworthy recording times and Home Assistant locations put each ride on the map.</p></div><button id="rtAutoDiscover" type="button">Find new rides</button></div>
   <p id="rtError" class="roadtrip-error" role="alert" hidden></p>
   <div id="rtAutoMetrics" class="roadtrip-auto-metrics" aria-label="Ride history totals"></div>
-  <div class="roadtrip-auto-toolbar"><label>Show rides<select id="rtAutoMonth"><option value="">All dates</option></select></label><label>Find a ride<input id="rtAutoSearch" type="search" placeholder="Name or date"></label><button id="rtAutoRefresh" type="button" class="ghost">Refresh</button><span id="rtAutoStatus" class="hint" role="status" aria-live="polite">Loading ride history…</span></div>
+  <div class="roadtrip-auto-toolbar"><label>Month<select id="rtAutoMonth"><option value="">All dates</option></select></label><label>Locations<select id="rtAutoType"><option value="all">All trips</option><option value="mapped">GPS matched</option><option value="unlocated">Not yet located</option></select></label><label>Find a trip<input id="rtAutoSearch" type="search" placeholder="Name or date"></label><button id="rtAutoRefresh" type="button" class="ghost">Refresh</button><span id="rtAutoStatus" class="hint" role="status" aria-live="polite">Loading ride history…</span></div>
   <div id="rtAutoDiscovery" class="roadtrip-auto-discovery" hidden role="status"></div>
+  <p id="rtHistorySummary" class="hint"></p>
   <div id="rtAutoGallery" class="roadtrip-auto-gallery"><p class="hint">Loading your rides…</p></div>
   <div id="rtAutoMore" class="roadtrip-auto-more" hidden><button id="rtAutoShowMore" type="button" class="ghost">Show more rides</button></div>
   <details id="rtAutoReview" class="roadtrip-auto-review" hidden><summary>Recordings waiting for reliable dates or locations</summary><div id="rtAutoReviewReasons"></div><button id="rtAutoReviewLocations" type="button" class="ghost">Review uncertain recordings</button></details>
+  <details class="rt-history-coverage"><summary>Why are older trips missing from the map?</summary><p class="hint">Recording groups have reliable dates but may lack HA history or enough nearby GPS fixes. Nothing is plotted across missing GPS. Held files still need their dates confirmed.</p><div id="rtHistoryCoverage"></div></details>
+  <p class="hint rt-place-attribution">Approximate place names: <a href="https://www.geonames.org/" target="_blank" rel="noopener">GeoNames</a>. Lookups run locally.</p>
   <p id="rtAutoNote" class="hint"></p>
 </section>
 <section id="rtMapSection" class="panel roadtrip-panel" hidden aria-labelledby="rtMapTitle">
@@ -90,6 +93,7 @@
 </details>
 <dialog id="tripPlayerDlg"><video id="tripPlayer" controls preload="metadata" style="max-width:80vw;max-height:70vh"></video><div><button onclick="closeTripPlayer()">Close</button></div></dialog>
 
+<dialog id="rtRecordingDialog" class="roadtrip-film-dialog"><div class="row spread"><h2 id="rtRecordingTitle">Recorded trip</h2><button id="rtRecordingClose" type="button" class="ghost">Close</button></div><p class="hint">These videos have consistent dates in their archive month. A route has not been reliably matched, so no map or speed is inferred.</p><ol id="rtRecordingVideos" class="rt-recording-videos"></ol></dialog>
 <dialog id="rtFilmDialog" class="roadtrip-film-dialog"><div class="row spread"><div><p class="eyebrow">RIDE FILM</p><h2 id="rtFilmTitle">Ride film</h2><p id="rtFilmMeta" class="hint"></p></div><button id="rtFilmClose" type="button" class="ghost" aria-label="Close ride film">Close</button></div><video id="rtFilmVideo" controls preload="none" playsinline></video><p id="rtFilmNote" class="hint">The film combines this ride's clips with its route overlay. Originals stay in the archive.</p></dialog>
 <dialog id="rtSnapshotDialog" class="roadtrip-snapshot-dialog"><div class="row spread"><p id="rtSnapshotCaption" class="hint"></p><button id="rtSnapshotClose" type="button" class="ghost" aria-label="Close ride snapshot">Close</button></div><img id="rtSnapshotImage" alt="Snapshot from the selected ride"><div class="row spread"><button id="rtSnapshotPrevious" type="button" class="ghost">Previous snapshot</button><button id="rtSnapshotNext" type="button" class="ghost">Next snapshot</button></div></dialog>
 {% endblock %}

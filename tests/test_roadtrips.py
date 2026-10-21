@@ -581,3 +581,30 @@ def test_ram_location_cache_evicts_old_days_within_its_budget(session, monkeypat
     assert 0 < rt._DAY_CACHE_BYTES <= budget
     rt.load_month(session, "2026-06", "test", start_time=point(0)["t"], end_time=point(10)["t"])
     assert opened == ["2026-06-04.json.gz", "2026-06-05.json.gz", "2026-06-04.json.gz"]
+
+
+def test_automatic_metadata_backfill_indexes_older_folders_and_leaves_holding_alone(session, monkeypatch):
+    from contextlib import contextmanager, nullcontext
+    from app import archive
+    root=rt.get_settings().nas_root
+    session.add(Destination(id=1,name='NAS',type='local',base_path=str(root)))
+    for relative in ('2024/05/old.MP4','Holding/2024/05/uncertain.MP4','Unsorted/unknown.MP4'):
+        path=root/relative;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'video header')
+        session.add(ArchiveFile(destination_id=1,root_path=str(root),path=relative,kind='video',present=True,**archive.stat_identity(path.stat())))
+    session.flush()
+    @contextmanager
+    def scope():
+        yield session
+        session.flush()
+    monkeypatch.setattr(rt,'session_scope',scope)
+    monkeypatch.setattr(archive,'require_storage',lambda p:Path(p).resolve())
+    seen=[]
+    def probe(path,ctx):
+        seen.append(path)
+        return 300,dt.datetime(2024,5,2,10)
+    monkeypatch.setattr(rt,'_probe_file',probe)
+    ctx=SimpleNamespace(ffmpeg_semaphore=nullcontext(),upload_semaphore=nullcontext(),is_cancelled=lambda:False,set_progress=lambda *a:None)
+    assert rt.probe_archive_metadata(ctx)['probed']==1
+    assert seen==[root/'2024/05/old.MP4']
+    assert rt.probe_archive_metadata(ctx)['cached']==1
+    assert len(seen)==1

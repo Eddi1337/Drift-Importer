@@ -492,3 +492,9 @@ keeps completed uploads, byte counts, settings, date review, trip records and
 NAS paths, while separating each service's queued jobs. Never restart an old
 Pi database after newer uploads have been recorded elsewhere; migrate the
 latest state first and verify a fresh camera-to-NAS transfer afterwards.
+
+### Historical trip list
+
+The processor indexes archived video headers before ride discovery, so older NAS-only files no longer depend on a live camera record. Header results are cached against the inventory identity and one file is read at a time. Holding files stay excluded until their dates are confirmed. The list also shows dated recording groups without a reliable GPS match, marked as unlocated; these do not invent routes, speed, or corrected dates.
+
+Matched titles use the local calendar date and nearby origin/destination towns from an offline [GeoNames](https://www.geonames.org/) gazetteer. No private GPS is sent to a geocoder. One small NAS thumbnail per recording run is prepared independently of the full ride film. The monthly coverage panel distinguishes unindexed video, unverified dates and missing/sparse HA history. Find new rides performs a bounded historical HA backfill; remaining days continue in background discovery.

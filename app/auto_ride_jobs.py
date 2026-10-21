@@ -74,17 +74,23 @@ def list_payload(session):
         row = session.get(AutoRide, summary["id"])
         summary["render"] = render_summary(session, row)
         summary["snapshots"] = summary["render"]["snapshots"]
+        summary["cover_url"] = f"/api/roadtrips/covers/{summary['cover_key']}" if summary.get("cover_key") else None
+    for group in payload.get("recordings", []):
+        group["cover_url"] = f"/api/roadtrips/covers/{group['cover_key']}"
+        group["name"] = group["title"]
+        group.pop("clip_ids", None)
+        group.pop("input_signature", None)
     job = session.query(Job).filter(Job.kind == "auto_rides_discover", Job.status.in_(ACTIVE_STATES)).first()
-    payload["job"] = {"id": job.id, "status": job.status, "progress": job.progress} if job else None
+    payload["job"] = {"id": job.id, "status": job.status, "progress": job.progress, "detail": job.detail} if job else None
     return payload
 
 
-def enqueue_discovery():
+def enqueue_discovery(*, backfill=False):
     with _QUEUE_LOCK, session_scope() as session:
         job = session.query(Job).filter(Job.kind == "auto_rides_discover", Job.status.in_(ACTIVE_STATES)).first()
         if job:
             return {"job_id": job.id, "already_queued": True}
-        return {"job_id": get_manager().enqueue("auto_rides_discover", description="Find rides from video times and Home Assistant journeys")}
+        return {"job_id": get_manager().enqueue("auto_rides_discover", description="Index archive dates and find rides from Home Assistant journeys", payload={"backfill": backfill})}
 
 
 def enqueue_render(ride_id, *, force=False):
@@ -102,16 +108,39 @@ def enqueue_render(ride_id, *, force=False):
         return {"job_id": get_manager().enqueue("auto_ride_prepare", description=f"Prepare ride film: {ride.name}", payload={"ride_id": ride_id}), "status": "queued"}
 
 
+class _Stage:
+    def __init__(self, parent, start, end):
+        self.parent, self.start, self.end = parent, start, end
+    def __getattr__(self, key):
+        return getattr(self.parent, key)
+    def set_progress(self, value, detail=None):
+        self.parent.set_progress(self.start + value * (self.end-self.start), detail)
+
+
 @handler("auto_rides_discover")
 def handle_discovery(job_id, payload, ctx):
     from .auto_rides import discover
     from .auto_ride_models import AutoRide, AutoRideDiscovery
     from .auto_ride_ha import refresh_ha_days
+    indexing = {}
+    if getattr(get_settings(), 'processing_role', '') == 'processor':
+        from .roadtrips import probe_archive_metadata
+        indexing = probe_archive_metadata(_Stage(ctx, 0, .55))
     with ctx.upload_semaphore:
         with session_scope() as session:
             refresh = refresh_ha_days(session, ctx=ctx)
+            if payload.get('backfill'):
+                deadline = time.monotonic() + 90
+                for _ in range(11):
+                    if not refresh.get('pending_days') or refresh.get('errors') or time.monotonic() >= deadline:
+                        break
+                    rt_refresh = refresh_ha_days(session, ctx=ctx, max_days=7)
+                    for key in ('imported_days','empty_days','preserved_days','unchanged_days','checked_days'):
+                        rt_refresh[key] = rt_refresh.get(key,0) + refresh.get(key,0)
+                    refresh = rt_refresh
             report = discover(session, ctx=ctx)
             report["ha_refresh"] = refresh
+            report["metadata_index"] = indexing
             session.get(AutoRideDiscovery, 1).report = json.dumps(report)
             rides = [row.id for row in session.query(AutoRide).filter_by(active=True, status="ready")]
             stale_renders = []
@@ -136,7 +165,11 @@ def handle_discovery(job_id, payload, ctx):
                     from .jobs import JobCancelled
                     raise JobCancelled()
                 enqueue_render(ride_id)
-    ctx.set_progress(1, f"Found {len(rides)} automatic rides; uncertain footage remains excluded")
+    if getattr(get_settings(), 'processing_role', '') == 'processor':
+        from .trip_history import prepare_covers
+        with session_scope() as session:
+            prepare_covers(session, _Stage(ctx, .9, .99))
+    ctx.set_progress(1, f"Found {len(rides)} mapped rides; recording groups without GPS are listed separately")
 
 
 @handler("auto_ride_prepare")

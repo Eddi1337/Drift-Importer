@@ -969,12 +969,11 @@ def _probe_file(path: Path, ctx):
             process.communicate()
 
 
-@handler("roadtrip_probe")
-def handle_probe(job_id, payload, ctx):
+def probe_archive_metadata(ctx, month=None):
     from .archive import _safe_root, _safe_stat, stat_identity
     from .archive_models import ArchiveFile
-    month = payload["month"]
-    month_bounds(month)
+    if month:
+        month_bounds(month)
     # Share the decoder slot, then the upload slot, matching other NAS metadata
     # work. No two probes or NAS transfer-heavy jobs run concurrently.
     report = {"month": month, "probed": 0, "cached": 0, "errors": 0}
@@ -994,7 +993,9 @@ def handle_probe(job_id, payload, ctx):
     with _LOCATION_LOCK, ctx.ffmpeg_semaphore, ctx.upload_semaphore:
         with session_scope() as session:
             ids = [row.id for row in session.query(ArchiveFile.id, ArchiveFile.path).filter(
-                ArchiveFile.present.is_(True), ArchiveFile.kind == "video") if folder_month(row.path)[0] == month]
+                ArchiveFile.present.is_(True), ArchiveFile.kind == "video") if (folder_month(row.path)[0] == month if month else
+                    folder_month(row.path)[0] and int(folder_month(row.path)[0][:4]) >= 2005 and
+                    not any(p.lower() in ("holding", "trips", "renders") or p.startswith(".") for p in Path(row.path).parts[:-1]))]
         for index, archive_id in enumerate(ids):
             _cancel(ctx)
             with session_scope() as session:
@@ -1004,7 +1005,7 @@ def handle_probe(job_id, payload, ctx):
                 identity = _metadata_identity(archived)
                 portable_identity = _portable_metadata_identity(archived)
                 cached = session.get(RoadtripClipMetadata, archive_id)
-                if cached and cached.identity == identity and not cached.error:
+                if cached and cached.identity == identity and (not cached.error or month is None):
                     report["cached"] += 1
                     continue
                 root, relative = Path(archived.root_path), archived.path
@@ -1041,6 +1042,12 @@ def handle_probe(job_id, payload, ctx):
                 flush_pending()
             ctx.set_progress((index + 1) / len(ids) if ids else 1, f"Read {index + 1}/{len(ids)} clip headers; {report['errors']} unreadable")
         flush_pending()
+    return report
+
+
+@handler("roadtrip_probe")
+def handle_probe(job_id, payload, ctx):
+    report = probe_archive_metadata(ctx, payload["month"])
     with session_scope() as session:
         row = session.get(Job, job_id)
         if row:

@@ -412,3 +412,52 @@ def test_discovery_holds_no_sqlite_write_lock_during_second_month_nas_read(setup
     with Session(file_engine) as current:
         report = ar.discover(current, now=rt.timestamp("2026-12-01T00:00:00Z"))
         assert report["discovered_ride_count"] == 2 and observed == ["writer committed"]
+
+
+def test_offline_place_titles_cover_cities_and_towns_without_network():
+    from app.trip_history import dated_title, place_name
+    assert place_name(51.51, -.04) == 'London'
+    assert place_name(50.154, -5.07) == 'Falmouth'
+    assert place_name(52.453, -1.72) == 'Birmingham'
+    assert place_name(float('nan'), 0) is None
+    assert dated_title('2026-07-11T10:00:00Z','Europe/London','London','Falmouth') == '11th July 2026 – London to Falmouth'
+
+
+def test_reliable_unlocated_recordings_are_listed_without_invented_gps(setup):
+    session, _, points, _ = setup
+    footage(setup, 1)
+    footage(setup, 2)
+    footage(setup, 3, status='review', reasons=list(ar.SOFT_REVIEW_REASONS), holding=True)
+    points.clear()
+    report = ar.discover(session)
+    assert not session.query(AutoRide).count()
+    groups = ar.list_rides(session)['recordings']
+    assert len(groups) == 1 and groups[0]['clip_count'] == 2
+    assert groups[0]['association_kind'] == 'recording_only'
+    assert groups[0]['origin'] is None and groups[0]['destination'] is None
+    assert groups[0]['distance_m'] is None
+    assert 'Route not yet located' in groups[0]['title']
+    assert report['exclusions']['unconfirmed_holding_date'] == 1
+    from app.routers.roadtrips import recorded_trip
+    assert len(recorded_trip(groups[0]['id'], session)['clips']) == 2
+    record = session.query(RecordingDate).order_by(RecordingDate.id).first()
+    record.revision += 1
+    session.flush()
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc:
+        recorded_trip(groups[0]['id'], session)
+    assert exc.value.status_code == 409
+
+
+def test_place_names_update_without_invalidating_completed_film_inputs(setup):
+    session, _, _, _ = setup
+    footage(setup, 1);footage(setup, 2)
+    ar.discover(session)
+    ride=session.query(AutoRide).one()
+    original=ride.input_signature
+    assert 'London' in ride.name
+    payload=json.loads(ride.payload)
+    assert payload['origin']=='London' and payload['destination']=='London'
+    assert 'latitude' not in payload and 'longitude' not in payload
+    ar.discover(session)
+    assert ride.input_signature==original
