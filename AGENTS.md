@@ -32,6 +32,19 @@ to one or more destinations (Nextcloud / SFTP / local-or-NAS path).
   job failure. **Do not read "job: done" as "all clips uploaded."** Check
   `uploaded_clips.status` / `upload_states.status` for the truth.
 
+- **The camera clock is neither UTC nor reliable.** It holds a fixed offset from
+  UTC from whenever it was last set and does not follow daylight saving: set
+  during BST it reads an hour ahead all year. It can also jump, as it did on
+  2026-09-23 (`DVR00713` to `DVR00714`, back ~14 days). Do not convert camera
+  times with the calendar or the configured timezone. Ride discovery measures
+  a whole-hour offset from the month's GPS outings (`align_camera_offset`), and
+  confirmed corrections are already real UTC.
+- **Clips in `/mnt/NAS/Holding` are invisible to trips.** Unapproved dates are
+  excluded from ride discovery, and HA GPS is only fetched for days with
+  eligible clips, so a wrong camera clock means no trip and no GPS for that day.
+  The camera is usually plugged in minutes after a ride, so `first_seen` on the
+  newest clip is good evidence of when it really ended.
+
 ## Deployment — the Pi
 
 - Host: **`ed@192.168.3.188`** (hostname `drift-pi`; 32-bit Raspberry Pi OS,

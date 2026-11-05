@@ -64,7 +64,7 @@ def _rows(session, model):
 
 def input_fingerprint(session):
     """Cheap metadata-only change detector; includes changes lacking updated_at."""
-    digest = hashlib.sha256(b'ride-policy-3-historical-index')
+    digest = hashlib.sha256(b'ride-policy-4-camera-utc-offset')
     columns = {
         ArchiveFile: ("id", "destination_id", "root_path", "path", "kind", "present", "eligible", "ledger_id", "size_bytes", "mtime_ns", "ctime_ns", "device", "inode"),
         MediaItem: ("id", "path", "capture_time", "duration_s", "size_bytes", "checksum", "derived"),
@@ -381,6 +381,8 @@ def discover(session, month=None, *, now=None, ctx=None):
         if not outings:
             exclusions["no_configured_ha_history"] += len(bucket)
             continue
+        from .auto_ride_alignment import align_camera_offset, align_confirmed_returns
+        bucket = align_camera_offset(bucket, outings, MIN_TEMPORAL_COVERAGE)
         first, last = rt.timestamp(bucket[0]["start_time"]) - dt.timedelta(seconds=GPS_NEIGHBOUR_S), max(rt.timestamp(c["end_time"]) for c in bucket) + dt.timedelta(seconds=GPS_NEIGHBOUR_S)
         try:
             points = rt.load_month(session, bucket_month, source, start_time=first, end_time=last)
@@ -390,7 +392,6 @@ def discover(session, month=None, *, now=None, ctx=None):
             exclusions["gps_history_temporarily_unavailable"] += len(bucket)
             continue
         times = [rt.timestamp(p["t"]) for p in points]
-        from .auto_ride_alignment import align_confirmed_returns
         bucket = align_confirmed_returns(bucket, outings, points, prefs)
         tracks, supported = {}, defaultdict(list)
         for clip in bucket:
@@ -415,7 +416,7 @@ def discover(session, month=None, *, now=None, ctx=None):
             close = (len(nearby) >= 2 and min(nearby) <= start and max(nearby) >= end and
                 min(abs((t - start).total_seconds()) for t in nearby) <= GPS_NEIGHBOUR_S and
                 min(abs((t - end).total_seconds()) for t in nearby) <= GPS_NEIGHBOUR_S)
-            if speed["coverage"] < MIN_GPS_COVERAGE and not (clip["approved_date"] and close) and not clip.get("alignment_basis"):
+            if speed["coverage"] < MIN_GPS_COVERAGE and not (clip["approved_date"] and close) and clip.get("alignment_basis") != "confirmed_return_duration":
                 exclusions["insufficient_gps_corroboration"] += 1
                 continue
             supported[outing.id].append(clip | {"temporal_coverage": round(temporal, 3), "gps_coverage": speed["coverage"],
@@ -431,7 +432,9 @@ def discover(session, month=None, *, now=None, ctx=None):
                 reasons = [f"{len(cluster)} adjacent recordings use evidenced timestamps in their archive month.",
                     "Recording times overlap one configured Home Assistant outing without shifting the camera clock.",
                     f"Continuous GPS covers {coverage:.0%} of recorded time; nearby fixes corroborate the dates."]
-                if cluster[0].get("association_offset_s"):
+                if cluster[0].get("alignment_basis") == "camera_utc_offset":
+                    reasons[1] = f"Recording times overlap one configured Home Assistant outing after removing the camera clock's {abs(cluster[0]['association_offset_s']) / 3600:.0f}-hour offset from UTC, which this month's GPS outings show."
+                elif cluster[0].get("association_offset_s"):
                     reasons[1] = "Estimated video times align the complete confirmed camera sequence with a stationary departure and HA return home; the full run has at least 80% GPS coverage."
                     reasons.append(f"The earlier date correction was {abs(cluster[0]['association_offset_s']) / 60:.1f} minutes late. This map uses estimated association times; original files and confirmed archive dates are unchanged.")
                 if coverage < STRONG_GPS_COVERAGE:

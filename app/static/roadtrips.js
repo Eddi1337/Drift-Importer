@@ -119,7 +119,7 @@
     try {
       const detail=await request("/auto/"+encodeURIComponent(id));
       rt.collection=null;rt.selection=null;rt.autoRide=detail.ride || (rt.auto?.rides || []).find(r=>String(r.id)===String(id));
-      renderDetail({...detail,ride:rt.autoRide,association_kind:"automatic"});$("rtStatus").textContent=rt.autoRide?.evidence?.clock_shift_seconds?"Full camera sequence aligned to HA departure and return. Video times are estimates; GPS gaps remain unlocated.":"Automatic match from recording times and GPS history. Positions remain approximate.";
+      renderDetail({...detail,ride:rt.autoRide,association_kind:"automatic"});$("rtStatus").textContent=rt.autoRide?.evidence?.alignment_basis==="camera_utc_offset"?"Camera clock hour removed using this month's GPS outings. Positions remain approximate.":rt.autoRide?.evidence?.clock_shift_seconds?"Full camera sequence aligned to HA departure and return. Video times are estimates; GPS gaps remain unlocated.":"Automatic match from recording times and GPS history. Positions remain approximate.";
       $("rtMapTitle").scrollIntoView({behavior:"smooth",block:"start"});
     } catch(e) {$("rtStatus").textContent="This ride’s map could not be loaded. "+e.message;throw e;}
   }

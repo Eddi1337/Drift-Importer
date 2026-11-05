@@ -13,6 +13,49 @@ from . import roadtrips as rt
 
 RETURN_GAP_S = 60 * 60
 MAX_SHIFT_S = 3 * 60 * 60
+CAMERA_UTC_SHIFTS_S = (-60 * 60, 60 * 60)
+MIN_CAMERA_SHIFT_GAIN = 3
+
+
+def align_camera_offset(clips, outings, min_coverage):
+    """Remove a whole-hour camera clock offset that the GPS outings disprove.
+
+    The camera keeps a fixed offset from UTC from whenever it was last set and
+    does not follow daylight saving, so neither the calendar nor the configured
+    timezone says what it is. Let the month's outings decide, and only when one
+    shift clearly places more recordings inside an outing than no shift does.
+    Confirmed corrections are already real UTC times and are left alone.
+    """
+    camera = [c for c in clips if c['timing_basis'] != 'confirmed_date_correction']
+    spans = [(rt.timestamp(o.start_time), rt.timestamp(o.end_time)) for o in outings]
+    if not camera or not spans:
+        return clips
+
+    def placed(shift):
+        found = set()
+        for clip in camera:
+            start = rt.timestamp(clip['start_time']) + dt.timedelta(seconds=shift)
+            end = rt.timestamp(clip['end_time']) + dt.timedelta(seconds=shift)
+            inside = [max(0, (min(end, right) - max(start, left)).total_seconds()) / clip['duration_s'] for left, right in spans]
+            if sum(value >= min_coverage for value in inside) == 1:
+                found.add(clip['id'])
+        return found
+
+    fits = {shift: placed(shift) for shift in (0, *CAMERA_UTC_SHIFTS_S)}
+    shift = max(CAMERA_UTC_SHIFTS_S, key=lambda value: len(fits[value]))
+    other = -shift
+    reachable = len(set().union(*fits.values()))
+    gain = len(fits[shift]) - len(fits[0])
+    if gain < max(MIN_CAMERA_SHIFT_GAIN, reachable * .1) or len(fits[shift]) <= len(fits[other]):
+        return clips
+    moved = {c['id'] for c in camera}
+    adjusted = [clip if clip['id'] not in moved else clip | {
+        'start_time': rt.iso(rt.timestamp(clip['start_time']) + dt.timedelta(seconds=shift)),
+        'end_time': rt.iso(rt.timestamp(clip['end_time']) + dt.timedelta(seconds=shift)),
+        'unadjusted_start_time': clip['start_time'], 'unadjusted_end_time': clip['end_time'],
+        'association_offset_s': shift, 'alignment_basis': 'camera_utc_offset',
+    } for clip in clips]
+    return sorted(adjusted, key=lambda c: (c['start_time'], c['id']))
 
 
 def align_confirmed_returns(clips, outings, points, prefs):

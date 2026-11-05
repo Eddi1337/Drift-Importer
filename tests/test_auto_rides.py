@@ -472,3 +472,63 @@ def test_unfiled_archive_explains_missing_month_instead_of_an_endless_index_requ
     clips, report = ar.eligible_clips(session)
     assert not clips
     assert report['exclusions'] == {'missing_archive_month':1}
+
+
+def run_of_clips(setup, starts, **kwargs):
+    for number, start in enumerate(starts, 1):
+        footage(setup, number, start, **kwargs)
+
+
+def test_month_of_gps_outings_removes_a_camera_clock_hour(setup):
+    # A clock set during BST reads an hour ahead of UTC, so every clip here
+    # looks like it started after the outing ended at 11:30.
+    session, _, _, _ = setup
+    run_of_clips(setup, ["2026-10-02T11:31:00Z", "2026-10-02T11:36:00Z", "2026-10-02T11:41:00Z"], status="trusted", duration=300)
+    report = ar.discover(session)
+    ride = session.query(AutoRide).one()
+    payload = json.loads(ride.payload)
+    assert report["discovered_ride_count"] == 1 and ride.clip_count == 3
+    assert ride.start_time == rt.timestamp("2026-10-02T10:31:00Z").replace(tzinfo=None)
+    assert payload["evidence"]["clock_shift_seconds"] == -3600
+    assert payload["evidence"]["alignment_basis"] == "camera_utc_offset"
+    assert ride.confidence_label == "GPS-aligned estimate"
+    assert "1-hour offset from UTC" in payload["reasons"][1]
+    assert "date correction" not in " ".join(payload["reasons"])
+    assert ar.ride_clips(session, ride)[0]["unadjusted_start_time"] == "2026-10-02T11:31:00Z"
+    before = session.connection().exec_driver_sql("SELECT total_changes()").scalar()
+    ar.discover(session)
+    assert session.connection().exec_driver_sql("SELECT total_changes()").scalar() == before
+
+
+def test_too_few_clips_do_not_change_the_camera_clock(setup):
+    session, _, _, _ = setup
+    run_of_clips(setup, ["2026-10-02T11:35:00Z", "2026-10-02T11:45:00Z"], status="trusted")
+    report = ar.discover(session)
+    assert report["exclusions"]["no_exact_ha_time_overlap"] == 2
+    assert report["discovered_ride_count"] == 0
+
+
+def test_clips_that_already_fit_keep_their_camera_time(setup):
+    session, _, _, _ = setup
+    run_of_clips(setup, ["2026-10-02T10:00:00Z", "2026-10-02T10:10:00Z", "2026-10-02T10:20:00Z"], status="trusted")
+    ar.discover(session)
+    ride = session.query(AutoRide).one()
+    assert json.loads(ride.payload)["evidence"]["clock_shift_seconds"] == 0
+    assert ride.confidence_label == "High confidence"
+
+
+def test_confirmed_corrections_are_already_utc_and_are_not_shifted(setup):
+    session, _, _, _ = setup
+    run_of_clips(setup, ["2026-10-02T11:35:00Z", "2026-10-02T11:45:00Z", "2026-10-02T11:55:00Z"], correction=True)
+    report = ar.discover(session)
+    assert report["exclusions"]["no_exact_ha_time_overlap"] == 3
+    assert session.query(AutoRide).count() == 0
+
+
+def test_removing_a_clock_hour_does_not_excuse_missing_gps(setup):
+    # The outing runs to 11:30 but fixes stop at 10:59.
+    session, _, _, _ = setup
+    run_of_clips(setup, ["2026-10-02T12:05:00Z", "2026-10-02T12:10:00Z", "2026-10-02T12:15:00Z"], status="trusted", duration=300)
+    report = ar.discover(session)
+    assert report["exclusions"]["insufficient_gps_corroboration"] == 3
+    assert session.query(AutoRide).count() == 0
