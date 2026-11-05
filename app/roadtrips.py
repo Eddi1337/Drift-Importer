@@ -500,8 +500,13 @@ def _handle_import_ha_month(job_id, payload, ctx):
                 _cancel(ctx)
                 local_start = dt.datetime(year, number, day, tzinfo=ZoneInfo(timezone))
                 start, end = local_start.astimezone(UTC), (local_start + dt.timedelta(days=1)).astimezone(UTC)
+                now = timestamp(utcnow())
+                # A day that has not happened yet has no history. Caching it as
+                # empty would make it look final to the automatic refresh.
+                if start >= now:
+                    break
                 with client.stream("GET", base_url + "/api/history/period/" + iso(start),
-                    headers=headers, params={"filter_entity_id": entity, "end_time": iso(end), "significant_changes_only": "0"}) as response:
+                    headers=headers, params={"filter_entity_id": entity, "end_time": iso(min(end, now)), "significant_changes_only": "0"}) as response:
                     response.raise_for_status()
                     body = bytearray()
                     for chunk in response.iter_bytes(65536):
@@ -536,7 +541,7 @@ def _handle_import_ha_month(job_id, payload, ctx):
                         report["point_count"] += len(clean)
                     elif existing and existing.point_count:
                         report["preserved_days"] += 1
-                    else:
+                    elif end <= now:
                         save_day(session, source, day_key, [], rejected)
                         report["empty_days"] += 1
                     report["rejected_count"] += rejected

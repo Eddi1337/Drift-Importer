@@ -457,6 +457,41 @@ def test_expired_ha_history_preserves_cached_day_and_existing_outing(session, mo
     assert all("no_attributes" not in p and "minimal_response" not in p and p.get("significant_changes_only") == "0" for p in calls)
 
 
+def test_month_import_does_not_cache_days_that_have_not_finished(session, monkeypatch):
+    from contextlib import contextmanager
+    @contextmanager
+    def scope():
+        yield session
+        session.flush()
+    monkeypatch.setattr(rt, "session_scope", scope)
+    monkeypatch.setattr(rt, "discover_entities", lambda s: None)
+    monkeypatch.setattr(rt, "get_app_settings", lambda s: SimpleNamespace(ha_base_url="http://ha.test", ha_token="unused"))
+    monkeypatch.setattr(rt, "_base_url", lambda s: "http://ha.test")
+    monkeypatch.setattr(rt, "_headers", lambda s: {})
+    monkeypatch.setattr(rt, "utcnow", lambda: dt.datetime(2026, 11, 3, 12))
+    calls = []
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def raise_for_status(self): pass
+        def iter_bytes(self, size): yield b"[[]]"
+    class Client:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def stream(self, method, url, **kwargs):
+            calls.append(kwargs["params"]["end_time"])
+            return Response()
+    monkeypatch.setattr(rt.httpx, "Client", Client)
+    class Context:
+        def is_cancelled(self): return False
+        def set_progress(self, *args): pass
+    report = rt._handle_import_ha_month(1, {"month": "2026-11", "entity_id": "device_tracker.test"}, Context())
+    assert sorted(row.day for row in session.query(LocationDay)) == ["2026-11-01", "2026-11-02"]
+    assert report["empty_days"] == 2 and len(calls) == 3
+    assert rt.timestamp(calls[-1]) == rt.timestamp("2026-11-03T12:00:00Z")
+
+
 def test_manual_subset_supports_archive_only_clips_without_media_record(session):
     session.add(Destination(id=1, name="NAS", type="local", base_path="/mnt/NAS"))
     for i in range(3):

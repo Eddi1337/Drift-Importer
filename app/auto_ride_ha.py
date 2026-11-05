@@ -20,6 +20,21 @@ REFRESH_AFTER_S = 30 * 60
 MAX_HOME_BYTES = 64 * 1024
 
 
+def _last_read(row, check):
+    times = [rt.timestamp(value) for value in (row.imported_at if row else None, check.checked_at if check else None) if value]
+    return max(times, default=None)
+
+
+def _settled(row, check, day, zone):
+    """A cached day is final only if it was read after that local day ended.
+
+    Month imports used to save days that had not happened yet as empty, so a
+    row existing, even with no points, does not prove the day was ever read.
+    """
+    last = _last_read(row, check)
+    return last is not None and last >= dt.datetime.combine(day + dt.timedelta(days=1), dt.time(), zone)
+
+
 def _plan(session, now):
     prefs = rt.preferences(session)
     source = "ha:" + prefs.entity_id if prefs.entity_id else ""
@@ -42,7 +57,7 @@ def _plan(session, now):
     for key, end in relevant.items():
         row, check = cached.get(key), checks.get(key)
         date = dt.date.fromisoformat(key)
-        if row and date < today - dt.timedelta(days=1):
+        if row and date < today - dt.timedelta(days=1) and _settled(row, check, date, zone):
             skipped += 1  # populated and known-empty historical days are stable
             continue
         checked = rt.timestamp(check.checked_at if check else row.imported_at) if check or row else None
@@ -51,12 +66,14 @@ def _plan(session, now):
         else:
             skipped += 1
     # A missing neighbouring local day may contain the departure/return. Never
-    # refetch a known-empty historical boundary or request a future day.
+    # refetch a settled historical boundary or request a future day.
     for key in relevant:
         day = dt.date.fromisoformat(key)
         for neighbour in (day - dt.timedelta(days=1), day + dt.timedelta(days=1)):
             value = neighbour.isoformat()
-            if neighbour <= today and value not in cached and value not in wanted:
+            row, check = cached.get(value), checks.get(value)
+            unsettled = row is not None and not _settled(row, check, neighbour, zone) and (now - _last_read(row, check)).total_seconds() >= REFRESH_AFTER_S
+            if neighbour <= today and value not in wanted and (row is None or unsettled):
                 wanted[value] = {"day": value, "latest_clip_end": None, "primary": value in relevant}
     return source, sorted(wanted.values(), key=lambda value: (not value["primary"], -dt.date.fromisoformat(value["day"]).toordinal())), skipped
 

@@ -319,3 +319,50 @@ def test_home_network_or_token_failure_preserves_existing_partial_preferences(se
     assert report["errors"] and not rebuilt and requests == []
     assert prefs.home_lat == 51.5 and prefs.home_lon is None
     assert "private" not in json.dumps(report)
+
+
+def test_day_cached_before_it_happened_is_fetched_when_a_clip_needs_it(setup):
+    # A month import on 5 Oct used to save the rest of October as empty.
+    session, clips, requests, responses, _ = setup
+    clips.append(clip("2026-10-12"))
+    for day in ("2026-10-11", "2026-10-12", "2026-10-13"):
+        cache(session, day, imported="2026-10-05T09:00:00Z")
+    responses["2026-10-11"] = [[history("2026-10-12T10:05:00Z")]]
+    assert refresh.pending_refresh_days(session, now=NOW) == ["2026-10-11", "2026-10-12", "2026-10-13"]
+    report = refresh.refresh_ha_days(session, now=NOW)
+    assert report["checked_days"] == 3
+    assert session.query(LocationDay).filter_by(day="2026-10-12").one().point_count == 1
+
+
+def test_day_read_after_it_ended_is_not_fetched_again(setup):
+    session, clips, requests, _, _ = setup
+    clips.append(clip("2026-10-12"))
+    for day in ("2026-10-11", "2026-10-12", "2026-10-13"):
+        cache(session, day, imported="2026-10-05T09:00:00Z")
+    refresh.refresh_ha_days(session, now=NOW)
+    seen = len(requests)
+    assert refresh.pending_refresh_days(session, now=NOW + dt.timedelta(hours=2)) == []
+    refresh.refresh_ha_days(session, now=NOW + dt.timedelta(hours=2))
+    assert len(requests) == seen
+
+
+def test_partly_read_day_is_completed_and_keeps_its_earlier_fixes(setup):
+    session, clips, _, responses, _ = setup
+    clips.append(clip("2026-10-12"))
+    cache(session, "2026-10-11", imported="2026-10-13T09:00:00Z")
+    cache(session, "2026-10-13", imported="2026-10-14T09:00:00Z")
+    cache(session, "2026-10-12", [gps("2026-10-12T09:00:00Z")], imported="2026-10-12T09:30:00Z")
+    responses["2026-10-11"] = [[history("2026-10-12T18:00:00Z")]]
+    assert refresh.pending_refresh_days(session, now=NOW) == ["2026-10-12"]
+    refresh.refresh_ha_days(session, now=NOW)
+    assert session.query(LocationDay).filter_by(day="2026-10-12").one().point_count == 2
+
+
+def test_today_as_a_neighbour_waits_for_the_refresh_timer(setup):
+    session, clips, requests, _, _ = setup
+    clips.append(clip("2026-10-17", "10:00:00", "10:10:00"))
+    cache(session, "2026-10-16", imported="2026-10-17T09:00:00Z")
+    cache(session, "2026-10-17", imported="2026-10-18T11:50:00Z")
+    cache(session, "2026-10-18", imported="2026-10-18T11:50:00Z")
+    assert refresh.pending_refresh_days(session, now=NOW) == []
+    assert "2026-10-18" in refresh.pending_refresh_days(session, now=NOW + dt.timedelta(minutes=31))
