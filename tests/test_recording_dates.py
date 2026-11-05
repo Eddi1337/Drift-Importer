@@ -93,6 +93,27 @@ def test_recent_ride_rule(when,expected):
     assert recording.status==expected
 
 
+def test_ride_just_ended_on_a_bst_set_clock_is_not_held():
+    # Plugged in minutes after the ride, on a clock an hour ahead of UTC.
+    connected=dt.datetime(2026,7,23,17,3,tzinfo=dt.timezone.utc)
+    recording=row(1,107,935,dt.datetime(2026,7,23,17,55))
+    dates.analyse([recording],{1},connected)
+    assert recording.status=='trusted' and 'future' not in recording.reasons
+
+
+def test_ride_end_near_midnight_on_a_bst_set_clock_is_not_held():
+    connected=dt.datetime(2026,7,23,22,40,tzinfo=dt.timezone.utc)
+    recording=row(1,107,935,dt.datetime(2026,7,23,23,30))
+    dates.analyse([recording],{1},connected)
+    assert recording.status=='trusted'
+
+
+def test_clock_further_ahead_than_a_summer_offset_is_still_held():
+    recording=row(1,107,935,dt.datetime(2026,10,5,14))
+    dates.analyse([recording],{1},dt.datetime(2026,10,5,12,tzinfo=dt.timezone.utc))
+    assert recording.status=='review' and 'future' in recording.reasons
+
+
 def test_historical_files_and_reused_counters_are_held():
     older=row(1,106,99,dt.datetime(2026,8,1,17))
     latest=row(2,107,935,dt.datetime(2026,10,4,17))

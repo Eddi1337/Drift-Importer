@@ -5,6 +5,7 @@ no ffprobe process or video copy is needed for the normal date scan.
 """
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 import datetime as dt
 import hashlib
 import json
@@ -26,6 +27,10 @@ UTC = dt.timezone.utc
 LOCAL = ZoneInfo("Europe/London")
 lock = threading.RLock()
 APPROVED = {"trusted", "confirmed"}
+# The camera keeps a fixed offset from UTC from when it was last set, so an
+# honest clock set during BST reads an hour ahead of UTC. Comparing that to the
+# real time must not make a ride that has just ended look like it is in the future.
+CAMERA_CLOCK_SLACK = dt.timedelta(hours=1, minutes=5)
 
 
 def utc(value):
@@ -179,7 +184,8 @@ def analyse(rows, new_ids, connected_at, previous_rows=()):
     reused = {r.id for r in new_ordered if prior_keys and sequence_key(Path(r.path)) <= max(prior_keys)}
     latest = ordered[-1] if ordered else max((r for r in rows if r.original_time), key=lambda r: utc(r.original_time), default=None)
     latest_end = (utc(latest.original_time) + dt.timedelta(seconds=latest.duration_s or 0)) if latest and latest.original_time else None
-    recent = latest_end and local(latest_end).date() in (today, today - dt.timedelta(days=1)) and latest_end <= now + dt.timedelta(minutes=5)
+    recent = bool(latest_end and latest_end <= now + CAMERA_CLOCK_SLACK and
+        {local(latest_end).date(), local(latest_end - CAMERA_CLOCK_SLACK).date()} & {today, today - dt.timedelta(days=1)})
     # A confirmed offset can carry forward, but only across increasing counters,
     # increasing camera times and a plausible latest ride-end day.
     calibrated = [r for r in ordered if r.status == "confirmed" and r.reuse_offset and r.original_time and r.corrected_time]
@@ -195,7 +201,7 @@ def analyse(rows, new_ids, connected_at, previous_rows=()):
         reasons = []
         if not row.original_time or row.time_source != "metadata":
             reasons.append("Recording metadata is missing; file modification time is only a fallback")
-        if row.original_time and utc(row.original_time) > now + dt.timedelta(minutes=5):
+        if row.original_time and utc(row.original_time) > now + CAMERA_CLOCK_SLACK:
             reasons.append("Camera timestamp is in the future")
         if row.id in reused:
             reasons.append("New or replaced recording uses an earlier/reused folder and DVR counter")
@@ -227,7 +233,10 @@ def date_suggestions(rows, connected_at):
     """
     now = utc(connected_at or utcnow())
     suggestions = {}
-    ordered = sorted((r for r in rows if sequence_key(Path(r.path))), key=lambda r: sequence_key(Path(r.path)))
+    # Parsed once: every row used to reparse every anchor's path, which took
+    # tens of seconds on the Pi and kept the review list from loading.
+    keys = {row: sequence_key(Path(row.path)) for row in rows}
+    ordered = sorted((r for r in rows if keys[r]), key=keys.get)
 
     def effective(row):
         return utc(row.corrected_time or row.original_time) if row.corrected_time or row.original_time else None
@@ -244,7 +253,7 @@ def date_suggestions(rows, connected_at):
     # durations either side. Counter gaps are not evidence of uninterrupted
     # recording, and folder rollover is only recognised at counter 0/1.
     def adjacent(left, right):
-        a, b = sequence_key(Path(left.path)), sequence_key(Path(right.path))
+        a, b = keys[left], keys[right]
         return (a[0] == b[0] and b[1] == a[1] + 1) or (b[0] == a[0] + 1 and b[1] in (0, 1))
 
     anchor_indices = [i for i, r in enumerate(ordered) if r.status in APPROVED and plausible(effective(r))]
@@ -281,12 +290,18 @@ def date_suggestions(rows, connected_at):
         segments[-1].append(row)
     for segment in segments:
         anchors = [r for r in segment if r.status in APPROVED and r.original_time and plausible(effective(r)) and r.time_source == "metadata"]
+        anchor_keys = [keys[a] for a in anchors]
+        newest = segment[-1] if segment is segments[-1] else None
+        newest_end = utc(newest.original_time) + dt.timedelta(seconds=newest.duration_s) if newest and newest.original_time and newest.duration_s else None
+        # When the Pi first saw the newest clip is the closest record of the
+        # camera being plugged in. A later reconnect moves only `now`.
+        connected = utc(newest.first_seen) if newest and newest.first_seen else now
         for index, row in enumerate(segment):
             if row.id in suggestions or row.original_time is None or row.time_source != "metadata":
                 continue
-            before = [a for a in anchors if sequence_key(Path(a.path)) < sequence_key(Path(row.path))]
-            after = [a for a in anchors if sequence_key(Path(a.path)) > sequence_key(Path(row.path))]
-            neighbours = ([before[-1]] if before else []) + ([after[0]] if after else [])
+            before, after = bisect_left(anchor_keys, keys[row]), bisect_right(anchor_keys, keys[row])
+            neighbours = anchors[before - 1:before] if before else []
+            neighbours += anchors[after:after + 1]
             if neighbours:
                 offsets = [effective(a) - utc(a.original_time) for a in neighbours]
                 if len(offsets) == 2 and abs((offsets[0] - offsets[1]).total_seconds()) > 2:
@@ -294,19 +309,22 @@ def date_suggestions(rows, connected_at):
                     continue
                 offset = offsets[0]
                 names = " and ".join(Path(a.path).name for a in neighbours)
-                suggest(row, utc(row.original_time) + offset, "high" if len(neighbours) == 2 else "medium", f"Uses the camera-clock offset from approved {names} in the same increasing filename/timestamp run. Assumes the clock kept that offset; review before confirming.", neighbours)
-            elif segment is segments[-1] and segment[-1].original_time and segment[-1].duration_s:
-                last = segment[-1]
-                offset = now - (utc(last.original_time) + dt.timedelta(seconds=last.duration_s))
-                suggest(row, utc(row.original_time) + offset, "low", f"Assumes the newest recording, {Path(last.path).name}, ended when the camera was connected. Preserves timestamp gaps within this filename run; the camera may have been connected later than filming.")
+                if newest_end and newest_end + offset > connected + dt.timedelta(minutes=5):
+                    # A clip cannot end after the Pi first saw it, so that
+                    # approved correction is too late. Do not repeat its error.
+                    suggest(row, utc(row.original_time) + (connected - newest_end), "low", f"The offset from approved {names} would end {Path(newest.path).name} after the camera was connected, so that correction looks too late. Assumes {Path(newest.path).name} ended when the camera was connected instead; the camera may have been connected later than filming.")
+                else:
+                    suggest(row, utc(row.original_time) + offset, "high" if len(neighbours) == 2 else "medium", f"Uses the camera-clock offset from approved {names} in the same increasing filename/timestamp run. Assumes the clock kept that offset; review before confirming.", neighbours)
+            elif newest_end:
+                suggest(row, utc(row.original_time) + (connected - newest_end), "low", f"Assumes the newest recording, {Path(newest.path).name}, ended when the camera was connected. Preserves timestamp gaps within this filename run; the camera may have been connected later than filming.")
 
     # EVENT counters are not a separate chronological sequence. Only associate
     # an event with one unambiguous DVR counter and matching header evidence.
     by_counter = {}
     for row in ordered:
-        by_counter.setdefault(sequence_key(Path(row.path))[1], []).append(row)
+        by_counter.setdefault(keys[row][1], []).append(row)
     for row in rows:
-        if sequence_key(Path(row.path)):
+        if keys[row]:
             continue
         match = re.fullmatch(r"(?:E_)?DVR(\d+)\.(?:MP4|MOV)", Path(row.path).name, re.I)
         matches = by_counter.get(int(match[1]), []) if match else []
@@ -420,6 +438,47 @@ def recording_source(session, row, destination_id=None, *, prefer_archive=False)
     raise ValueError("Original NAS backup is missing or does not match this recording; attach the camera")
 
 
+def _read_folder(folder):
+    found = {}
+    try:
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        info = entry.stat(follow_symlinks=False)
+                        found[entry.name] = (info.st_size, info.st_mtime_ns)
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return found
+
+
+def _known_file(path, listings):
+    """Size and mtime from one read per folder, not stats per file.
+
+    Thousands of per-file NFS calls during an upload took the review list past
+    six minutes on the Pi. Remote camera paths already answer from memory.
+    """
+    if path._remote():
+        return fingerprint(path) if path.is_file() else None
+    folder = str(path.parent)
+    if folder not in listings:
+        listings[folder] = _read_folder(folder)
+    return listings[folder].get(path.name)
+
+
+def _archived_file(root, value, parents):
+    """archive_path's containment check, resolving each folder once."""
+    if not value:
+        return None
+    path = Path(value)
+    path = path if path.is_absolute() else root / path
+    if path.parent not in parents:
+        parents[path.parent] = path.parent.resolve()
+    return parents[path.parent] / path.name if parents[path.parent].is_relative_to(root) else None
+
+
 def review_data(session, root: str, destination_id=None):
     check = session.get(CameraDateCheck, root)
     ids = json.loads(check.observed_ids) if check else []
@@ -447,16 +506,17 @@ def review_data(session, root: str, destination_id=None):
             roots[dest.id] = require_storage(Path(dest.base_path))
         except (OSError, RuntimeError):
             pass
-    files = []
+    files, listings, parents = [], {}, {}
     for row in rows:
         item = items.get(row.path)
         cs = getattr(row, "checksum", None) or (item.checksum if item and item.size_bytes == row.size_bytes else None)
         ledger = ledgers.get(cs)
-        archived = archive_path(roots[ledger.destination_id], ledger.remote_path) if ledger and ledger.destination_id in roots else None
+        archived = _archived_file(roots[ledger.destination_id], ledger.remote_path, parents) if ledger and ledger.destination_id in roots else None
         backed_up = False
         try:
-            backed_up = bool(ledger and ledger.status == "done" and not ledger.full_verification_failed and ledger.size_bytes == row.size_bytes and archived and archived.is_file() and archived.stat().st_size == row.size_bytes)
-            camera_available = Path(row.path).is_file() and fingerprint(Path(row.path)) == (row.size_bytes, row.mtime_ns)
+            stored = _known_file(archived, listings) if archived else None
+            backed_up = bool(ledger and ledger.status == "done" and not ledger.full_verification_failed and ledger.size_bytes == row.size_bytes and stored and stored[0] == row.size_bytes)
+            camera_available = _known_file(Path(row.path), listings) == (row.size_bytes, row.mtime_ns)
         except OSError:
             camera_available = False
         holding = bool(backed_up and archived.relative_to(roots[ledger.destination_id]).parts[0] == "Holding")

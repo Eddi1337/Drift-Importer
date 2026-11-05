@@ -77,3 +77,35 @@ def test_event_date_matches_unique_counter_with_header_evidence():
     result = date_suggestions([recording, other, event], NOW)[event.id]
     assert result["suggestion_confidence"] == "low"
     assert result["suggestion_anchor_ids"] == []
+
+
+def test_approved_offset_disproved_by_connection_time_is_not_repeated():
+    # Real case: DVR00935 was confirmed 63 minutes late, so reusing its offset
+    # ended today's ride after the camera was plugged in.
+    offset = dt.timedelta(days=14, hours=3, minutes=35)
+    approved = clip(935, dt.datetime(2026, 9, 20, 14, 36), status="confirmed", corrected=dt.datetime(2026, 9, 20, 14, 36) + offset)
+    ride = clip(990, dt.datetime(2026, 10, 22, 4, 22))
+    newest = clip(29, dt.datetime(2026, 10, 22, 7, 39), folder=108)
+    newest.first_seen = dt.datetime(2026, 11, 5, 10, 19)
+    result = date_suggestions([approved, ride, newest], dt.datetime(2026, 11, 5, 10, 25, tzinfo=dt.timezone.utc))
+    assert result[newest.id]["suggested_time"] == "2026-11-05T10:14:00+00:00"
+    assert result[ride.id]["suggested_time"] == "2026-11-05T06:57:00+00:00"
+    assert result[ride.id]["suggestion_confidence"] == "low"
+    assert "too late" in result[ride.id]["suggestion_reason"]
+
+
+def test_consistent_approved_offset_is_kept_when_camera_connected_later():
+    offset = dt.timedelta(days=14)
+    approved = clip(1, dt.datetime(2026, 9, 20, 10), status="confirmed", corrected=dt.datetime(2026, 9, 20, 10) + offset)
+    newest = clip(2, dt.datetime(2026, 9, 20, 18))
+    newest.first_seen = dt.datetime(2026, 10, 5, 9)
+    result = date_suggestions([approved, newest], NOW)[newest.id]
+    assert result["suggested_time"] == "2026-10-04T18:00:00+00:00"
+    assert result["suggestion_confidence"] == "medium"
+
+
+def test_later_reconnect_does_not_move_the_connection_estimate():
+    newest = clip(1, dt.datetime(2020, 1, 1, 10))
+    newest.first_seen = dt.datetime(2026, 10, 4, 12, 5)
+    result = date_suggestions([newest], NOW)[newest.id]
+    assert result["suggested_time"] == "2026-10-04T12:00:00+00:00"

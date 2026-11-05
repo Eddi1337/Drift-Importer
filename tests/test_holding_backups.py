@@ -288,3 +288,50 @@ def test_saved_holding_review_and_range_playback_work_without_camera(setup, monk
         })
         assert response.status_code == 200, response.text
         assert '/Holding/' in response.json()['entries'][0]['moves'][0]['old']
+
+
+def review_files(setup):
+    maker, camera, _ = setup
+    with maker() as session:
+        return {Path(f['path']).name: f for f in dates.review_data(session, str(camera), 1)['files']}
+
+
+def test_review_list_reads_each_folder_once_instead_of_every_file(setup, monkeypatch):
+    maker, camera, nas = setup
+    media_id, source = index(setup)
+    tasks.handle_upload(2, {"media_ids": [media_id], "destination_ids": [1]}, Context())
+    folders, real = [], dates.os.scandir
+    monkeypatch.setattr(dates.os, 'scandir', lambda path: folders.append(str(path)) or real(path))
+    file = review_files(setup)[source.name]
+    assert file['backed_up'] and file['camera_available'] and file['holding_path']
+    assert len(folders) == len(set(folders)) == 2
+
+
+def test_review_list_still_notices_wrong_size_and_missing_nas_copies(setup):
+    maker, camera, nas = setup
+    media_id, source = index(setup)
+    tasks.handle_upload(2, {"media_ids": [media_id], "destination_ids": [1]}, Context())
+    stored = Path(review_files(setup)[source.name]['backup_path'])
+    stored.write_bytes(b'truncated')
+    assert not review_files(setup)[source.name]['backed_up']
+    stored.unlink()
+    assert not review_files(setup)[source.name]['backed_up']
+
+
+def test_review_list_does_not_trust_a_nas_folder_linked_outside_the_nas(setup, tmp_path):
+    maker, camera, nas = setup
+    media_id, source = index(setup)
+    tasks.handle_upload(2, {"media_ids": [media_id], "destination_ids": [1]}, Context())
+    stored = Path(review_files(setup)[source.name]['backup_path'])
+    outside = tmp_path / 'outside'
+    stored.parent.rename(outside)
+    stored.parent.symlink_to(outside)
+    assert not review_files(setup)[source.name]['backed_up']
+
+
+def test_review_list_rechecks_camera_file_identity(setup):
+    maker, camera, nas = setup
+    media_id, source = index(setup)
+    assert review_files(setup)[source.name]['camera_available']
+    source.write_bytes(source.read_bytes() + b'replaced')
+    assert not review_files(setup)[source.name]['camera_available']
