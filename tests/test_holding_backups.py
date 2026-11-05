@@ -335,3 +335,34 @@ def test_review_list_rechecks_camera_file_identity(setup):
     assert review_files(setup)[source.name]['camera_available']
     source.write_bytes(source.read_bytes() + b'replaced')
     assert not review_files(setup)[source.name]['camera_available']
+
+
+def test_corrected_clip_leaves_holding_and_reaches_ride_discovery_without_a_scan(setup, monkeypatch):
+    from app import auto_rides
+    from app.archive_models import ArchiveFile
+    from app.roadtrip_models import RoadtripSettings
+
+    maker, camera, nas = setup
+    media_id, _ = index(setup)
+    tasks.handle_upload(2, {"media_ids": [media_id], "destination_ids": [1]}, Context())
+    monkeypatch.setattr(auto_rides, "get_settings", lambda: SimpleNamespace(nas_root=nas))
+    with maker() as session:
+        session.add(RoadtripSettings(id=1, timezone="Europe/London", home_radius_m=150, max_gap_s=900, max_accuracy_m=100, max_speed_kmh=180))
+        session.commit()
+        recording_id = session.query(RecordingDate).one().id
+        held = Path(session.query(UploadedClip).one().remote_path)
+        clips, report = auto_rides.eligible_clips(session, now=NOW)
+        assert clips == [] and report["exclusions"] == {"unconfirmed_holding_date": 1}
+        preview = dates.make_preview(session, str(camera), [recording_id], recording_id,
+                                     "2026-10-04T18:00:00", False, False, 1, True, False)
+        session.commit()
+        job_id = dates.confirm_plan(session, preview["plan_id"])["job_id"]
+    dates.correction_job(job_id, {"plan_id": preview["plan_id"], "camera_root": str(camera)}, Context())
+    with maker() as session:
+        rows = {row.path: row for row in session.query(ArchiveFile)}
+        old, new = rows[held.relative_to(nas).as_posix()], rows["2026/10/" + held.name]
+        assert not old.present and not old.eligible
+        assert new.present and new.eligible and new.ledger_id == session.query(UploadedClip).one().id
+        clips, report = auto_rides.eligible_clips(session, now=NOW)
+        assert [clip["month"] for clip in clips] == ["2026-10"]
+        assert clips[0]["start_time"] == "2026-10-04T17:00:00Z"

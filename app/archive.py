@@ -147,6 +147,25 @@ def record_uploaded_file(session, destination, clip) -> None:
     _update_row(row, root, relative, info, (clip.id, clip.status), False)
 
 
+def record_moved_file(session, destination, clip, old_path) -> None:
+    """Follow a move on the NAS without waiting for the next full scan.
+
+    Trips read this inventory, so a corrected clip left under its old Holding
+    path has no archive month and silently drops out of ride discovery.
+    """
+    record_uploaded_file(session, destination, clip)
+    if destination.type not in MOUNTED_TYPES:
+        return
+    try:
+        relative = _path(_safe_root(destination.base_path), old_path)
+    except (OSError, RuntimeError):
+        return
+    row = session.query(ArchiveFile).filter_by(destination_id=destination.id, path=relative).one_or_none() if relative else None
+    if row is not None:
+        row.present, row.eligible = False, False
+        invalidate_file(row)
+
+
 def _safe_root(value) -> Path:
     root = Path(os.path.abspath(value))
     for parent in (root, *root.parents):

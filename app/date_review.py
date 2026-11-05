@@ -17,6 +17,7 @@ import threading
 from .camera_paths import Path
 from zoneinfo import ZoneInfo
 
+from .archive import record_moved_file
 from .database import session_scope
 from .destinations.base import render_remote_dir
 from .jobs import ACTIVE_STATES, JobCancelled, get_manager, handler
@@ -841,6 +842,8 @@ def correction_job(job_id, payload, ctx):
                     # Do not delete the old name until its new ledger is committed.
                 if source != target and source.exists():
                     source.unlink()
+                with session_scope() as session:
+                    record_moved_file(session, dest, session.get(UploadedClip, move["ledger_id"]), move["old"])
                 publish_metadata_copy(row.id, dest.id, target, ctx)
                 if source != target:
                     source.with_name(source.name + ".dates.json").unlink(missing_ok=True)
