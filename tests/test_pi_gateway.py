@@ -189,3 +189,51 @@ def test_fast_ui_opens_on_maps_with_clear_navigation_and_separate_activity(monke
             assert text in page.text
         jobs=client.get('/jobs?source=trips')
         assert ('data-job-source="trips"' in jobs.text)==(role=='processor')
+
+
+def recording_timeouts(monkeypatch,respond):
+    real=httpx.AsyncClient;seen=[]
+    def client(**kw):
+        seen.append(kw['timeout'].read)
+        return real(transport=httpx.MockTransport(respond),**kw)
+    monkeypatch.setattr(pi_gateway.httpx,'AsyncClient',client)
+    return seen
+
+
+@pytest.mark.parametrize('method,path',[('GET','/api/recording-dates?camera_root=/media/drift-camera'),
+    ('POST','/api/recording-dates/preview'),('POST','/api/recording-dates/confirm')])
+def test_date_review_gets_longer_than_other_pi_calls(proxy,monkeypatch,method,path):
+    _,_,app=proxy
+    async def respond(request):return httpx.Response(200,json={'ok':True})
+    seen=recording_timeouts(monkeypatch,respond)
+    with TestClient(app) as client:
+        assert client.request(method,path).json()=={'ok':True}
+    assert seen[-1]==pi_gateway.SLOW_TIMEOUT
+
+
+def test_other_pi_calls_keep_the_short_limit(proxy,monkeypatch):
+    _,_,app=proxy
+    async def respond(request):return httpx.Response(200,json={'ok':True})
+    seen=recording_timeouts(monkeypatch,respond)
+    with TestClient(app) as client:
+        client.get('/api/jobs/overview')
+    assert seen[-1]==pi_gateway.UPSTREAM_TIMEOUT
+
+
+def test_slow_answer_is_reported_as_busy_not_offline(proxy,monkeypatch):
+    _,gateway,app=proxy
+    async def respond(request):raise httpx.ReadTimeout('slow')
+    transport(monkeypatch,respond)
+    gateway.online=True
+    with TestClient(app) as client:
+        result=client.get('/api/jobs/overview')
+    assert result.status_code==503 and 'busy' in result.json()['detail'] and gateway.online is True
+
+
+def test_unreachable_pi_is_still_reported_as_unavailable(proxy,monkeypatch):
+    _,gateway,app=proxy
+    async def respond(request):raise httpx.ConnectError('offline')
+    transport(monkeypatch,respond)
+    with TestClient(app) as client:
+        result=client.get('/api/jobs/overview')
+    assert result.status_code==503 and 'unavailable' in result.json()['detail'] and gateway.online is False

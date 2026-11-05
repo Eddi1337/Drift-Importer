@@ -23,6 +23,12 @@ from .config import get_settings
 MAX_BODY = 17 * 1024 * 1024
 MAX_CACHE = 32 * 1024 * 1024
 READ_TTL = 3.0
+UPSTREAM_TIMEOUT = 20.0
+REFRESH_TIMEOUT = 12.0
+# Date review reads every recording and hashes samples, so a busy Pi Zero can
+# legitimately need minutes. Timing these out made the whole flow unusable here.
+SLOW_TIMEOUT = 600.0
+SLOW_PATHS = ('/api/recording-dates', '/api/recording-dates/preview', '/api/recording-dates/confirm')
 SAFE_HEADERS = ('content-type', 'content-range', 'accept-ranges', 'etag',
                 'last-modified', 'content-disposition', 'www-authenticate', 'location')
 
@@ -82,10 +88,10 @@ class PiGateway:
             'X-Drift-Stale': 'true' if stale else 'false'}
         return Response(entry.body, status_code=entry.status, headers=headers)
 
-    async def refresh(self, key, target, headers):
+    async def refresh(self, key, target, headers, timeout=REFRESH_TIMEOUT):
         generation = self.generation
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(12, connect=3), follow_redirects=False, trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=3), follow_redirects=False, trust_env=False) as client:
                 async with client.stream('GET', target, headers=headers) as remote:
                     if remote.status_code != 200:
                         previous = self.cache.pop(key, None)
@@ -101,6 +107,8 @@ class PiGateway:
                     self.remember(key, CachedRead(bytes(data), 200, returned, time.monotonic(), generation))
                     self.online = True
                     self.last_seen = time.time()
+        except httpx.ReadTimeout:
+            pass  # Busy, not offline: the health pulse owns that state.
         except (httpx.HTTPError, ValueError):
             self.online = False
         finally:
@@ -116,13 +124,14 @@ class PiGateway:
         if request.url.query:
             target += '?' + request.url.query
         key = (method, target, auth_key)
+        slow = request.url.path in SLOW_PATHS
         now = time.monotonic()
         entry = self.cache.get(key) if method == 'GET' else None
         if entry:
             age = now - entry.saved
             if age < 24 * 3600:
                 if age >= READ_TTL and key not in self.refreshing:
-                    self.refreshing[key] = asyncio.create_task(self.refresh(key, target, headers))
+                    self.refreshing[key] = asyncio.create_task(self.refresh(key, target, headers, SLOW_TIMEOUT if slow else REFRESH_TIMEOUT))
                 return self.cached_response(entry, stale=self.online is False or age > 15)
         lock = self.locks.setdefault(key, asyncio.Lock()) if method == 'GET' else asyncio.Lock()
         if method == 'GET':
@@ -139,7 +148,7 @@ class PiGateway:
                     if len(body) > MAX_BODY:
                         return JSONResponse({'detail': 'Request exceeds the 16 MB import limit'}, status_code=413)
                 generation = self.generation
-                client = httpx.AsyncClient(timeout=httpx.Timeout(20, connect=3, pool=3),
+                client = httpx.AsyncClient(timeout=httpx.Timeout(SLOW_TIMEOUT if slow else UPSTREAM_TIMEOUT, connect=3, pool=3),
                     follow_redirects=False, trust_env=False)
                 remote = None
                 streamed = False
@@ -174,12 +183,16 @@ class PiGateway:
                         return self.cached_response(entry)
                     return Response(bytes(data), status_code=remote.status_code,
                                     headers=returned | {'Cache-Control': 'no-store', 'X-Drift-Source': 'pi'})
-                except (httpx.HTTPError, ValueError):
-                    self.online = False
+                except (httpx.HTTPError, ValueError) as exc:
+                    busy = isinstance(exc, httpx.ReadTimeout)
+                    if not busy:  # A slow answer does not mean the Pi has gone.
+                        self.online = False
                     if method == 'GET' and entry and time.monotonic() - entry.saved < 24 * 3600:
                         return self.cached_response(entry, stale=True)
-                    message = ('The Pi is unavailable; cached trips and the UI remain available' if method == 'GET'
-                               else 'The Pi did not confirm this command. Check its queue before retrying.')
+                    message = 'The Pi did not confirm this command. Check its queue before retrying.'
+                    if method == 'GET':
+                        message = ('The Pi is busy and did not answer in time; try again shortly' if busy
+                                   else 'The Pi is unavailable; cached trips and the UI remain available')
                     return JSONResponse({'detail': message}, status_code=503)
                 finally:
                     if not streamed:
