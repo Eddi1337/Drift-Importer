@@ -54,11 +54,13 @@ def test_metadata_requests_use_fixed_backend_and_preserve_http_semantics(service
         return httpx.Response(202, json={"job_id": 99}, headers={"ETag": '"v1"'})
     real = httpx.AsyncClient
     monkeypatch.setattr(processing.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(respond), **kw))
-    result = client.post("/api/roadtrips/import-ha?url=http://other.invalid", json={"month": "2026-10"})
+    body = b'{"month": "2026-10"}'
+    result = client.post("/api/roadtrips/import-ha?url=http://other.invalid", content=body,
+                         headers={"Content-Type": "application/json"})
     assert result.status_code == 202 and result.json() == {"job_id": 99}
     assert result.headers["etag"] == '"v1"'
     assert seen[0].url.host == "192.168.10.223" and seen[0].url.path == "/api/roadtrips/import-ha"
-    assert seen[0].read() == b'{"month": "2026-10"}'
+    assert seen[0].read() == body
 
 
 def test_processor_rejects_upload_actions_and_missing_backend_is_clear(services):

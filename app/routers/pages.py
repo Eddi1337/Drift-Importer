@@ -22,7 +22,7 @@ templates.env.globals["asset_version"] = sha256(b"".join(
 
 
 def _page(request: Request, name: str, **ctx):
-    return templates.TemplateResponse(name, {"request": request, "active": name,
+    return templates.TemplateResponse(request, name, {"active": name,
         "app_role": get_settings().processing_role, **ctx})
 
 

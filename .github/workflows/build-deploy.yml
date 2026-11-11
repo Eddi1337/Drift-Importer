@@ -38,8 +38,8 @@ jobs:
     name: Test application
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
           cache: pip
@@ -63,7 +63,7 @@ jobs:
             slug: amd64
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Register QEMU (for cross-arch builds)
         run: docker run --privileged --rm tonistiigi/binfmt --install arm
@@ -95,7 +95,7 @@ jobs:
           if [ "${{ matrix.slug }}" = "armv7" ]; then
             TAGS+=( -t "${IMAGE}:latest" -t "${IMAGE}:${SHA}" )
           fi
-          docker buildx build --builder "drift-${{ matrix.slug }}" \
+          docker buildx build --pull --no-cache --builder "drift-${{ matrix.slug }}" \
             --platform "${{ matrix.platform }}" \
             "${TAGS[@]}" \
             --cache-from "type=registry,ref=${IMAGE}:buildcache-${{ matrix.slug }}" \
@@ -113,7 +113,7 @@ jobs:
     if: ${{ github.event_name == 'push' || inputs.deploy }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Deploy central LXC
         run: ./deploy/deploy-to-processor.sh
