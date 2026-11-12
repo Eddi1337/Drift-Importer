@@ -70,8 +70,12 @@ jobs:
 
       - name: Isolate Docker credentials for this job
         run: |
+          plugins="${DOCKER_CONFIG:-$HOME/.docker}/cli-plugins"
           mkdir -p "$RUNNER_TEMP/docker-config"
           chmod 700 "$RUNNER_TEMP/docker-config"
+          if [ -d "$plugins" ] && [ ! -d "$RUNNER_TEMP/docker-config/cli-plugins" ]; then
+            ln -sfn "$plugins" "$RUNNER_TEMP/docker-config/cli-plugins"
+          fi
           echo "DOCKER_CONFIG=$RUNNER_TEMP/docker-config" >> "$GITHUB_ENV"
 
       - name: Create buildx builder (allows pushing to the HTTP Harbor registry)
