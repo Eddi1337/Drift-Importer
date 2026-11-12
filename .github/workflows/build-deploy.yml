@@ -97,16 +97,18 @@ jobs:
           SHA="${GITHUB_SHA::12}"
           # Every build publishes arch-qualified tags (:armv7, :amd64 + sha);
           # arm/v7 additionally publishes the bare :latest / :<sha> the Pi pulls.
-          TAGS=( -t "${IMAGE}:${{ matrix.slug }}" -t "${IMAGE}:${{ matrix.slug }}-${SHA}" )
+          TAGS=( "${IMAGE}:${{ matrix.slug }}" "${IMAGE}:${{ matrix.slug }}-${SHA}" )
           if [ "${{ matrix.slug }}" = "armv7" ]; then
-            TAGS+=( -t "${IMAGE}:latest" -t "${IMAGE}:${SHA}" )
+            TAGS+=( "${IMAGE}:latest" "${IMAGE}:${SHA}" )
           fi
+          BUILD_TAGS=()
+          for tag in "${TAGS[@]}"; do BUILD_TAGS+=( -t "$tag" ); done
           docker buildx build --pull --no-cache --builder "drift-${{ matrix.slug }}" \
             --platform "${{ matrix.platform }}" \
-            "${TAGS[@]}" \
-            --cache-from "type=registry,ref=${IMAGE}:buildcache-${{ matrix.slug }}" \
-            --cache-to "type=registry,ref=${IMAGE}:buildcache-${{ matrix.slug }},mode=max" \
-            --push .
+            "${BUILD_TAGS[@]}" --load .
+          # The daemon already has the LAN registry's HTTP transport configured.
+          for tag in "${TAGS[@]}"; do docker push "$tag"; done
+          docker image rm "${TAGS[@]}" || true
 
       - name: Remove buildx builder
         if: always()
