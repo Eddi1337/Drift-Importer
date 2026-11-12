@@ -68,6 +68,12 @@ jobs:
       - name: Register QEMU (for cross-arch builds)
         run: docker run --privileged --rm tonistiigi/binfmt --install arm
 
+      - name: Isolate Docker credentials for this job
+        run: |
+          mkdir -p "$RUNNER_TEMP/docker-config"
+          chmod 700 "$RUNNER_TEMP/docker-config"
+          echo "DOCKER_CONFIG=$RUNNER_TEMP/docker-config" >> "$GITHUB_ENV"
+
       - name: Create buildx builder (allows pushing to the HTTP Harbor registry)
         run: |
           cat > /tmp/buildkitd-${{ matrix.slug }}.toml <<EOF
